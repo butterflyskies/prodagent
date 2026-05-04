@@ -1,0 +1,17 @@
+[package]
+name = "agent-jj-guard"
+version = "0.1.0"
+description = "PreToolUse hook — blocks destructive git commands in jj-colocated repos with jj alternatives"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agent-jj-guard"
+path = "src/main.rs"
+
+[dependencies]
+agent-shell-parser = { path = "../agent-shell-parser" }
+anyhow = { workspace = true }
+shell-words = { workspace = true }

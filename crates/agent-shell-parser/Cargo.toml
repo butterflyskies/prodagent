@@ -1,0 +1,14 @@
+[package]
+name = "agent-shell-parser"
+version = "0.1.0"
+description = "Shared parsing substrate for agent hook binaries — JSON input, jj detection, shell tokenization"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+shell-words = { workspace = true }
