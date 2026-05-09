@@ -1,0 +1,16 @@
+[package]
+name = "agent-jj-cleanup"
+version = "0.1.0"
+description = "WorktreeRemove hook — forgets jj workspaces and cleans up directories"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agent-jj-cleanup"
+path = "src/main.rs"
+
+[dependencies]
+agent-shell-parser = { path = "../agent-shell-parser" }
+anyhow = { workspace = true }

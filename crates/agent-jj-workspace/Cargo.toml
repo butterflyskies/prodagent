@@ -1,0 +1,16 @@
+[package]
+name = "agent-jj-workspace"
+version = "0.1.0"
+description = "WorktreeCreate hook — creates jj workspaces for agent isolation"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agent-jj-workspace"
+path = "src/main.rs"
+
+[dependencies]
+agent-shell-parser = { path = "../agent-shell-parser" }
+anyhow = { workspace = true }
