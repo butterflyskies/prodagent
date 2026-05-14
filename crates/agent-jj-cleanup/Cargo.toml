@@ -12,5 +12,5 @@ name = "agent-jj-cleanup"
 path = "src/main.rs"
 
 [dependencies]
-agent-shell-parser = { path = "../agent-shell-parser" }
+agent-shell-parser = { workspace = true }
 anyhow = { workspace = true }
