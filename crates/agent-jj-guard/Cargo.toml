@@ -1,6 +1,6 @@
 [package]
 name = "agent-jj-guard"
-version = "0.1.0"
+version.workspace = true
 description = "PreToolUse hook — blocks destructive git commands in jj-colocated repos with jj alternatives"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "agent-jj-workspace"
-version = "0.1.0"
+version.workspace = true
 description = "WorktreeCreate hook — creates jj workspaces for agent isolation"
 edition.workspace = true
 license.workspace = true
