@@ -1,6 +1,6 @@
 [package]
 name = "agent-shell-parser"
-version = "0.1.0"
+version.workspace = true
 description = "Shared parsing substrate for agent hook binaries — JSON input, jj detection, shell tokenization"
 edition.workspace = true
 license.workspace = true
