@@ -12,6 +12,6 @@ name = "agent-jj-guard"
 path = "src/main.rs"
 
 [dependencies]
-agent-shell-parser = { path = "../agent-shell-parser" }
+agent-shell-parser = { workspace = true }
 anyhow = { workspace = true }
 shell-words = { workspace = true }
