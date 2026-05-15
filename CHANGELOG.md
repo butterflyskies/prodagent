@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-05-14
+## [0.2.1] - 2026-05-15
 
 ### Fixed
+- `agent-jj-guard`: `jj git push` (and other `jj git` subcommands) no longer falsely blocked — guard now identifies the actual command being invoked instead of matching `git` anywhere in the token list
 - Release workflow: `shasum` command not found on Windows — now falls back to `sha256sum`
 - Workspace dependency: `agent-shell-parser` uses `path + version` so local builds use workspace source while published crates resolve from crates.io
+
+### Added
+- `agent-shell-parser`: `find_command_position()` — identifies the invoked command in a tokenized word list, skipping leading env-var assignments
 
 ## [0.2.0] - 2026-05-14
 

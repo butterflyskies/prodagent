@@ -6,7 +6,7 @@ version = 4
 name = "agent-jj-cleanup"
 version = "0.2.1"
 dependencies = [
- "agent-shell-parser 0.2.0",
+ "agent-shell-parser",
  "anyhow",
 ]
 
@@ -14,7 +14,7 @@ dependencies = [
 name = "agent-jj-guard"
 version = "0.2.1"
 dependencies = [
- "agent-shell-parser 0.2.0",
+ "agent-shell-parser",
  "anyhow",
  "shell-words",
 ]
@@ -23,20 +23,8 @@ dependencies = [
 name = "agent-jj-workspace"
 version = "0.2.1"
 dependencies = [
- "agent-shell-parser 0.2.0",
+ "agent-shell-parser",
  "anyhow",
-]
-
-[[package]]
-name = "agent-shell-parser"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c0815a167f424ad92b5fe9f2951de949093a1696c1bf78afb8bee29d032d01"
-dependencies = [
- "serde",
- "serde_json",
- "shell-words",
- "thiserror",
 ]
 
 [[package]]

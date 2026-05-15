@@ -158,8 +158,11 @@ static BLOCKED_COMMANDS: &[(&str, BlockedCommand)] = &[
 ];
 
 pub fn check_git_command(words: &[String]) -> Option<&'static BlockedCommand> {
-    let git_idx = words.iter().position(|w| w == "git")?;
-    let subcommand = find_git_subcommand(words, git_idx)?;
+    let cmd_idx = crate::find_command_position(words)?;
+    if words[cmd_idx] != "git" {
+        return None;
+    }
+    let subcommand = find_git_subcommand(words, cmd_idx)?;
 
     for (name, blocked) in BLOCKED_COMMANDS {
         if subcommand == *name {
@@ -169,7 +172,7 @@ pub fn check_git_command(words: &[String]) -> Option<&'static BlockedCommand> {
 
     // Special case: git worktree (allow list/repair, block others)
     if subcommand == "worktree" {
-        let rest = &words[git_idx..];
+        let rest = &words[cmd_idx..];
         let wt_sub = rest.iter().skip_while(|w| *w != "worktree").nth(1);
         if let Some(wt_cmd) = wt_sub {
             if wt_cmd != "list" && wt_cmd != "repair" {
@@ -467,6 +470,52 @@ mod tests {
     #[test]
     fn handles_git_no_pager() {
         let w = words("git --no-pager log");
+        assert!(check_git_command(&w).is_some());
+    }
+
+    // --- jj git subcommands must not be blocked ---
+
+    #[test]
+    fn allows_jj_git_push() {
+        let w = words("jj git push --bookmark main");
+        assert!(check_git_command(&w).is_none());
+    }
+
+    #[test]
+    fn allows_jj_git_fetch() {
+        let w = words("jj git fetch");
+        assert!(check_git_command(&w).is_none());
+    }
+
+    #[test]
+    fn allows_jj_git_clone() {
+        let w = words("jj git clone --colocate https://example.com/repo.git");
+        assert!(check_git_command(&w).is_none());
+    }
+
+    #[test]
+    fn allows_jj_git_remote() {
+        let w = words("jj git remote list");
+        assert!(check_git_command(&w).is_none());
+    }
+
+    #[test]
+    fn allows_jj_git_init() {
+        let w = words("jj git init --colocate");
+        assert!(check_git_command(&w).is_none());
+    }
+
+    // --- Env-var-prefixed git commands should still be blocked ---
+
+    #[test]
+    fn blocks_env_prefixed_git_push() {
+        let w = words("GIT_CONFIG_GLOBAL=~/.gitconfig.ai git push origin main");
+        assert!(check_git_command(&w).is_some());
+    }
+
+    #[test]
+    fn blocks_env_prefixed_git_commit() {
+        let w = words("FOO=bar BAZ=qux git commit -m test");
         assert!(check_git_command(&w).is_some());
     }
 
