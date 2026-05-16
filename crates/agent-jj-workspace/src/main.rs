@@ -2,15 +2,26 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context};
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Claude Code WorktreeCreate hook — creates jj workspaces for agent worktrees. Reads JSON from stdin."
+)]
+struct Args {}
 
 fn main() -> anyhow::Result<()> {
+    Args::parse();
+
     if let Err(msg) = agent_shell_parser::require_jj_version(0, 40) {
         eprintln!("{msg}");
         std::process::exit(1);
     }
 
-    let input: agent_shell_parser::WorktreeCreateInput =
-        agent_shell_parser::parse_input().context("failed to parse WorktreeCreate hook input")?;
+    let input: agent_shell_parser::hook::WorktreeCreateInput =
+        agent_shell_parser::hook::parse_input()
+            .context("failed to parse WorktreeCreate hook input")?;
 
     let cwd = PathBuf::from(&input.cwd);
     let workspace_name = format!("agent-{}", input.name);

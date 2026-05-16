@@ -56,7 +56,7 @@ pub(super) fn build_segments(walk: &WalkResult, source: &str) -> Vec<BuiltSegmen
     walk.segments
         .iter()
         .filter_map(|seg: &SegmentInfo| {
-            let raw = &source[seg.start..seg.end];
+            let raw = source.get(seg.start..seg.end).unwrap_or("");
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 return None;
@@ -79,19 +79,9 @@ fn parse_substitution_recursive(
     parse_fn: &dyn Fn(&str, usize) -> Result<ParsedPipeline, ParseError>,
 ) -> ParsedPipeline {
     if depth >= MAX_SUBSTITUTION_DEPTH {
-        return ParsedPipeline {
-            segments: vec![],
-            operators: vec![],
-            structural_substitutions: vec![],
-            has_parse_errors: true,
-        };
+        return ParsedPipeline::empty_with_error();
     }
-    parse_fn(inner, depth + 1).unwrap_or_else(|_| ParsedPipeline {
-        segments: vec![],
-        operators: vec![],
-        structural_substitutions: vec![],
-        has_parse_errors: true,
-    })
+    parse_fn(inner, depth + 1).unwrap_or_else(|_| ParsedPipeline::empty_with_error())
 }
 
 /// Map raw substitution spans to segments and recursively parse each.
@@ -117,8 +107,8 @@ pub(super) fn assign_substitutions(
         match owner {
             Some((idx, seg)) => {
                 per_segment[idx].push(SubstitutionSpan {
-                    start: raw.start - seg.source_start - seg.trim_offset,
-                    end: raw.end - seg.source_start - seg.trim_offset,
+                    start: raw.start.saturating_sub(seg.source_start + seg.trim_offset),
+                    end: raw.end.saturating_sub(seg.source_start + seg.trim_offset),
                     pipeline,
                 });
             }

@@ -1,6 +1,10 @@
 use super::types::Redirection;
 use tree_sitter::Node;
 
+fn parse_fd(s: &str) -> Option<u32> {
+    s.parse().ok()
+}
+
 /// Inspect a `file_redirect` node for output redirection.
 ///
 /// Safe (returns `None`): `<`, `<<`, `<<-`, `<<<`, `<&`, anything to
@@ -9,14 +13,14 @@ use tree_sitter::Node;
 /// Flagged (returns `Some`): `>`, `>>`, `>|`, `&>`, `&>>` to non-devnull,
 /// `<>` (read-write), `>&N` where N >= 3, `N>` to non-devnull.
 fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
-    let mut fd: Option<String> = None;
+    let mut fd_text: Option<String> = None;
     let mut operator = "";
     let mut dest = String::new();
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "file_descriptor" {
-            fd = child.utf8_text(source).ok().map(str::to_string);
+            fd_text = child.utf8_text(source).ok().map(str::to_string);
         } else if child.is_named() {
             dest = child.utf8_text(source).unwrap_or("").to_string();
         } else {
@@ -42,10 +46,13 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
         }
     }
 
-    // Explicit <> token (if a future tree-sitter-bash version adds it).
+    let fd = fd_text.as_deref().and_then(parse_fd);
+
     if operator == "<>" {
         return Some(Redirection {
-            description: "output redirection (<> read-write)".into(),
+            operator: "<>",
+            fd,
+            target: dest,
         });
     }
 
@@ -54,12 +61,13 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
         "" | "<" | "<<<" | "<<" | "<<-" | "<&" | ">&-" | "<&-"
     ) {
         // tree-sitter-bash 0.25 parses `<>` as `<` + ERROR(`>`).
-        // Detect this by scanning the node text as a fallback.
         if operator == "<" {
             let text = node.utf8_text(source).unwrap_or("");
             if text.contains("<>") {
                 return Some(Redirection {
-                    description: "output redirection (<> read-write)".into(),
+                    operator: "<>",
+                    fd,
+                    target: dest,
                 });
             }
         }
@@ -70,25 +78,25 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
         if dest == "/dev/null" {
             return None;
         }
+        let op: &'static str = if operator == "&>" { "&>" } else { "&>>" };
         return Some(Redirection {
-            description: format!("output redirection ({operator})"),
+            operator: op,
+            fd,
+            target: dest,
         });
     }
 
     if operator == ">&" {
-        if let Some(ref f) = fd {
-            if matches!(dest.as_str(), "0" | "1" | "2") {
-                return None;
-            }
-            return Some(Redirection {
-                description: format!("output redirection ({f}>&{dest}, custom fd target)"),
-            });
+        if matches!(dest.as_str(), "0" | "1" | "2") && fd_text.is_none() {
+            return None;
         }
-        if matches!(dest.as_str(), "0" | "1" | "2") {
+        if fd_text.is_some() && matches!(dest.as_str(), "0" | "1" | "2") {
             return None;
         }
         return Some(Redirection {
-            description: format!("output redirection (>&{dest}, custom fd target)"),
+            operator: ">&",
+            fd,
+            target: dest,
         });
     }
 
@@ -96,13 +104,15 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
         if dest == "/dev/null" {
             return None;
         }
-        if let Some(ref f) = fd {
-            return Some(Redirection {
-                description: format!("output redirection ({f}{operator})"),
-            });
-        }
+        let op: &'static str = match operator {
+            ">>" => ">>",
+            ">|" => ">|",
+            _ => ">",
+        };
         return Some(Redirection {
-            description: format!("output redirection ({operator})"),
+            operator: op,
+            fd,
+            target: dest,
         });
     }
 

@@ -123,19 +123,49 @@ fn walk_program(node: Node, source: &[u8]) -> WalkResult {
 }
 
 /// `list` — left-recursive binary: `a && b || c` → `list(list(a,&&,b),||,c)`.
+///
+/// Iterative left-descent to avoid stack overflow on deeply nested chains
+/// (e.g. 20,000+ `&&`-chained commands).
 fn walk_list(node: Node, source: &[u8]) -> WalkResult {
-    let mut cursor = node.walk();
-    let named: Vec<Node> = node.named_children(&mut cursor).collect();
-    if named.len() < 2 {
-        let mut result = WalkResult::empty();
-        for child in named {
-            result.append(walk_ast(child, source), Some(Operator::Semi));
+    // Collect (right_child, operator) pairs by iteratively descending into
+    // the left-recursive spine of `list` nodes.
+    let mut parts: Vec<(Node, Operator)> = Vec::new();
+    let mut current = node;
+
+    loop {
+        let mut cursor = current.walk();
+        let named: Vec<Node> = current.named_children(&mut cursor).collect();
+
+        if named.len() < 2 {
+            // Degenerate list node (0 or 1 children) — treat current as the
+            // leftmost base and stop descending.
+            break;
         }
-        return result;
+
+        let op = list_operator(current);
+        // Save the right child and the operator joining left to right.
+        parts.push((named[1], op));
+
+        if named[0].kind() == "list" {
+            // Left child is another list — descend iteratively.
+            current = named[0];
+        } else {
+            // Left child is not a list — it is the leftmost base node.
+            current = named[0];
+            break;
+        }
     }
-    let op = list_operator(node);
-    let mut result = walk_ast(named[0], source);
-    result.append(walk_ast(named[1], source), Some(op));
+
+    // `current` is now the leftmost non-list node (or a degenerate list).
+    // Walk it to produce the initial result.
+    let mut result = walk_ast(current, source);
+
+    // Replay the collected right-hand sides from left to right (they were
+    // pushed in right-to-left order during descent).
+    for (right_node, op) in parts.into_iter().rev() {
+        result.append(walk_ast(right_node, source), Some(op));
+    }
+
     result
 }
 

@@ -158,6 +158,32 @@ static BLOCKED_COMMANDS: &[(&str, BlockedCommand)] = &[
         reason: "jj has its own annotation command.",
         suggestion: "jj file annotate <path>  (show per-line change attribution)",
     }),
+    // Patch / low-level ref manipulation
+    ("submodule", BlockedCommand {
+        command: "git submodule",
+        reason: "modifies .gitmodules and submodule state",
+        suggestion: "jj does not support submodules — manage dependencies through other means",
+    }),
+    ("am", BlockedCommand {
+        command: "git am",
+        reason: "applies patches and creates commits",
+        suggestion: "use `jj` to create changes from patches",
+    }),
+    ("apply", BlockedCommand {
+        command: "git apply",
+        reason: "applies patches to the working tree",
+        suggestion: "use `jj` to manage working copy changes",
+    }),
+    ("update-ref", BlockedCommand {
+        command: "git update-ref",
+        reason: "directly manipulates refs",
+        suggestion: "use `jj bookmark` to manage references",
+    }),
+    ("update-index", BlockedCommand {
+        command: "git update-index",
+        reason: "directly manipulates the index",
+        suggestion: "use `jj` to manage the working copy",
+    }),
 ];
 
 static BLOCKED_EVAL: BlockedCommand = BlockedCommand {
@@ -178,10 +204,10 @@ static BLOCKED_SOURCE: BlockedCommand = BlockedCommand {
     suggestion: "Run the script contents directly instead of sourcing it.",
 };
 
-static BLOCKED_DYNAMIC: BlockedCommand = BlockedCommand {
-    command: "$variable",
-    reason: "variable expansion in command position cannot be statically analyzed.",
-    suggestion: "Use the command name directly instead of a variable.",
+static BLOCKED_UNANALYZABLE: BlockedCommand = BlockedCommand {
+    command: "unknown indirect",
+    reason: "this command uses an indirect execution pattern that cannot be statically analyzed.",
+    suggestion: "Run the command from outside of the coding agent.",
 };
 
 /// git global flags that consume the following token as a value.
@@ -250,28 +276,18 @@ fn check_git_command(parsed: &ParsedCommand) -> Option<&'static BlockedCommand> 
 /// Resolves indirection (wrappers, eval, etc.) then checks whether
 /// the effective command is a blocked git operation.
 pub fn check_segment(words: &[String]) -> Option<&'static BlockedCommand> {
-    // Dynamic commands ($cmd) must be checked before resolve_command because
-    // resolve_command maps them to Eval, losing the distinction.
-    let first_real = words.iter().find(|w| {
-        !w.contains('=')
-            || !w[..w.find('=').unwrap_or(0)]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    });
-    if first_real.map(|w| w.starts_with('$')).unwrap_or(false) {
-        return Some(&BLOCKED_DYNAMIC);
-    }
-
     match resolve_command(words) {
         ResolvedCommand::Unanalyzable(u) => match u.kind {
             IndirectExecution::Eval => Some(&BLOCKED_EVAL),
             IndirectExecution::ShellSpawn => Some(&BLOCKED_SHELL_SPAWN),
             IndirectExecution::SourceScript => Some(&BLOCKED_SOURCE),
-            IndirectExecution::CommandWrapper => None,
-            _ => None,
+            IndirectExecution::CommandWrapper => Some(&BLOCKED_UNANALYZABLE),
+            // non_exhaustive: fail closed on future variants
+            _ => Some(&BLOCKED_UNANALYZABLE),
         },
         ResolvedCommand::Resolved(ref parsed) => check_git_command(parsed),
-        _ => None,
+        // non_exhaustive: fail closed on future ResolvedCommand variants
+        _ => Some(&BLOCKED_UNANALYZABLE),
     }
 }
 
@@ -695,5 +711,80 @@ mod tests {
     #[test]
     fn allows_normal_command() {
         assert!(!is_blocked_segment("ls -la"));
+    }
+
+    // --- New blocked git subcommands ---
+
+    #[test]
+    fn blocks_git_submodule() {
+        assert!(is_blocked_segment(
+            "git submodule add https://example.com/repo.git"
+        ));
+    }
+
+    #[test]
+    fn blocks_git_am() {
+        assert!(is_blocked_segment("git am patch.mbox"));
+    }
+
+    #[test]
+    fn blocks_git_apply() {
+        assert!(is_blocked_segment("git apply patch.diff"));
+    }
+
+    #[test]
+    fn blocks_git_update_ref() {
+        assert!(is_blocked_segment("git update-ref HEAD abc123"));
+    }
+
+    #[test]
+    fn blocks_git_update_index() {
+        assert!(is_blocked_segment(
+            "git update-index --assume-unchanged file"
+        ));
+    }
+
+    // --- Wrappers around git commands ---
+
+    #[test]
+    fn blocks_time_git() {
+        assert!(is_blocked_segment("time git commit"));
+    }
+
+    /// timeout has a mandatory positional argument (duration) before the
+    /// command. The current WrapperSpec cannot skip positionals, so
+    #[test]
+    fn blocks_timeout_git() {
+        assert!(is_blocked_segment("timeout 60 git commit"));
+    }
+
+    #[test]
+    fn blocks_exec_git() {
+        assert!(is_blocked_segment("exec git commit"));
+    }
+
+    #[test]
+    fn blocks_strace_git() {
+        assert!(is_blocked_segment("strace git commit"));
+    }
+
+    #[test]
+    fn blocks_setsid_git() {
+        assert!(is_blocked_segment("setsid git commit"));
+    }
+
+    #[test]
+    fn allows_time_ls() {
+        assert!(!is_blocked_segment("time ls"));
+    }
+
+    #[test]
+    fn blocks_nohup_git() {
+        assert!(is_blocked_segment("nohup git push"));
+    }
+
+    #[test]
+    fn allows_xargs_ls() {
+        assert!(!is_blocked_segment("xargs ls -la"));
     }
 }

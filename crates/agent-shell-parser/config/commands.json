@@ -1,0 +1,152 @@
+{
+  "wrappers": [
+    {
+      "name": "sudo",
+      "short_value_flags": ["-u", "-g", "-C", "-D", "-R", "-T", "-U", "-p", "-h", "-r", "-t"],
+      "long_value_flags": [
+        "--user", "--group", "--close-from", "--chdir", "--role", "--type",
+        "--host", "--other-user", "--prompt", "--command-timeout"
+      ],
+      "unanalyzable_flags": ["-i", "-s"],
+      "skip_env_assignments": false,
+      "has_terminator": true
+    },
+    {
+      "name": "env",
+      "short_value_flags": ["-u", "-C"],
+      "long_value_flags": ["--unset", "--chdir"],
+      "unanalyzable_flags": ["-S", "--split-string"],
+      "skip_env_assignments": true,
+      "has_terminator": true
+    },
+    {
+      "name": "nice",
+      "short_value_flags": ["-n"],
+      "long_value_flags": ["--adjustment"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "nohup",
+      "short_value_flags": [],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "command",
+      "short_value_flags": [],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "builtin",
+      "short_value_flags": [],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "xargs",
+      "short_value_flags": ["-I", "-n", "-P", "-L", "-s", "-d", "-a", "-E"],
+      "long_value_flags": [
+        "--max-args", "--max-procs", "--max-lines", "--max-chars",
+        "--delimiter", "--arg-file", "--replace", "--eof"
+      ],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "parallel",
+      "short_value_flags": ["-j", "-S", "-E", "-I", "-s", "-n", "-L", "-a", "-d"],
+      "long_value_flags": [
+        "--jobs", "--sshlogin", "--sshloginfile", "--slf",
+        "--colsep", "--recend", "--recstart", "--arg-file",
+        "--max-args", "--max-lines", "--max-chars", "--delimiter",
+        "--replace", "--eof", "--retries", "--timeout", "--delay",
+        "--memfree", "--tmpdir", "--results", "--joblog", "--halt",
+        "--resume-failed", "--tagstring", "--header",
+        "--block", "--block-size", "--files"
+      ],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": true
+    },
+    {
+      "name": "time",
+      "short_value_flags": [],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "timeout",
+      "short_value_flags": ["-k", "-s"],
+      "long_value_flags": ["--signal", "--kill-after"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false,
+      "skip_positionals": 1
+    },
+    {
+      "name": "exec",
+      "short_value_flags": ["-a"],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": true,
+      "has_terminator": true
+    },
+    {
+      "name": "setsid",
+      "short_value_flags": [],
+      "long_value_flags": [],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "strace",
+      "short_value_flags": ["-e", "-o", "-p", "-s", "-I", "-b", "-X", "-P"],
+      "long_value_flags": ["--output", "--trace", "--signal", "--status"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": true
+    },
+    {
+      "name": "ionice",
+      "short_value_flags": ["-c", "-n", "-p"],
+      "long_value_flags": ["--class", "--classdata"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false
+    },
+    {
+      "name": "chrt",
+      "short_value_flags": ["-p"],
+      "long_value_flags": ["--pid"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false,
+      "skip_positionals": 1
+    },
+    {
+      "name": "taskset",
+      "short_value_flags": ["-p"],
+      "long_value_flags": ["--pid"],
+      "unanalyzable_flags": [],
+      "skip_env_assignments": false,
+      "has_terminator": false,
+      "skip_positionals": 1
+    }
+  ],
+  "shells": ["bash", "sh", "dash", "zsh", "fish", "ksh", "tcsh", "csh", "mksh", "yash", "rbash"],
+  "eval_commands": ["eval"],
+  "source_commands": ["source", "."]
+}
