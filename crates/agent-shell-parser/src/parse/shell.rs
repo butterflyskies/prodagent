@@ -28,8 +28,15 @@ use super::redirect::detect_redirections;
 use super::subst::{assign_substitutions, build_segments, collect_substitutions};
 use super::types::{ParseError, ParsedPipeline, ShellSegment};
 use super::walk::walk_ast;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use tree_sitter::{Parser, Tree};
+
+/// Maximum number of tree-sitter parse calls across all recursion levels.
+/// Prevents exponential fan-out DoS (e.g. `echo $(a) $(b) $(c) ...` nested).
+const MAX_TOTAL_PARSES: usize = 512;
+
+/// Maximum input length accepted by the parser (64 KiB).
+const MAX_INPUT_LENGTH: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Thread-local parser
@@ -52,7 +59,12 @@ thread_local! {
     });
 }
 
-fn parse_tree(source: &str) -> Result<Tree, ParseError> {
+fn parse_tree(source: &str, budget: &Cell<usize>) -> Result<Tree, ParseError> {
+    let count = budget.get();
+    if count >= MAX_TOTAL_PARSES {
+        return Err(ParseError);
+    }
+    budget.set(count + 1);
     TS_PARSER.with(|p| p.borrow_mut().parse(source, None).ok_or(ParseError))
 }
 
@@ -69,14 +81,19 @@ fn parse_tree(source: &str) -> Result<Tree, ParseError> {
 /// Recursion depth is capped at 32 levels. Deeper nesting produces an
 /// empty pipeline with `has_parse_errors: true`.
 pub fn parse_with_substitutions(command: &str) -> Result<ParsedPipeline, ParseError> {
-    parse_with_substitutions_impl(command, 0)
+    if command.len() > MAX_INPUT_LENGTH {
+        return Ok(ParsedPipeline::empty_with_error());
+    }
+    let budget = Cell::new(0);
+    parse_with_substitutions_impl(command, 0, &budget)
 }
 
 fn parse_with_substitutions_impl(
     command: &str,
     depth: usize,
+    budget: &Cell<usize>,
 ) -> Result<ParsedPipeline, ParseError> {
-    let tree = parse_tree(command)?;
+    let tree = parse_tree(command, budget)?;
     let root = tree.root_node();
     let source = command.as_bytes();
     let has_parse_errors = root.has_error();
@@ -114,7 +131,9 @@ fn parse_with_substitutions_impl(
 
     let built = build_segments(&walk, command);
     let (per_segment_subs, structural_subs) =
-        assign_substitutions(&raw_substs, &built, depth, &parse_with_substitutions_impl);
+        assign_substitutions(&raw_substs, &built, depth, &|inner, d| {
+            parse_with_substitutions_impl(inner, d, budget)
+        });
 
     let segments: Vec<ShellSegment> = built
         .into_iter()
@@ -138,7 +157,8 @@ fn parse_with_substitutions_impl(
 pub fn has_output_redirection(
     command: &str,
 ) -> Result<Option<super::types::Redirection>, ParseError> {
-    let tree = parse_tree(command)?;
+    let budget = Cell::new(0);
+    let tree = parse_tree(command, &budget)?;
     Ok(detect_redirections(tree.root_node(), command.as_bytes()))
 }
 
@@ -152,7 +172,8 @@ pub fn dump_ast(command: &str) -> Result<String, ParseError> {
     use std::fmt::Write;
     let mut out = String::new();
 
-    let tree = parse_tree(command)?;
+    let budget = Cell::new(0);
+    let tree = parse_tree(command, &budget)?;
     let root = tree.root_node();
     let source = command.as_bytes();
 
@@ -201,7 +222,7 @@ pub fn dump_ast(command: &str) -> Result<String, ParseError> {
             let redir = seg
                 .redirection
                 .as_ref()
-                .map(|r| format!(" [{}]", r.description))
+                .map(|r| format!(" [{r}]"))
                 .unwrap_or_default();
             writeln!(out, "{pad}segment {i}: {:?}{redir}", seg.command).unwrap();
             for sub in &seg.substitutions {
@@ -209,7 +230,7 @@ pub fn dump_ast(command: &str) -> Result<String, ParseError> {
                 print_pipeline(out, &sub.pipeline, indent + 2);
             }
             if i < p.operators.len() {
-                writeln!(out, "{pad}operator: {}", p.operators[i].as_str()).unwrap();
+                writeln!(out, "{pad}operator: {}", p.operators[i]).unwrap();
             }
         }
     }
@@ -219,7 +240,7 @@ pub fn dump_ast(command: &str) -> Result<String, ParseError> {
     let redir = detect_redirections(root, source);
     writeln!(out, "\n── output redirection ──").unwrap();
     match redir {
-        Some(r) => writeln!(out, "  {}", r.description).unwrap(),
+        Some(r) => writeln!(out, "  {r}").unwrap(),
         None => writeln!(out, "  (none)").unwrap(),
     }
 
@@ -518,9 +539,9 @@ mod tests {
 
     #[test]
     fn redir_custom_fd_target() {
-        let r = has_output_redirection("cmd >&3").unwrap();
-        assert!(r.is_some());
-        assert!(r.unwrap().description.contains("custom fd target"));
+        let r = has_output_redirection("cmd >&3").unwrap().unwrap();
+        assert_eq!(r.operator, ">&");
+        assert_eq!(r.target, "3");
     }
 
     #[test]
@@ -678,5 +699,16 @@ mod tests {
     fn function_with_for_body() {
         let p = parse("f() for i in *; do echo $i; done");
         assert!(p.segments.iter().any(|s| s.command.contains("echo")));
+    }
+
+    // --- Input length cap ---
+
+    #[test]
+    fn input_length_cap() {
+        // 65 KB exceeds the 64 KB limit
+        let input = "echo ".to_string() + &"x".repeat(65 * 1024);
+        let p = parse(&input);
+        assert!(p.has_parse_errors);
+        assert!(p.segments.is_empty());
     }
 }

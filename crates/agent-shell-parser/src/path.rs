@@ -49,19 +49,31 @@ pub fn extract_git_c_path(words: &[String]) -> Option<String> {
     None
 }
 
-/// Determine the effective working directory for commands in a pipeline.
+/// Determine the effective working directory for each git command in a pipeline.
 ///
 /// Tracks `cd <path>` segments that propagate through `&&` or `;` operators.
 /// Pipe, pipe-err, or, and background operators reset to session cwd since
 /// cd in those contexts runs in a subshell or on the failure path.
 ///
 /// Also handles `git -C <path>` by checking any git segment for a -C flag.
-pub fn effective_cwd(pipeline: &ParsedPipeline, session_cwd: &str) -> String {
+///
+/// Returns a list of effective CWDs — one for each git segment encountered.
+/// If no git segments exist, returns a single-element vec with the final
+/// tracked CWD (preserving the previous behavior for non-git pipelines).
+pub fn effective_cwd(pipeline: &ParsedPipeline, session_cwd: &str) -> Vec<String> {
     let mut cwd = session_cwd.to_string();
+    let mut git_cwds: Vec<String> = Vec::new();
 
     for (i, seg) in pipeline.segments.iter().enumerate() {
         let words = tokenize(&seg.command);
         if words.is_empty() {
+            // Only propagate cwd through && and ;
+            if i < pipeline.operators.len() {
+                match pipeline.operators[i] {
+                    Operator::And | Operator::Semi => {}
+                    _ => cwd = session_cwd.to_string(),
+                }
+            }
             continue;
         }
 
@@ -75,16 +87,19 @@ pub fn effective_cwd(pipeline: &ParsedPipeline, session_cwd: &str) -> String {
 
         if base == "git" {
             let git_cwd = extract_git_c_path(&words);
-            if let Some(path) = git_cwd {
+            let resolved = if let Some(path) = git_cwd {
                 if path.starts_with('/') {
-                    return path;
+                    path
+                } else {
+                    PathBuf::from(&cwd)
+                        .join(&path)
+                        .to_string_lossy()
+                        .to_string()
                 }
-                return PathBuf::from(&cwd)
-                    .join(&path)
-                    .to_string_lossy()
-                    .to_string();
-            }
-            return cwd;
+            } else {
+                cwd.clone()
+            };
+            git_cwds.push(resolved);
         }
 
         // Only propagate cwd through && and ;
@@ -96,7 +111,12 @@ pub fn effective_cwd(pipeline: &ParsedPipeline, session_cwd: &str) -> String {
         }
     }
 
-    cwd
+    if git_cwds.is_empty() {
+        vec![cwd]
+    } else {
+        git_cwds.dedup();
+        git_cwds
+    }
 }
 
 #[cfg(test)]

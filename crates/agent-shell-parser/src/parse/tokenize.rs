@@ -1,53 +1,37 @@
-use super::types::{
-    CommandArg, CommandCharacteristics, IndirectExecution, ParsedCommand, ParsedFlag,
-};
+use super::resolve::{classify_surface, default_command_config};
+use super::types::{CommandArg, CommandCharacteristics, ParsedCommand, ParsedFlag};
 
-const INDIRECT_EVAL: &[&str] = &["eval"];
-const INDIRECT_SHELL_SPAWN: &[&str] = &["bash", "sh", "dash", "zsh", "fish", "ksh"];
-const INDIRECT_WRAPPER: &[&str] = &[
-    "env", "command", "builtin", "nice", "nohup", "sudo", "xargs",
-];
-const INDIRECT_SOURCE: &[&str] = &["source", "."];
-
-/// Analyze a command segment for security-relevant properties.
-///
-/// Identifies the base command, indirect execution patterns, and
-/// dynamic command positions that cannot be statically resolved.
-pub fn command_characteristics(command: &str) -> CommandCharacteristics {
-    let tokens = shlex_or_whitespace(command);
-    let cmd = tokens
+/// Extract the base command name from a word list, skipping env assignments
+/// and stripping path prefixes.
+pub fn find_base_command(words: &[String]) -> String {
+    let cmd = words
         .iter()
         .find(|t| !is_env_assignment(t))
         .map(String::as_str)
         .unwrap_or("");
 
-    let base = match cmd.rsplit_once('/') {
-        Some((_, name)) if !name.is_empty() => name,
-        _ => cmd,
-    };
+    match cmd.rsplit_once('/') {
+        Some((_, name)) if !name.is_empty() => name.to_string(),
+        _ => cmd.to_string(),
+    }
+}
 
+/// Analyze a command segment for security-relevant properties.
+///
+/// Reports the surface-level command classification: what the outermost
+/// command is and whether it's an indirect execution pattern. This is
+/// O(1) in wrapper depth — it does not recurse.
+///
+/// For the fully-resolved inner command (after recursively stripping
+/// wrappers), use [`resolve_command`](super::resolve::resolve_command).
+pub fn command_characteristics(command: &str) -> CommandCharacteristics {
+    let tokens = shlex_or_whitespace(command);
+    let base = find_base_command(&tokens);
     let has_dynamic_command = base.starts_with('$');
-
-    let indirect_execution = if INDIRECT_EVAL.contains(&base) {
-        Some(IndirectExecution::Eval)
-    } else if INDIRECT_SHELL_SPAWN.contains(&base) {
-        let has_c_flag = tokens.iter().any(|t| t == "-c");
-        if has_c_flag {
-            Some(IndirectExecution::ShellSpawn)
-        } else {
-            // bash script.sh — similar to source, contents unanalyzable
-            Some(IndirectExecution::SourceScript)
-        }
-    } else if INDIRECT_WRAPPER.contains(&base) {
-        Some(IndirectExecution::CommandWrapper)
-    } else if INDIRECT_SOURCE.contains(&base) {
-        Some(IndirectExecution::SourceScript)
-    } else {
-        None
-    };
+    let indirect_execution = classify_surface(&base, &tokens, default_command_config());
 
     CommandCharacteristics {
-        base_command: base.to_string(),
+        base_command: base,
         indirect_execution,
         has_dynamic_command,
     }
@@ -177,7 +161,6 @@ fn shlex_or_whitespace(command: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::IndirectExecution;
     use super::*;
 
     #[test]
@@ -296,98 +279,6 @@ mod tests {
         assert_eq!(
             tokenize("echo \"hello world\""),
             vec!["echo", "hello world"]
-        );
-    }
-
-    // --- command_characteristics ---
-
-    #[test]
-    fn characteristics_eval() {
-        let c = command_characteristics("eval \"git commit\"");
-        assert_eq!(c.base_command, "eval");
-        assert_eq!(c.indirect_execution, Some(IndirectExecution::Eval));
-        assert!(!c.has_dynamic_command);
-    }
-
-    #[test]
-    fn characteristics_bash_c() {
-        let c = command_characteristics("bash -c \"git commit\"");
-        assert_eq!(c.base_command, "bash");
-        assert_eq!(c.indirect_execution, Some(IndirectExecution::ShellSpawn));
-    }
-
-    #[test]
-    fn characteristics_bash_script() {
-        let c = command_characteristics("bash script.sh");
-        assert_eq!(c.base_command, "bash");
-        assert_eq!(c.indirect_execution, Some(IndirectExecution::SourceScript));
-    }
-
-    #[test]
-    fn characteristics_env_wrapper() {
-        let c = command_characteristics("env git commit");
-        assert_eq!(c.base_command, "env");
-        assert_eq!(
-            c.indirect_execution,
-            Some(IndirectExecution::CommandWrapper)
-        );
-    }
-
-    #[test]
-    fn characteristics_sudo_wrapper() {
-        let c = command_characteristics("sudo git commit");
-        assert_eq!(c.base_command, "sudo");
-        assert_eq!(
-            c.indirect_execution,
-            Some(IndirectExecution::CommandWrapper)
-        );
-    }
-
-    #[test]
-    fn characteristics_xargs() {
-        let c = command_characteristics("xargs git commit");
-        assert_eq!(c.base_command, "xargs");
-        assert_eq!(
-            c.indirect_execution,
-            Some(IndirectExecution::CommandWrapper)
-        );
-    }
-
-    #[test]
-    fn characteristics_source() {
-        let c = command_characteristics("source script.sh");
-        assert_eq!(c.base_command, "source");
-        assert_eq!(c.indirect_execution, Some(IndirectExecution::SourceScript));
-    }
-
-    #[test]
-    fn characteristics_dot_source() {
-        let c = command_characteristics(". script.sh");
-        assert_eq!(c.base_command, ".");
-        assert_eq!(c.indirect_execution, Some(IndirectExecution::SourceScript));
-    }
-
-    #[test]
-    fn characteristics_dynamic_command() {
-        let c = command_characteristics("$cmd args");
-        assert!(c.has_dynamic_command);
-    }
-
-    #[test]
-    fn characteristics_normal_command() {
-        let c = command_characteristics("ls -la");
-        assert_eq!(c.base_command, "ls");
-        assert!(c.indirect_execution.is_none());
-        assert!(!c.has_dynamic_command);
-    }
-
-    #[test]
-    fn characteristics_env_with_vars() {
-        let c = command_characteristics("FOO=bar env git commit");
-        assert_eq!(c.base_command, "env");
-        assert_eq!(
-            c.indirect_execution,
-            Some(IndirectExecution::CommandWrapper)
         );
     }
 

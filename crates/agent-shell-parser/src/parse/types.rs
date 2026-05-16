@@ -1,5 +1,8 @@
+use std::fmt;
+
 /// Shell operator separating consecutive pipeline segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Operator {
     /// `&&` — run next only if previous succeeded
     And,
@@ -25,6 +28,12 @@ impl Operator {
             Operator::PipeErr => "|&",
             Operator::Background => "&",
         }
+    }
+}
+
+impl fmt::Display for Operator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -54,6 +63,47 @@ pub struct ParsedPipeline {
 }
 
 impl ParsedPipeline {
+    /// An empty pipeline representing a parse failure.
+    pub fn empty_with_error() -> Self {
+        Self {
+            segments: vec![],
+            operators: vec![],
+            structural_substitutions: vec![],
+            has_parse_errors: true,
+        }
+    }
+
+    /// Walk all pipelines in the tree (this one and all nested ones),
+    /// depth-first. Returns the first `Some(T)` produced by `f`.
+    ///
+    /// This is the lowest-level traversal primitive — it visits pipeline
+    /// nodes rather than segments, enabling checks on pipeline-level
+    /// properties (like `has_parse_errors`).
+    pub fn find_pipeline<T>(&self, f: &impl Fn(&ParsedPipeline) -> Option<T>) -> Option<T> {
+        if let Some(hit) = f(self) {
+            return Some(hit);
+        }
+        for sub in &self.structural_substitutions {
+            if let Some(hit) = sub.pipeline.find_pipeline(f) {
+                return Some(hit);
+            }
+        }
+        for seg in &self.segments {
+            for sub in &seg.substitutions {
+                if let Some(hit) = sub.pipeline.find_pipeline(f) {
+                    return Some(hit);
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns `true` if any pipeline in the tree satisfies `f`.
+    pub fn any_pipeline(&self, f: &impl Fn(&ParsedPipeline) -> bool) -> bool {
+        self.find_pipeline(&|p| if f(p) { Some(()) } else { None })
+            .is_some()
+    }
+
     /// Walk the pipeline tree depth-first in execution order, applying `f`
     /// to each [`ShellSegment`]. Returns the first `Some(T)` produced by
     /// `f`, or `None` if every segment returns `None`.
@@ -116,22 +166,7 @@ impl ParsedPipeline {
     /// been extracted. Callers enforcing a security boundary should
     /// treat a `true` return as "cannot safely analyze — fail closed."
     pub fn has_parse_errors_recursive(&self) -> bool {
-        if self.has_parse_errors {
-            return true;
-        }
-        for sub in &self.structural_substitutions {
-            if sub.pipeline.has_parse_errors_recursive() {
-                return true;
-            }
-        }
-        for seg in &self.segments {
-            for sub in &seg.substitutions {
-                if sub.pipeline.has_parse_errors_recursive() {
-                    return true;
-                }
-            }
-        }
-        false
+        self.any_pipeline(&|p| p.has_parse_errors)
     }
 }
 
@@ -181,7 +216,25 @@ pub struct SubstitutionSpan {
 /// Describes an output redirection that may mutate filesystem state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Redirection {
-    pub description: String,
+    /// The redirection operator (e.g., `>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `>&`).
+    pub operator: &'static str,
+    /// Source file descriptor, if explicitly specified (e.g., `2>` → `Some(2)`).
+    pub fd: Option<u32>,
+    /// Destination (file path, fd number for `>&N`, or empty for `<>`).
+    pub target: String,
+}
+
+impl fmt::Display for Redirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.fd {
+            Some(fd) => write!(
+                f,
+                "output redirection ({fd}{} {})",
+                self.operator, self.target
+            ),
+            None => write!(f, "output redirection ({} {})", self.operator, self.target),
+        }
+    }
 }
 
 /// Tree-sitter failed to produce a syntax tree.
@@ -235,6 +288,7 @@ pub struct ParsedFlag {
 
 /// An argument in a parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommandArg {
     /// A flag token (e.g., `--force`, `-f`, `--color=always`).
     Flag(ParsedFlag),
@@ -319,6 +373,60 @@ pub struct UnanalyzableCommand {
     pub command: String,
     /// Why it's unanalyzable.
     pub kind: IndirectExecution,
+}
+
+/// Describes how to strip a transparent wrapper command to find the inner command.
+///
+/// Each wrapper has different flag semantics. This struct captures just enough
+/// to correctly skip past the wrapper and its flags to the real command.
+/// Designed for deserialization from config files — consumers load specs from
+/// JSON/TOML/YAML and pass them to [`resolve_command_with`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WrapperSpec {
+    /// Command name to match (basename, e.g., "sudo").
+    pub name: String,
+    /// Short flags that consume the next token as a value (e.g., `["-u", "-g"]`).
+    #[serde(default)]
+    pub short_value_flags: Vec<String>,
+    /// Long flags that consume the next token as a value (e.g., `["--user", "--group"]`).
+    #[serde(default)]
+    pub long_value_flags: Vec<String>,
+    /// Flags whose presence makes the entire invocation unanalyzable.
+    /// Example: `env -S` executes its value as a command string (eval-equivalent).
+    #[serde(default)]
+    pub unanalyzable_flags: Vec<String>,
+    /// Whether to skip leading `KEY=VALUE` tokens after the wrapper (env-style).
+    #[serde(default)]
+    pub skip_env_assignments: bool,
+    /// Whether `--` terminates flag processing for this wrapper.
+    #[serde(default)]
+    pub has_terminator: bool,
+    /// Number of leading positional arguments to skip before the inner command.
+    ///
+    /// Some wrappers require mandatory positional args before the command:
+    /// `timeout DURATION cmd`, `chrt PRIORITY cmd`, `taskset MASK cmd`.
+    /// Set this to the number of positionals to consume before treating
+    /// the next non-flag token as the inner command.
+    #[serde(default)]
+    pub skip_positionals: usize,
+}
+
+/// Complete command classification configuration.
+///
+/// Drives all indirect execution detection — no command knowledge is hardcoded
+/// in the parser source. Consumers load this from JSON/TOML/YAML and pass it
+/// to [`resolve_command_with`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CommandConfig {
+    /// Transparent wrappers that execute an inner command (env, sudo, etc.).
+    pub wrappers: Vec<WrapperSpec>,
+    /// Shells that can spawn inline code via `-c` (bash, sh, zsh, etc.).
+    /// When invoked without `-c`, classified as script execution.
+    pub shells: Vec<String>,
+    /// Commands that execute their argument as shell code (eval).
+    pub eval_commands: Vec<String>,
+    /// Commands that execute a file in the current shell (source, `.`).
+    pub source_commands: Vec<String>,
 }
 
 #[cfg(test)]

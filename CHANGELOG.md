@@ -16,26 +16,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `parse` module — tree-sitter-bash AST-based command decomposition, replacing the hand-rolled `split_compound_command` character scanner used in v0.2
 - Recursive pipeline data model — `ParsedPipeline` is a tree where substitutions (`$()`, backticks, `<()`, `>()`) contain recursively-parsed nested pipelines, enabling bottom-up evaluation
 - `ParsedCommand` with ordered `CommandArg` args — schema-free structural decomposition into command, flags, and positional arguments, preserving source order for schema-aware consumers
-- `resolve_command()` — recursively strips transparent wrappers (env, sudo, command, builtin, nice, nohup, xargs) and classifies unanalyzable patterns (eval, shell -c, source, dynamic `$cmd`)
-- `command_characteristics()` — identifies indirect execution patterns and dynamic command positions
-- `path` module — `resolve_path()`, `extract_cd_target()`, `extract_git_c_path()`, `effective_cwd()` for tracking working directory changes through compound commands
-- `ParsedPipeline` traversal methods — `find_segment()`, `filter_segments()`, `has_parse_errors_recursive()`
-- `has_parse_errors` flag — signals when tree-sitter used error recovery, so callers can fail closed
-- `dump_ast()` diagnostic function for debugging parse output
+- `resolve_command()` — recursively strips transparent wrappers and classifies unanalyzable patterns (eval, shell -c, source, dynamic `$cmd`). Depth-limited to 32 levels with a global parse budget of 512 to prevent DoS
+- `command_characteristics()` — O(1) surface-level classification of indirect execution patterns via `classify_surface` (no recursion)
+- Config-driven command classification — all command knowledge lives in `config/commands.json`. 16 wrapper specs: sudo, env, nice, nohup, command, builtin, xargs, parallel, time, timeout, exec, setsid, strace, ionice, chrt, taskset
+- `WrapperSpec` with `skip_positionals` — models wrappers that have mandatory positional args before the inner command (e.g., `timeout DURATION cmd`, `chrt PRIORITY cmd`)
+- `hook` module — Claude Code hook I/O types (`PreToolUseInput`, `WorktreeCreateInput`, `WorktreeRemoveInput`, `parse_input`)
+- `path` module — `resolve_path()`, `extract_cd_target()`, `extract_git_c_path()`, `effective_cwd()` tracking working directory through all git segments in compound commands
+- `ParsedPipeline` traversal methods — `find_segment()`, `filter_segments()`, `find_pipeline()`, `any_pipeline()`, `has_parse_errors_recursive()`
+- `ParsedPipeline::empty_with_error()` constructor for fail-closed parse failures
+- Structured `Redirection` type with `operator`, `fd`, `target` fields and `Display` impl
+- `Display` impl for `Operator`
+- Input length cap (64 KiB) and global parse budget (512 tree-sitter parses) preventing resource exhaustion
+- Combined short flag handling in wrapper stripping (`-uroot` treated as `-u root`)
+- Combined short flag detection in unanalyzable flag checks (`sudo -iu` triggers `-i` unanalyzable)
 
 #### Guard (`agent-jj-guard`)
 
-- Recursive pipeline checking — blocked git commands now caught inside `$()` substitutions, for-loop iteration values, and nested wrappers (v0.2 only checked top-level segments)
-- Adversarial bypass hardening — `eval`, `bash -c`, `source`, `. script.sh`, dynamic `$cmd` blocked; `env`, `sudo`, `command`, `builtin`, `nice`, `nohup`, `xargs` unwrapped and inner command re-checked
-- Effective CWD tracking — `cd /other/repo && git status` correctly identifies the git command's working directory, preventing false blocks in non-jj repos
+- Recursive pipeline checking — blocked git commands caught inside `$()` substitutions, for-loop iteration values, and nested wrappers
+- Adversarial bypass hardening — `eval`, `bash -c`, `source`, `. script.sh`, dynamic `$cmd` blocked; all 16 configured wrappers unwrapped and inner command re-checked
+- `sudo -i` / `sudo -s` classified as unanalyzable (spawn interactive shells)
+- Effective CWD tracking — returns all git-segment CWDs in compound commands; guard checks if any targets a jj-colocated repo, preventing the multi-cd bypass (`cd /non-jj && git status && cd /jj && git push`)
+- 30 blocked git subcommands including submodule, am, apply, update-ref, update-index
 
 ### Changed
 
-- `agent-shell-parser` is now a pure parser library with no policy concepts — the `guard` module (with `BlockedCommand`, `check_git_command`, git blocklist) moved to `agent-jj-guard::policy`
-- `agent-jj-guard` works directly with `ParsedCommand` and `CommandArg` from the parser, instead of reconstructing word lists
-- `agent-jj-guard` fails closed on parse errors and tree-sitter error recovery
+- `agent-shell-parser` is now a pure parser library with no policy concepts — the `guard` module moved to `agent-jj-guard::policy`
+- `agent-jj-guard` works directly with `ParsedCommand` and `CommandArg` from the parser
+- `agent-jj-guard` fails closed on parse errors, tree-sitter error recovery, and depth/budget exhaustion
 - `agent-jj-guard` error messages say "outside of the coding agent" instead of "outside Claude Code"
 - `shell-words` replaced by `shlex` — fixes quoted env var handling (`FOO="bar baz" git push`)
+- `walk_list` converted from recursive to iterative — prevents stack overflow on long `&&`/`||` chains
+- `strip_with_spec` uses index-based resolution internally (zero-allocation on the hot path)
+- `effective_cwd` returns `Vec<String>` (deduplicated) instead of `String`
 
 ### Removed
 
