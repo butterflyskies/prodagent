@@ -1,12 +1,24 @@
 use std::path::Path;
 
+use agent_shell_parser::parse::{parse_with_substitutions, tokenize};
 use anyhow::Context;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Claude Code PreToolUse hook — blocks git commands in jj-colocated repos. Reads JSON from stdin."
+)]
+struct Args {}
+
+mod policy;
 
 fn main() -> anyhow::Result<()> {
-    let input: agent_shell_parser::PreToolUseInput =
-        agent_shell_parser::parse_input().context("failed to parse PreToolUse hook input")?;
+    Args::parse();
 
-    // Only inspect Bash tool calls
+    let input: agent_shell_parser::hook::PreToolUseInput =
+        agent_shell_parser::hook::parse_input().context("failed to parse PreToolUse hook input")?;
+
     if input.tool_name != "Bash" {
         std::process::exit(0);
     }
@@ -21,123 +33,212 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     }
 
-    // Short-circuit: not a jj-colocated repo
-    let cwd = input.cwd.as_deref().unwrap_or(".");
-    if !agent_shell_parser::is_jj_colocated(Path::new(cwd)) {
-        std::process::exit(0);
-    }
+    let session_cwd = input.cwd.as_deref().unwrap_or(".");
 
-    // Tokenize and check each command segment (split on && and ||)
-    let segments = split_compound_command(command);
-
-    for segment in &segments {
-        let words = match shell_words::split(segment) {
-            Ok(w) => w,
-            Err(_) => continue, // unparseable segment — let it through
-        };
-
-        if let Some(blocked) = agent_shell_parser::guard::check_git_command(&words) {
-            eprintln!("{blocked}");
+    let pipeline = match parse_with_substitutions(command) {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!(
+                "BLOCKED: failed to parse command — refusing to allow.\n\n\
+                 The command could not be safely analyzed. If you believe this is \
+                 a false positive, run the command from outside of the coding agent."
+            );
             std::process::exit(2);
         }
+    };
+
+    let session_is_jj = agent_shell_parser::is_jj_colocated(Path::new(session_cwd));
+    if !session_is_jj {
+        let effective_cwds = agent_shell_parser::path::effective_cwd(&pipeline, session_cwd);
+        let any_jj = effective_cwds
+            .iter()
+            .any(|cwd| agent_shell_parser::is_jj_colocated(Path::new(cwd)));
+        if !any_jj {
+            std::process::exit(0);
+        }
+    }
+
+    if pipeline.has_parse_errors_recursive() {
+        eprintln!(
+            "BLOCKED: command could not be fully parsed — refusing to allow.\n\n\
+             The shell syntax triggered error recovery in the parser, which means \
+             some commands may not have been analyzed. If you believe this is a \
+             false positive, run the command from outside of the coding agent."
+        );
+        std::process::exit(2);
+    }
+
+    let blocked = pipeline.find_segment(&|seg| {
+        let words = tokenize(&seg.command);
+        policy::check_segment(&words)
+    });
+
+    if let Some(blocked) = blocked {
+        eprintln!("{blocked}");
+        std::process::exit(2);
     }
 
     std::process::exit(0);
-}
-
-fn split_compound_command(cmd: &str) -> Vec<&str> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut in_quotes = false;
-    let mut quote_char = ' ';
-    let bytes = cmd.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let ch = bytes[i] as char;
-
-        if in_quotes {
-            if ch == quote_char {
-                in_quotes = false;
-            } else if ch == '\\' && quote_char == '"' {
-                i += 1; // skip escaped char
-            }
-        } else {
-            match ch {
-                '\'' | '"' => {
-                    in_quotes = true;
-                    quote_char = ch;
-                }
-                '&' if i + 1 < bytes.len() && bytes[i + 1] == b'&' => {
-                    segments.push(&cmd[start..i]);
-                    i += 2;
-                    start = i;
-                    continue;
-                }
-                '|' if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
-                    segments.push(&cmd[start..i]);
-                    i += 2;
-                    start = i;
-                    continue;
-                }
-                '|' => {
-                    segments.push(&cmd[start..i]);
-                    i += 1;
-                    start = i;
-                    continue;
-                }
-                ';' => {
-                    segments.push(&cmd[start..i]);
-                    i += 1;
-                    start = i;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        i += 1;
-    }
-
-    if start < cmd.len() {
-        segments.push(&cmd[start..]);
-    }
-
-    segments
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn is_blocked(cmd: &str) -> bool {
+        let pipeline = parse_with_substitutions(cmd).unwrap();
+        pipeline
+            .find_segment(&|seg| {
+                let words = tokenize(&seg.command);
+                policy::check_segment(&words)
+            })
+            .is_some()
+    }
+
+    // --- Integration tests: pipeline decomposition + recursive traversal ---
+
     #[test]
-    fn splits_on_and() {
-        let segs = split_compound_command("git status && git commit -m test");
-        assert_eq!(segs, vec!["git status ", " git commit -m test"]);
+    fn blocks_git_in_compound() {
+        assert!(is_blocked("echo hello && git commit -m test"));
     }
 
     #[test]
-    fn splits_on_or() {
-        let segs = split_compound_command("git status || echo failed");
-        assert_eq!(segs, vec!["git status ", " echo failed"]);
+    fn blocks_git_in_substitution() {
+        assert!(is_blocked("echo $(git commit -m test)"));
     }
 
     #[test]
-    fn splits_on_pipe() {
-        let segs = split_compound_command("git log | head -10");
-        assert_eq!(segs, vec!["git log ", " head -10"]);
+    fn blocks_git_in_for_loop_values() {
+        assert!(is_blocked("for i in $(git rebase main); do echo $i; done"));
     }
 
     #[test]
-    fn splits_on_semicolon() {
-        let segs = split_compound_command("cd repo; git commit -m x");
-        assert_eq!(segs, vec!["cd repo", " git commit -m x"]);
+    fn blocks_git_in_pipe() {
+        assert!(is_blocked("echo test | git commit -m test"));
+    }
+
+    #[test]
+    fn blocks_git_after_background() {
+        assert!(is_blocked("sleep 10 & git commit -m test"));
+    }
+
+    #[test]
+    fn blocks_eval_in_substitution() {
+        assert!(is_blocked("echo $(eval \"git commit\")"));
+    }
+
+    #[test]
+    fn blocks_nested_wrappers() {
+        assert!(is_blocked("sudo env git commit"));
+    }
+
+    #[test]
+    fn allows_non_git_pipeline() {
+        assert!(!is_blocked("ls -la | grep foo"));
     }
 
     #[test]
     fn respects_quotes() {
-        let segs = split_compound_command(r#"echo "a && b" && git commit"#);
-        assert_eq!(segs.len(), 2);
-        assert!(segs[0].contains("a && b"));
-        assert!(segs[1].contains("git commit"));
+        assert!(!is_blocked(r#"echo "git commit -m test""#));
+    }
+
+    // --- effective_cwd ---
+
+    fn ecwd(cmd: &str, session: &str) -> Vec<String> {
+        let pipeline = parse_with_substitutions(cmd).unwrap();
+        agent_shell_parser::path::effective_cwd(&pipeline, session)
+    }
+
+    #[test]
+    fn cwd_no_cd_returns_session() {
+        assert_eq!(ecwd("git status", "/session"), vec!["/session"]);
+    }
+
+    #[test]
+    fn cwd_cd_absolute_and_git() {
+        assert_eq!(
+            ecwd("cd /other/repo && git status", "/session"),
+            vec!["/other/repo"]
+        );
+    }
+
+    #[test]
+    fn cwd_cd_absolute_semi_git() {
+        assert_eq!(
+            ecwd("cd /other/repo; git status", "/session"),
+            vec!["/other/repo"]
+        );
+    }
+
+    #[test]
+    fn cwd_cd_relative() {
+        assert_eq!(
+            ecwd("cd subdir && git status", "/session"),
+            vec!["/session/subdir"]
+        );
+    }
+
+    #[test]
+    fn cwd_cd_or_does_not_propagate() {
+        assert_eq!(
+            ecwd("cd /other || git status", "/session"),
+            vec!["/session"]
+        );
+    }
+
+    #[test]
+    fn cwd_cd_pipe_does_not_propagate() {
+        assert_eq!(ecwd("cd /other | git status", "/session"), vec!["/session"]);
+    }
+
+    #[test]
+    fn cwd_git_dash_c_absolute() {
+        assert_eq!(
+            ecwd("git -C /other/repo status", "/session"),
+            vec!["/other/repo"]
+        );
+    }
+
+    #[test]
+    fn cwd_git_dash_c_relative() {
+        assert_eq!(
+            ecwd("git -C ../sibling status", "/session"),
+            vec!["/session/../sibling"]
+        );
+    }
+
+    #[test]
+    fn cwd_cd_then_git_dash_c() {
+        assert_eq!(
+            ecwd("cd /foo && git -C /bar status", "/session"),
+            vec!["/bar"]
+        );
+    }
+
+    #[test]
+    fn cwd_no_git_returns_last_cd() {
+        assert_eq!(ecwd("cd /other && ls -la", "/session"), vec!["/other"]);
+    }
+
+    #[test]
+    fn cwd_multiple_cds() {
+        assert_eq!(ecwd("cd /a && cd /b && git status", "/session"), vec!["/b"]);
+    }
+
+    #[test]
+    fn cwd_multiple_git_segments_different_cwds() {
+        // The key security fix: both git segments should be tracked
+        assert_eq!(
+            ecwd(
+                "cd /non-jj-repo && git status && cd /jj-repo && git push origin main",
+                "/session"
+            ),
+            vec!["/non-jj-repo", "/jj-repo"]
+        );
+    }
+
+    #[test]
+    fn cwd_multiple_git_segments_same_cwd() {
+        assert_eq!(ecwd("git status && git log", "/session"), vec!["/session"]);
     }
 }

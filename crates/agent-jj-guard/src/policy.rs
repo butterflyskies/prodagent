@@ -1,3 +1,6 @@
+use agent_shell_parser::parse::{
+    resolve_command, CommandArg, IndirectExecution, ParsedCommand, ResolvedCommand,
+};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -155,14 +158,87 @@ static BLOCKED_COMMANDS: &[(&str, BlockedCommand)] = &[
         reason: "jj has its own annotation command.",
         suggestion: "jj file annotate <path>  (show per-line change attribution)",
     }),
+    // Patch / low-level ref manipulation
+    ("submodule", BlockedCommand {
+        command: "git submodule",
+        reason: "modifies .gitmodules and submodule state",
+        suggestion: "jj does not support submodules — manage dependencies through other means",
+    }),
+    ("am", BlockedCommand {
+        command: "git am",
+        reason: "applies patches and creates commits",
+        suggestion: "use `jj` to create changes from patches",
+    }),
+    ("apply", BlockedCommand {
+        command: "git apply",
+        reason: "applies patches to the working tree",
+        suggestion: "use `jj` to manage working copy changes",
+    }),
+    ("update-ref", BlockedCommand {
+        command: "git update-ref",
+        reason: "directly manipulates refs",
+        suggestion: "use `jj bookmark` to manage references",
+    }),
+    ("update-index", BlockedCommand {
+        command: "git update-index",
+        reason: "directly manipulates the index",
+        suggestion: "use `jj` to manage the working copy",
+    }),
 ];
 
-pub fn check_git_command(words: &[String]) -> Option<&'static BlockedCommand> {
-    let cmd_idx = crate::find_command_position(words)?;
-    if words[cmd_idx] != "git" {
+static BLOCKED_EVAL: BlockedCommand = BlockedCommand {
+    command: "eval",
+    reason: "eval executes arbitrary shell code that cannot be statically analyzed.",
+    suggestion: "Write the command directly instead of wrapping it in eval.",
+};
+
+static BLOCKED_SHELL_SPAWN: BlockedCommand = BlockedCommand {
+    command: "shell -c",
+    reason: "spawning a shell with -c executes code that cannot be statically analyzed.",
+    suggestion: "Write the command directly instead of wrapping it in bash/sh -c.",
+};
+
+static BLOCKED_SOURCE: BlockedCommand = BlockedCommand {
+    command: "source",
+    reason: "sourced scripts execute code that cannot be statically analyzed.",
+    suggestion: "Run the script contents directly instead of sourcing it.",
+};
+
+static BLOCKED_UNANALYZABLE: BlockedCommand = BlockedCommand {
+    command: "unknown indirect",
+    reason: "this command uses an indirect execution pattern that cannot be statically analyzed.",
+    suggestion: "Run the command from outside of the coding agent.",
+};
+
+/// git global flags that consume the following token as a value.
+const GIT_GLOBAL_ARG_FLAGS: &[&str] = &["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
+
+/// Extract the git subcommand from a parsed command, skipping git global flags
+/// that consume positional values.
+fn git_subcommand(parsed: &ParsedCommand) -> Option<&str> {
+    let mut skip_next = false;
+    for arg in &parsed.args {
+        match arg {
+            CommandArg::Flag(f)
+                if GIT_GLOBAL_ARG_FLAGS.contains(&f.name.as_str()) && f.value.is_none() =>
+            {
+                skip_next = true;
+            }
+            CommandArg::Positional(_) if skip_next => {
+                skip_next = false;
+            }
+            CommandArg::Positional(s) => return Some(s.as_str()),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn check_git_command(parsed: &ParsedCommand) -> Option<&'static BlockedCommand> {
+    if parsed.command != "git" {
         return None;
     }
-    let subcommand = find_git_subcommand(words, cmd_idx)?;
+    let subcommand = git_subcommand(parsed)?;
 
     for (name, blocked) in BLOCKED_COMMANDS {
         if subcommand == *name {
@@ -170,10 +246,16 @@ pub fn check_git_command(words: &[String]) -> Option<&'static BlockedCommand> {
         }
     }
 
-    // Special case: git worktree (allow list/repair, block others)
     if subcommand == "worktree" {
-        let rest = &words[cmd_idx..];
-        let wt_sub = rest.iter().skip_while(|w| *w != "worktree").nth(1);
+        let wt_sub = parsed
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                CommandArg::Positional(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .skip_while(|s| *s != "worktree")
+            .nth(1);
         if let Some(wt_cmd) = wt_sub {
             if wt_cmd != "list" && wt_cmd != "repair" {
                 static WORKTREE_BLOCKED: BlockedCommand = BlockedCommand {
@@ -189,342 +271,309 @@ pub fn check_git_command(words: &[String]) -> Option<&'static BlockedCommand> {
     None
 }
 
-const GIT_GLOBAL_ARG_FLAGS: &[&str] = &["-C", "-c", "--git-dir", "--work-tree", "--namespace"];
-const GIT_GLOBAL_SOLO_FLAGS: &[&str] = &["--bare", "--no-pager", "--no-replace-objects"];
-
-fn find_git_subcommand(words: &[String], git_idx: usize) -> Option<String> {
-    let mut i = git_idx + 1;
-    while i < words.len() {
-        let word = &words[i];
-        if GIT_GLOBAL_ARG_FLAGS.iter().any(|f| word == f) {
-            i += 2;
-        } else if GIT_GLOBAL_SOLO_FLAGS.iter().any(|f| word == f) || word.starts_with('-') {
-            i += 1;
-        } else {
-            return Some(word.clone());
-        }
+/// Check a tokenized command against jj-guard policy.
+///
+/// Resolves indirection (wrappers, eval, etc.) then checks whether
+/// the effective command is a blocked git operation.
+pub fn check_segment(words: &[String]) -> Option<&'static BlockedCommand> {
+    match resolve_command(words) {
+        ResolvedCommand::Unanalyzable(u) => match u.kind {
+            IndirectExecution::Eval => Some(&BLOCKED_EVAL),
+            IndirectExecution::ShellSpawn => Some(&BLOCKED_SHELL_SPAWN),
+            IndirectExecution::SourceScript => Some(&BLOCKED_SOURCE),
+            IndirectExecution::CommandWrapper => Some(&BLOCKED_UNANALYZABLE),
+            // non_exhaustive: fail closed on future variants
+            _ => Some(&BLOCKED_UNANALYZABLE),
+        },
+        ResolvedCommand::Resolved(ref parsed) => check_git_command(parsed),
+        // non_exhaustive: fail closed on future ResolvedCommand variants
+        _ => Some(&BLOCKED_UNANALYZABLE),
     }
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_shell_parser::parse::tokenize;
 
     fn words(s: &str) -> Vec<String> {
-        shell_words::split(s).unwrap()
+        tokenize(s)
+    }
+
+    fn is_blocked_segment(cmd: &str) -> bool {
+        check_segment(&words(cmd)).is_some()
     }
 
     // --- Destructive / state-modifying ---
 
     #[test]
     fn blocks_git_commit() {
-        let w = words("git commit -m 'test'");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git commit -m 'test'"));
     }
 
     #[test]
     fn blocks_git_rebase() {
-        let w = words("git rebase main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git rebase main"));
     }
 
     #[test]
     fn blocks_git_merge() {
-        let w = words("git merge feature-branch");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git merge feature-branch"));
     }
 
     #[test]
     fn blocks_git_stash() {
-        let w = words("git stash pop");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git stash pop"));
     }
 
     #[test]
     fn blocks_git_revert() {
-        let w = words("git revert HEAD");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git revert HEAD"));
     }
 
     #[test]
     fn blocks_git_cherry_pick() {
-        let w = words("git cherry-pick abc123");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git cherry-pick abc123"));
     }
 
     #[test]
     fn blocks_git_reset_hard() {
-        let w = words("git reset --hard HEAD~1");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git reset --hard HEAD~1"));
     }
 
     #[test]
     fn blocks_git_reset_without_flags() {
-        let w = words("git reset HEAD file.rs");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git reset HEAD file.rs"));
     }
 
     // --- Navigation / working copy ---
 
     #[test]
     fn blocks_git_checkout() {
-        let w = words("git checkout main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git checkout main"));
     }
 
     #[test]
     fn blocks_git_checkout_dash_b() {
-        let w = words("git checkout -b new-branch");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git checkout -b new-branch"));
     }
 
     #[test]
     fn blocks_bare_git_checkout() {
-        let w = words("git checkout");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git checkout"));
     }
 
     #[test]
     fn blocks_git_switch() {
-        let w = words("git switch feature-branch");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git switch feature-branch"));
     }
 
     // --- Staging / file tracking ---
 
     #[test]
     fn blocks_git_add() {
-        let w = words("git add .");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git add ."));
     }
 
     #[test]
     fn blocks_git_rm() {
-        let w = words("git rm --cached file.rs");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git rm --cached file.rs"));
     }
 
     #[test]
     fn blocks_git_restore() {
-        let w = words("git restore --source HEAD~1 file.rs");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git restore --source HEAD~1 file.rs"));
     }
 
     #[test]
     fn blocks_git_clean() {
-        let w = words("git clean -fd");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git clean -fd"));
     }
 
     // --- Branch / bookmark management ---
 
     #[test]
     fn blocks_git_branch_list() {
-        let w = words("git branch");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git branch"));
     }
 
     #[test]
     fn blocks_git_branch_create() {
-        let w = words("git branch new-feature");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git branch new-feature"));
     }
 
     #[test]
     fn blocks_git_branch_delete() {
-        let w = words("git branch -D feature-x");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git branch -D feature-x"));
     }
 
     #[test]
     fn blocks_git_tag() {
-        let w = words("git tag v1.0.0");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git tag v1.0.0"));
     }
 
     // --- Remote operations ---
 
     #[test]
     fn blocks_git_push() {
-        let w = words("git push origin main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git push origin main"));
     }
 
     #[test]
     fn blocks_git_push_force() {
-        let w = words("git push --force origin main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git push --force origin main"));
     }
 
     #[test]
     fn blocks_git_fetch() {
-        let w = words("git fetch origin");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git fetch origin"));
     }
 
     #[test]
     fn blocks_git_pull() {
-        let w = words("git pull --rebase origin main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git pull --rebase origin main"));
     }
 
     #[test]
     fn blocks_git_clone() {
-        let w = words("git clone https://github.com/example/repo.git");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment(
+            "git clone https://github.com/example/repo.git"
+        ));
     }
 
     #[test]
     fn blocks_git_init() {
-        let w = words("git init");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git init"));
     }
 
     #[test]
     fn blocks_git_remote() {
-        let w = words("git remote add origin https://github.com/example/repo.git");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment(
+            "git remote add origin https://github.com/example/repo.git"
+        ));
     }
 
     // --- Informational ---
 
     #[test]
     fn blocks_git_status() {
-        let w = words("git status");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git status"));
     }
 
     #[test]
     fn blocks_git_log() {
-        let w = words("git log --oneline -10");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git log --oneline -10"));
     }
 
     #[test]
     fn blocks_git_diff() {
-        let w = words("git diff --stat");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git diff --stat"));
     }
 
     #[test]
     fn blocks_git_show() {
-        let w = words("git show HEAD");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git show HEAD"));
     }
 
     #[test]
     fn blocks_git_blame() {
-        let w = words("git blame src/main.rs");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git blame src/main.rs"));
     }
 
     // --- Worktree (selective) ---
 
     #[test]
     fn blocks_git_worktree_add() {
-        let w = words("git worktree add ../other-dir");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git worktree add ../other-dir"));
     }
 
     #[test]
     fn allows_git_worktree_list() {
-        let w = words("git worktree list");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("git worktree list"));
     }
 
     #[test]
     fn allows_git_worktree_repair() {
-        let w = words("git worktree repair");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("git worktree repair"));
     }
 
-    // --- Allowed through (no jj equivalent) ---
+    // --- Allowed through ---
 
     #[test]
     fn allows_gh_commands() {
-        let w = words("gh pr create --title test");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("gh pr create --title test"));
     }
 
     #[test]
     fn allows_git_config() {
-        let w = words("git config user.name");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("git config user.name"));
     }
 
     #[test]
     fn allows_git_bisect() {
-        let w = words("git bisect start");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("git bisect start"));
     }
 
     // --- Flag handling ---
 
     #[test]
     fn handles_git_with_global_flags() {
-        let w = words("git -C /tmp/repo status");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git -C /tmp/repo status"));
     }
 
     #[test]
     fn handles_git_no_pager() {
-        let w = words("git --no-pager log");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("git --no-pager log"));
     }
 
     // --- jj git subcommands must not be blocked ---
 
     #[test]
     fn allows_jj_git_push() {
-        let w = words("jj git push --bookmark main");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("jj git push --bookmark main"));
     }
 
     #[test]
     fn allows_jj_git_fetch() {
-        let w = words("jj git fetch");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("jj git fetch"));
     }
 
     #[test]
     fn allows_jj_git_clone() {
-        let w = words("jj git clone --colocate https://example.com/repo.git");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment(
+            "jj git clone --colocate https://example.com/repo.git"
+        ));
     }
 
     #[test]
     fn allows_jj_git_remote() {
-        let w = words("jj git remote list");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("jj git remote list"));
     }
 
     #[test]
     fn allows_jj_git_init() {
-        let w = words("jj git init --colocate");
-        assert!(check_git_command(&w).is_none());
+        assert!(!is_blocked_segment("jj git init --colocate"));
     }
 
     // --- Env-var-prefixed git commands should still be blocked ---
 
     #[test]
     fn blocks_env_prefixed_git_push() {
-        let w = words("GIT_CONFIG_GLOBAL=~/.gitconfig.ai git push origin main");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment(
+            "GIT_CONFIG_GLOBAL=~/.gitconfig.ai git push origin main"
+        ));
     }
 
     #[test]
     fn blocks_env_prefixed_git_commit() {
-        let w = words("FOO=bar BAZ=qux git commit -m test");
-        assert!(check_git_command(&w).is_some());
+        assert!(is_blocked_segment("FOO=bar BAZ=qux git commit -m test"));
     }
 
     // --- Suggestion quality ---
 
     #[test]
     fn status_suggestion_mentions_jj_status() {
-        let w = words("git status");
-        let blocked = check_git_command(&w).unwrap();
+        let blocked = check_segment(&words("git status")).unwrap();
         assert!(
             blocked.suggestion.contains("jj status"),
             "suggestion should mention jj status"
@@ -533,8 +582,7 @@ mod tests {
 
     #[test]
     fn diff_suggestion_covers_common_forms() {
-        let w = words("git diff");
-        let blocked = check_git_command(&w).unwrap();
+        let blocked = check_segment(&words("git diff")).unwrap();
         assert!(
             blocked.suggestion.contains("jj diff"),
             "should mention jj diff"
@@ -555,8 +603,7 @@ mod tests {
 
     #[test]
     fn push_suggestion_mentions_bookmark() {
-        let w = words("git push origin main");
-        let blocked = check_git_command(&w).unwrap();
+        let blocked = check_segment(&words("git push origin main")).unwrap();
         assert!(
             blocked.suggestion.contains("jj git push"),
             "should mention jj git push"
@@ -569,8 +616,7 @@ mod tests {
 
     #[test]
     fn branch_suggestion_covers_list_create_delete() {
-        let w = words("git branch");
-        let blocked = check_git_command(&w).unwrap();
+        let blocked = check_segment(&words("git branch")).unwrap();
         assert!(
             blocked.suggestion.contains("bookmark list"),
             "should cover list"
@@ -583,5 +629,162 @@ mod tests {
             blocked.suggestion.contains("bookmark delete"),
             "should cover delete"
         );
+    }
+
+    // --- Indirect execution ---
+
+    #[test]
+    fn blocks_eval() {
+        assert!(is_blocked_segment("eval \"git commit\""));
+    }
+
+    #[test]
+    fn blocks_bash_c() {
+        assert!(is_blocked_segment("bash -c \"git commit\""));
+    }
+
+    #[test]
+    fn blocks_sh_c() {
+        assert!(is_blocked_segment("sh -c \"git commit -m test\""));
+    }
+
+    #[test]
+    fn blocks_source() {
+        assert!(is_blocked_segment("source script.sh"));
+    }
+
+    #[test]
+    fn blocks_dot_source() {
+        assert!(is_blocked_segment(". script.sh"));
+    }
+
+    #[test]
+    fn blocks_dynamic_command() {
+        assert!(is_blocked_segment("$cmd args"));
+    }
+
+    #[test]
+    fn blocks_bash_script() {
+        assert!(is_blocked_segment("bash script.sh"));
+    }
+
+    #[test]
+    fn blocks_env_git() {
+        assert!(is_blocked_segment("env git commit"));
+    }
+
+    #[test]
+    fn blocks_sudo_git() {
+        assert!(is_blocked_segment("sudo git commit"));
+    }
+
+    #[test]
+    fn blocks_sudo_with_flags_git() {
+        assert!(is_blocked_segment("sudo -u root git commit"));
+    }
+
+    #[test]
+    fn blocks_command_git() {
+        assert!(is_blocked_segment("command git commit"));
+    }
+
+    #[test]
+    fn blocks_env_with_vars_git() {
+        assert!(is_blocked_segment("env FOO=bar git commit"));
+    }
+
+    #[test]
+    fn blocks_xargs_git() {
+        assert!(is_blocked_segment("xargs git commit"));
+    }
+
+    #[test]
+    fn allows_env_ls() {
+        assert!(!is_blocked_segment("env ls -la"));
+    }
+
+    #[test]
+    fn allows_sudo_ls() {
+        assert!(!is_blocked_segment("sudo ls -la"));
+    }
+
+    #[test]
+    fn allows_normal_command() {
+        assert!(!is_blocked_segment("ls -la"));
+    }
+
+    // --- New blocked git subcommands ---
+
+    #[test]
+    fn blocks_git_submodule() {
+        assert!(is_blocked_segment(
+            "git submodule add https://example.com/repo.git"
+        ));
+    }
+
+    #[test]
+    fn blocks_git_am() {
+        assert!(is_blocked_segment("git am patch.mbox"));
+    }
+
+    #[test]
+    fn blocks_git_apply() {
+        assert!(is_blocked_segment("git apply patch.diff"));
+    }
+
+    #[test]
+    fn blocks_git_update_ref() {
+        assert!(is_blocked_segment("git update-ref HEAD abc123"));
+    }
+
+    #[test]
+    fn blocks_git_update_index() {
+        assert!(is_blocked_segment(
+            "git update-index --assume-unchanged file"
+        ));
+    }
+
+    // --- Wrappers around git commands ---
+
+    #[test]
+    fn blocks_time_git() {
+        assert!(is_blocked_segment("time git commit"));
+    }
+
+    /// timeout has a mandatory positional argument (duration) before the
+    /// command. The current WrapperSpec cannot skip positionals, so
+    #[test]
+    fn blocks_timeout_git() {
+        assert!(is_blocked_segment("timeout 60 git commit"));
+    }
+
+    #[test]
+    fn blocks_exec_git() {
+        assert!(is_blocked_segment("exec git commit"));
+    }
+
+    #[test]
+    fn blocks_strace_git() {
+        assert!(is_blocked_segment("strace git commit"));
+    }
+
+    #[test]
+    fn blocks_setsid_git() {
+        assert!(is_blocked_segment("setsid git commit"));
+    }
+
+    #[test]
+    fn allows_time_ls() {
+        assert!(!is_blocked_segment("time ls"));
+    }
+
+    #[test]
+    fn blocks_nohup_git() {
+        assert!(is_blocked_segment("nohup git push"));
+    }
+
+    #[test]
+    fn allows_xargs_ls() {
+        assert!(!is_blocked_segment("xargs ls -la"));
     }
 }

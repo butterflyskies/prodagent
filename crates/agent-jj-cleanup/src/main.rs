@@ -2,10 +2,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Claude Code WorktreeRemove hook — cleans up jj workspaces when agent worktrees are removed. Reads JSON from stdin."
+)]
+struct Args {}
 
 fn main() -> anyhow::Result<()> {
-    let input: agent_shell_parser::WorktreeRemoveInput =
-        agent_shell_parser::parse_input().context("failed to parse WorktreeRemove hook input")?;
+    Args::parse();
+
+    let input: agent_shell_parser::hook::WorktreeRemoveInput =
+        agent_shell_parser::hook::parse_input()
+            .context("failed to parse WorktreeRemove hook input")?;
 
     let worktree_path = PathBuf::from(&input.worktree_path);
     let workspace_name = derive_workspace_name(&worktree_path);
