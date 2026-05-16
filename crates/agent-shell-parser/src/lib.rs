@@ -2,7 +2,8 @@ use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
 
-pub mod guard;
+pub mod parse;
+pub mod path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -41,34 +42,6 @@ pub struct PreToolUseInput {
 pub fn parse_input<T: serde::de::DeserializeOwned>() -> Result<T, Error> {
     let input = std::io::read_to_string(std::io::stdin())?;
     Ok(serde_json::from_str(&input)?)
-}
-
-/// Returns the index of the first token that is the actual command being invoked,
-/// skipping leading env-var assignments (`FOO=bar`).
-///
-/// An env-var assignment is a token matching `[A-Za-z_][A-Za-z0-9_]*=.*`.
-pub fn find_command_position(words: &[String]) -> Option<usize> {
-    for (i, word) in words.iter().enumerate() {
-        if is_env_assignment(word) {
-            continue;
-        }
-        return Some(i);
-    }
-    None
-}
-
-fn is_env_assignment(word: &str) -> bool {
-    let Some(eq) = word.find('=') else {
-        return false;
-    };
-    if eq == 0 {
-        return false;
-    }
-    let name = &word[..eq];
-    let mut chars = name.chars();
-    let first = chars.next().unwrap();
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 pub fn is_jj_colocated(cwd: &Path) -> bool {
@@ -111,57 +84,6 @@ pub fn require_jj_version(min_major: u32, min_minor: u32) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn command_position_simple() {
-        let w: Vec<String> = vec!["git".into(), "push".into()];
-        assert_eq!(find_command_position(&w), Some(0));
-    }
-
-    #[test]
-    fn command_position_with_env_vars() {
-        let w: Vec<String> = vec!["FOO=bar".into(), "git".into(), "push".into()];
-        assert_eq!(find_command_position(&w), Some(1));
-    }
-
-    #[test]
-    fn command_position_multiple_env_vars() {
-        let w: Vec<String> = vec!["A=1".into(), "B=2".into(), "git".into(), "push".into()];
-        assert_eq!(find_command_position(&w), Some(2));
-    }
-
-    #[test]
-    fn command_position_jj() {
-        let w: Vec<String> = vec!["jj".into(), "git".into(), "push".into()];
-        assert_eq!(find_command_position(&w), Some(0));
-    }
-
-    #[test]
-    fn command_position_empty() {
-        let w: Vec<String> = vec![];
-        assert_eq!(find_command_position(&w), None);
-    }
-
-    #[test]
-    fn command_position_only_assignments() {
-        let w: Vec<String> = vec!["FOO=bar".into()];
-        assert_eq!(find_command_position(&w), None);
-    }
-
-    #[test]
-    fn env_assignment_valid() {
-        assert!(is_env_assignment("FOO=bar"));
-        assert!(is_env_assignment("_X=1"));
-        assert!(is_env_assignment("GIT_CONFIG_GLOBAL=~/.gitconfig.ai"));
-    }
-
-    #[test]
-    fn env_assignment_invalid() {
-        assert!(!is_env_assignment("git"));
-        assert!(!is_env_assignment("--flag=value"));
-        assert!(!is_env_assignment("=bar"));
-        assert!(!is_env_assignment("123=bar"));
-    }
 
     #[test]
     fn parse_worktree_create_input() {
