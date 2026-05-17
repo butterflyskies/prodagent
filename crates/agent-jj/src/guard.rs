@@ -17,6 +17,51 @@ fn is_jj_colocated(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
+enum Verdict {
+    Allow,
+    Block(String),
+}
+
+fn evaluate(cmd: &str, session_cwd: &str, detect_jj: impl Fn(&Path) -> bool) -> Verdict {
+    let pipeline = match parse_with_substitutions(cmd) {
+        Ok(p) => p,
+        Err(_) => {
+            return Verdict::Block(
+                "BLOCKED: failed to parse command — refusing to allow.\n\n\
+                 The command could not be safely analyzed. If you believe this is \
+                 a false positive, run the command from outside of the coding agent."
+                    .into(),
+            );
+        }
+    };
+
+    let effective_cwds = agent_shell_parser::path::effective_cwd(&pipeline, session_cwd);
+    let any_jj = effective_cwds.iter().any(|cwd| detect_jj(Path::new(cwd)));
+    if !any_jj {
+        return Verdict::Allow;
+    }
+
+    if pipeline.has_parse_errors_recursive() {
+        return Verdict::Block(
+            "BLOCKED: command could not be fully parsed — refusing to allow.\n\n\
+             The shell syntax triggered error recovery in the parser, which means \
+             some commands may not have been analyzed. If you believe this is a \
+             false positive, run the command from outside of the coding agent."
+                .into(),
+        );
+    }
+
+    let blocked = pipeline.find_segment(&|seg| {
+        let words = tokenize(&seg.command);
+        policy::check_segment(&words)
+    });
+
+    match blocked {
+        Some(b) => Verdict::Block(b.to_string()),
+        None => Verdict::Allow,
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     let input: agent_shell_parser::hook::PreToolUseInput =
         agent_shell_parser::hook::parse_input().context("failed to parse PreToolUse hook input")?;
@@ -37,50 +82,13 @@ pub fn run() -> anyhow::Result<()> {
 
     let session_cwd = input.cwd.as_deref().unwrap_or(".");
 
-    let pipeline = match parse_with_substitutions(command) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "BLOCKED: failed to parse command — refusing to allow.\n\n\
-                 The command could not be safely analyzed. If you believe this is \
-                 a false positive, run the command from outside of the coding agent."
-            );
+    match evaluate(command, session_cwd, is_jj_colocated) {
+        Verdict::Allow => std::process::exit(0),
+        Verdict::Block(msg) => {
+            eprintln!("{msg}");
             std::process::exit(2);
         }
-    };
-
-    let session_is_jj = is_jj_colocated(Path::new(session_cwd));
-    if !session_is_jj {
-        let effective_cwds = agent_shell_parser::path::effective_cwd(&pipeline, session_cwd);
-        let any_jj = effective_cwds
-            .iter()
-            .any(|cwd| is_jj_colocated(Path::new(cwd)));
-        if !any_jj {
-            std::process::exit(0);
-        }
     }
-
-    if pipeline.has_parse_errors_recursive() {
-        eprintln!(
-            "BLOCKED: command could not be fully parsed — refusing to allow.\n\n\
-             The shell syntax triggered error recovery in the parser, which means \
-             some commands may not have been analyzed. If you believe this is a \
-             false positive, run the command from outside of the coding agent."
-        );
-        std::process::exit(2);
-    }
-
-    let blocked = pipeline.find_segment(&|seg| {
-        let words = tokenize(&seg.command);
-        policy::check_segment(&words)
-    });
-
-    if let Some(blocked) = blocked {
-        eprintln!("{blocked}");
-        std::process::exit(2);
-    }
-
-    std::process::exit(0);
 }
 
 #[cfg(test)]
@@ -242,5 +250,39 @@ mod tests {
     #[test]
     fn cwd_multiple_git_segments_same_cwd() {
         assert_eq!(ecwd("git status && git log", "/session"), vec!["/session"]);
+    }
+
+    // --- CWD-based gating (jj detection via evaluate()) ---
+
+    fn is_allowed(cmd: &str, session_cwd: &str, jj_paths: &[&str]) -> bool {
+        let v = evaluate(cmd, session_cwd, |p| {
+            jj_paths.iter().any(|j| p == Path::new(j))
+        });
+        matches!(v, Verdict::Allow)
+    }
+
+    #[test]
+    fn allows_git_targeting_non_jj_from_jj_session() {
+        assert!(is_allowed("cd /other && git push", "/jj", &["/jj"]));
+    }
+
+    #[test]
+    fn blocks_git_targeting_jj_from_non_jj_session() {
+        assert!(!is_allowed("cd /jj && git push", "/other", &["/jj"]));
+    }
+
+    #[test]
+    fn allows_git_dash_c_to_non_jj_from_jj_session() {
+        assert!(is_allowed("git -C /other status", "/jj", &["/jj"]));
+    }
+
+    #[test]
+    fn blocks_git_dash_c_to_jj_from_non_jj_session() {
+        assert!(!is_allowed("git -C /jj status", "/other", &["/jj"]));
+    }
+
+    #[test]
+    fn blocks_git_in_jj_session_no_cd() {
+        assert!(!is_allowed("git status", "/jj", &["/jj"]));
     }
 }

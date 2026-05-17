@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-16
+
+### Fixed
+
+- `agent-jj guard`: Git commands targeting non-jj directories (via `git -C` or `cd /path && git ...`) are no longer blocked when the session CWD is jj-colocated. Previously the guard short-circuited on session CWD without checking the effective target directory.
+
 ## [0.4.1] - 2026-05-16
 
 ### Fixed
