@@ -2,6 +2,7 @@
 name = "agent-jj"
 version.workspace = true
 description = "Claude Code hooks for jj-colocated repos — git guard, workspace creation, and cleanup"
+readme = "../../README.md"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
