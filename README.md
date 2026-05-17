@@ -2,14 +2,18 @@
 
 Agent-agnostic productivity hooks for jj-colocated repositories.
 
+When an AI coding agent works in a jj repo, it'll instinctively reach for `git commit`, `git push`, etc. These hooks intercept that, block the git command, and tell the agent what jj command to use instead. They also handle workspace isolation so parallel agent sessions don't step on each other.
+
 ## What's in here
 
 | Crate | Purpose |
 |---|---|
+| `agent-jj-guard` | **PreToolUse hook** — intercepts shell commands, parses them with tree-sitter-bash, blocks git in jj repos with per-command jj suggestions |
 | `agent-jj-workspace` | **WorktreeCreate hook** — spins up jj workspaces for agent session isolation |
 | `agent-jj-cleanup` | **WorktreeRemove hook** — forgets jj workspaces and removes directories on teardown |
-| `agent-jj-guard` | **PreToolUse hook** — blocks destructive git commands in jj repos, suggests jj equivalents |
-| `agent-shell-parser` | Shared lib — JSON input parsing, jj detection, shell tokenization, guard rules |
+| `agent-shell-parser` | Shared library — tree-sitter-bash parsing, config-driven wrapper resolution, CWD tracking, hook I/O types |
+
+The guard handles compound commands (`&&`, `||`, `;`, `|`), command substitutions (`$()`), wrapper chains (`sudo env time git commit`), and various bypass attempts. It uses a config-driven approach — all command knowledge lives in `config/commands.json`, not hardcoded.
 
 ## Requirements
 
