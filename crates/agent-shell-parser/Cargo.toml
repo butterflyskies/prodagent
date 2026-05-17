@@ -2,6 +2,7 @@
 name = "agent-shell-parser"
 version.workspace = true
 description = "Shared parsing substrate for agent hook binaries — JSON input, shell tokenization"
+readme = "../../README.md"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

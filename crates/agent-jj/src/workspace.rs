@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
@@ -40,8 +40,12 @@ pub fn run() -> anyhow::Result<()> {
             .context("failed to parse WorktreeCreate hook input")?;
 
     let cwd = PathBuf::from(&input.cwd);
-    let workspace_name = format!("agent-{}", input.name);
-    let worktree_path = cwd.join(".claude").join("worktrees").join(&input.name);
+    let name = Path::new(&input.name)
+        .file_name()
+        .context("invalid workspace name")?
+        .to_string_lossy();
+    let workspace_name = format!("agent-{name}");
+    let worktree_path = cwd.join(".claude").join("worktrees").join(&*name);
 
     std::fs::create_dir_all(&worktree_path)
         .with_context(|| format!("failed to create directory: {}", worktree_path.display()))?;

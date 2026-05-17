@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-16
+
+### Fixed
+
+- `agent-jj workspace`: Sanitize workspace name input to prevent path traversal via `../` sequences
+- `agent-jj guard`: Allow `git worktree prune` (safe maintenance command was incorrectly blocked)
+
+### Added
+
+- `readme` field in both crate manifests for crates.io display
+
 ## [0.4.0] - 2026-05-16
 
 ### Changed
