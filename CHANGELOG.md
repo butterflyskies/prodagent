@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-16
+
+### Changed
+
+- **BREAKING** Consolidated `agent-jj-guard`, `agent-jj-workspace`, and `agent-jj-cleanup` into a single `agent-jj` binary with subcommands (`guard`, `workspace`, `cleanup`)
+- **BREAKING** `agent-shell-parser`: Removed `is_jj_colocated()`, `jj_version()`, `require_jj_version()` from public API — jj utility functions inlined into `agent-jj`
+- **BREAKING** `agent-shell-parser`: Removed `Error::Jj` variant
+- `agent-shell-parser`: Added `#[non_exhaustive]` to `Error` enum
+
+### Removed
+
+- `agent-jj-guard` crate (replaced by `agent-jj guard`)
+- `agent-jj-workspace` crate (replaced by `agent-jj workspace`)
+- `agent-jj-cleanup` crate (replaced by `agent-jj cleanup`)
+
 ## [0.3.0] - 2026-05-16
 
 ### Added

@@ -282,11 +282,9 @@ pub fn check_segment(words: &[String]) -> Option<&'static BlockedCommand> {
             IndirectExecution::ShellSpawn => Some(&BLOCKED_SHELL_SPAWN),
             IndirectExecution::SourceScript => Some(&BLOCKED_SOURCE),
             IndirectExecution::CommandWrapper => Some(&BLOCKED_UNANALYZABLE),
-            // non_exhaustive: fail closed on future variants
             _ => Some(&BLOCKED_UNANALYZABLE),
         },
         ResolvedCommand::Resolved(ref parsed) => check_git_command(parsed),
-        // non_exhaustive: fail closed on future ResolvedCommand variants
         _ => Some(&BLOCKED_UNANALYZABLE),
     }
 }
@@ -751,8 +749,6 @@ mod tests {
         assert!(is_blocked_segment("time git commit"));
     }
 
-    /// timeout has a mandatory positional argument (duration) before the
-    /// command. The current WrapperSpec cannot skip positionals, so
     #[test]
     fn blocks_timeout_git() {
         assert!(is_blocked_segment("timeout 60 git commit"));

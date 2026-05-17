@@ -3,7 +3,8 @@ use std::process::Command;
 
 use agent_shell_parser::parse::{parse_with_substitutions, tokenize};
 use anyhow::Context;
-use clap::Parser;
+
+use crate::policy;
 
 fn is_jj_colocated(cwd: &Path) -> bool {
     Command::new("jj")
@@ -16,18 +17,7 @@ fn is_jj_colocated(cwd: &Path) -> bool {
         .unwrap_or(false)
 }
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Claude Code PreToolUse hook — blocks git commands in jj-colocated repos. Reads JSON from stdin."
-)]
-struct Args {}
-
-mod policy;
-
-fn main() -> anyhow::Result<()> {
-    Args::parse();
-
+pub fn run() -> anyhow::Result<()> {
     let input: agent_shell_parser::hook::PreToolUseInput =
         agent_shell_parser::hook::parse_input().context("failed to parse PreToolUse hook input")?;
 
@@ -96,6 +86,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_shell_parser::parse::parse_with_substitutions;
 
     fn is_blocked(cmd: &str) -> bool {
         let pipeline = parse_with_substitutions(cmd).unwrap();
@@ -239,7 +230,6 @@ mod tests {
 
     #[test]
     fn cwd_multiple_git_segments_different_cwds() {
-        // The key security fix: both git segments should be tracked
         assert_eq!(
             ecwd(
                 "cd /non-jj-repo && git status && cd /jj-repo && git push origin main",

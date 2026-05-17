@@ -41,10 +41,7 @@ jobs:
       - name: Wait for crates.io index
         run: sleep 30
 
-      - name: Publish binary crates
-        run: |
-          cargo publish -p agent-jj-guard --no-verify
-          cargo publish -p agent-jj-workspace --no-verify
-          cargo publish -p agent-jj-cleanup --no-verify
+      - name: Publish binary crate
+        run: cargo publish -p agent-jj --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

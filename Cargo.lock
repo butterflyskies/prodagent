@@ -3,26 +3,8 @@
 version = 4
 
 [[package]]
-name = "agent-jj-cleanup"
-version = "0.3.0"
-dependencies = [
- "agent-shell-parser",
- "anyhow",
- "clap",
-]
-
-[[package]]
-name = "agent-jj-guard"
-version = "0.3.0"
-dependencies = [
- "agent-shell-parser",
- "anyhow",
- "clap",
-]
-
-[[package]]
-name = "agent-jj-workspace"
-version = "0.3.0"
+name = "agent-jj"
+version = "0.4.0"
 dependencies = [
  "agent-shell-parser",
  "anyhow",
@@ -31,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "agent-shell-parser"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",

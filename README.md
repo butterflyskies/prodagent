@@ -8,9 +8,7 @@ When an AI coding agent works in a jj repo, it'll instinctively reach for `git c
 
 | Crate | Purpose |
 |---|---|
-| `agent-jj-guard` | **PreToolUse hook** — intercepts shell commands, parses them with tree-sitter-bash, blocks git in jj repos with per-command jj suggestions |
-| `agent-jj-workspace` | **WorktreeCreate hook** — spins up jj workspaces for agent session isolation |
-| `agent-jj-cleanup` | **WorktreeRemove hook** — forgets jj workspaces and removes directories on teardown |
+| `agent-jj` | Single binary with three subcommands: `guard` (blocks git in jj repos), `workspace` (creates jj workspaces), `cleanup` (removes workspaces on teardown) |
 | `agent-shell-parser` | Shared library — tree-sitter-bash parsing, config-driven wrapper resolution, CWD tracking, hook I/O types |
 
 The guard handles compound commands (`&&`, `||`, `;`, `|`), command substitutions (`$()`), wrapper chains (`sudo env time git commit`), and various bypass attempts. It uses a config-driven approach — all command knowledge lives in `config/commands.json`, not hardcoded.
@@ -26,12 +24,10 @@ The guard handles compound commands (`&&`, `||`, `;`, `|`), command substitution
 just install
 ```
 
-Or individually:
+Or directly:
 
 ```bash
-cargo install --path crates/agent-jj-workspace
-cargo install --path crates/agent-jj-cleanup
-cargo install --path crates/agent-jj-guard
+cargo install --path crates/agent-jj
 ```
 
 ## Hook registration (Claude Code)
@@ -45,21 +41,21 @@ Add to `~/.claude/settings.json`:
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "agent-jj-guard" }
+          { "type": "command", "command": "agent-jj guard" }
         ]
       }
     ],
     "WorktreeCreate": [
       {
         "hooks": [
-          { "type": "command", "command": "agent-jj-workspace" }
+          { "type": "command", "command": "agent-jj workspace" }
         ]
       }
     ],
     "WorktreeRemove": [
       {
         "hooks": [
-          { "type": "command", "command": "agent-jj-cleanup" }
+          { "type": "command", "command": "agent-jj cleanup" }
         ]
       }
     ]
