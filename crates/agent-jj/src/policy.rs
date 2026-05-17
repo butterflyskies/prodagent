@@ -257,7 +257,7 @@ fn check_git_command(parsed: &ParsedCommand) -> Option<&'static BlockedCommand> 
             .skip_while(|s| *s != "worktree")
             .nth(1);
         if let Some(wt_cmd) = wt_sub {
-            if wt_cmd != "list" && wt_cmd != "repair" {
+            if wt_cmd != "list" && wt_cmd != "repair" && wt_cmd != "prune" {
                 static WORKTREE_BLOCKED: BlockedCommand = BlockedCommand {
                     command: "git worktree",
                     reason: "git worktrees are invisible to jj — use jj workspaces instead.",
@@ -282,9 +282,11 @@ pub fn check_segment(words: &[String]) -> Option<&'static BlockedCommand> {
             IndirectExecution::ShellSpawn => Some(&BLOCKED_SHELL_SPAWN),
             IndirectExecution::SourceScript => Some(&BLOCKED_SOURCE),
             IndirectExecution::CommandWrapper => Some(&BLOCKED_UNANALYZABLE),
+            // #[non_exhaustive]: fail closed on future IndirectExecution variants
             _ => Some(&BLOCKED_UNANALYZABLE),
         },
         ResolvedCommand::Resolved(ref parsed) => check_git_command(parsed),
+        // #[non_exhaustive]: fail closed on future ResolvedCommand variants
         _ => Some(&BLOCKED_UNANALYZABLE),
     }
 }
@@ -493,6 +495,11 @@ mod tests {
     #[test]
     fn allows_git_worktree_repair() {
         assert!(!is_blocked_segment("git worktree repair"));
+    }
+
+    #[test]
+    fn allows_git_worktree_prune() {
+        assert!(!is_blocked_segment("git worktree prune"));
     }
 
     // --- Allowed through ---

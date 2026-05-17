@@ -6,10 +6,7 @@ mod policy;
 mod workspace;
 
 #[derive(Parser)]
-#[command(
-    version,
-    about = "Agent productivity hooks for jj-colocated repos"
-)]
+#[command(version, about = "Agent productivity hooks for jj-colocated repos")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
