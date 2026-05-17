@@ -1,8 +1,6 @@
-# Install all hook binaries to ~/.cargo/bin
+# Install the hook binary to ~/.cargo/bin
 install:
-    cargo install --path crates/agent-jj-workspace
-    cargo install --path crates/agent-jj-cleanup
-    cargo install --path crates/agent-jj-guard
+    cargo install --path crates/agent-jj
 
 # Run all checks (format, lint, test)
 check:

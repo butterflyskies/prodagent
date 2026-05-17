@@ -1,14 +1,14 @@
 [package]
-name = "agent-jj-cleanup"
+name = "agent-jj"
 version.workspace = true
-description = "WorktreeRemove hook — forgets jj workspaces and cleans up directories"
+description = "Claude Code hooks for jj-colocated repos — git guard, workspace creation, and cleanup"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "agent-jj-cleanup"
+name = "agent-jj"
 path = "src/main.rs"
 
 [dependencies]

@@ -2,19 +2,35 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context};
-use clap::Parser;
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Claude Code WorktreeCreate hook — creates jj workspaces for agent worktrees. Reads JSON from stdin."
-)]
-struct Args {}
+fn jj_version() -> Option<(u32, u32, u32)> {
+    let output = Command::new("jj").arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version_str = text.strip_prefix("jj ")?;
+    let mut parts = version_str.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
 
-fn main() -> anyhow::Result<()> {
-    Args::parse();
+fn require_jj_version(min_major: u32, min_minor: u32) -> Result<(), String> {
+    match jj_version() {
+        None => Err("jj-cli not found. Install with: cargo install --locked jj-cli".into()),
+        Some((major, minor, _))
+            if major < min_major || (major == min_major && minor < min_minor) =>
+        {
+            Err(format!(
+                "jj-cli {major}.{minor} found, but >= {min_major}.{min_minor} required. \
+                 Upgrade with: cargo install --locked jj-cli"
+            ))
+        }
+        Some(_) => Ok(()),
+    }
+}
 
-    if let Err(msg) = agent_shell_parser::require_jj_version(0, 40) {
+pub fn run() -> anyhow::Result<()> {
+    if let Err(msg) = require_jj_version(0, 40) {
         eprintln!("{msg}");
         std::process::exit(1);
     }
@@ -44,18 +60,15 @@ fn main() -> anyhow::Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Clean up the directory we created if jj failed
         let _ = std::fs::remove_dir_all(&worktree_path);
         bail!("jj workspace add failed: {stderr}");
     }
 
-    // Print any jj output to stderr for visibility
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !stderr.is_empty() {
         eprint!("{stderr}");
     }
 
-    // Print the absolute worktree path to stdout — Claude Code uses this
     let abs_path = worktree_path.canonicalize().unwrap_or(worktree_path);
     print!("{}", abs_path.display());
 

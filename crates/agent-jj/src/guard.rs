@@ -1,21 +1,23 @@
 use std::path::Path;
+use std::process::Command;
 
 use agent_shell_parser::parse::{parse_with_substitutions, tokenize};
 use anyhow::Context;
-use clap::Parser;
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Claude Code PreToolUse hook — blocks git commands in jj-colocated repos. Reads JSON from stdin."
-)]
-struct Args {}
+use crate::policy;
 
-mod policy;
+fn is_jj_colocated(cwd: &Path) -> bool {
+    Command::new("jj")
+        .arg("root")
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
 
-fn main() -> anyhow::Result<()> {
-    Args::parse();
-
+pub fn run() -> anyhow::Result<()> {
     let input: agent_shell_parser::hook::PreToolUseInput =
         agent_shell_parser::hook::parse_input().context("failed to parse PreToolUse hook input")?;
 
@@ -47,12 +49,12 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let session_is_jj = agent_shell_parser::is_jj_colocated(Path::new(session_cwd));
+    let session_is_jj = is_jj_colocated(Path::new(session_cwd));
     if !session_is_jj {
         let effective_cwds = agent_shell_parser::path::effective_cwd(&pipeline, session_cwd);
         let any_jj = effective_cwds
             .iter()
-            .any(|cwd| agent_shell_parser::is_jj_colocated(Path::new(cwd)));
+            .any(|cwd| is_jj_colocated(Path::new(cwd)));
         if !any_jj {
             std::process::exit(0);
         }
@@ -84,6 +86,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_shell_parser::parse::parse_with_substitutions;
 
     fn is_blocked(cmd: &str) -> bool {
         let pipeline = parse_with_substitutions(cmd).unwrap();
@@ -227,7 +230,6 @@ mod tests {
 
     #[test]
     fn cwd_multiple_git_segments_different_cwds() {
-        // The key security fix: both git segments should be tracked
         assert_eq!(
             ecwd(
                 "cd /non-jj-repo && git status && cd /jj-repo && git push origin main",

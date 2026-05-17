@@ -2,7 +2,7 @@
 //!
 //! This module is **policy-free** — it decomposes shell commands into
 //! structured representations but makes no allow/deny decisions.
-//! Consumers (agent-jj-guard, cc-toolgate) build policy on top.
+//! Consumers (agent-jj, cc-toolgate) build policy on top.
 //!
 //! ## Entry points
 //!
