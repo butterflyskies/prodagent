@@ -4,6 +4,32 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use clap::Parser;
 
+fn jj_version() -> Option<(u32, u32, u32)> {
+    let output = Command::new("jj").arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version_str = text.strip_prefix("jj ")?;
+    let mut parts = version_str.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+fn require_jj_version(min_major: u32, min_minor: u32) -> Result<(), String> {
+    match jj_version() {
+        None => Err("jj-cli not found. Install with: cargo install --locked jj-cli".into()),
+        Some((major, minor, _))
+            if major < min_major || (major == min_major && minor < min_minor) =>
+        {
+            Err(format!(
+                "jj-cli {major}.{minor} found, but >= {min_major}.{min_minor} required. \
+                 Upgrade with: cargo install --locked jj-cli"
+            ))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     version,
@@ -14,7 +40,7 @@ struct Args {}
 fn main() -> anyhow::Result<()> {
     Args::parse();
 
-    if let Err(msg) = agent_shell_parser::require_jj_version(0, 40) {
+    if let Err(msg) = require_jj_version(0, 40) {
         eprintln!("{msg}");
         std::process::exit(1);
     }

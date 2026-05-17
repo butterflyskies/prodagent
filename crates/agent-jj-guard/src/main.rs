@@ -1,8 +1,20 @@
 use std::path::Path;
+use std::process::Command;
 
 use agent_shell_parser::parse::{parse_with_substitutions, tokenize};
 use anyhow::Context;
 use clap::Parser;
+
+fn is_jj_colocated(cwd: &Path) -> bool {
+    Command::new("jj")
+        .arg("root")
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
 
 #[derive(Parser)]
 #[command(
@@ -47,12 +59,12 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let session_is_jj = agent_shell_parser::is_jj_colocated(Path::new(session_cwd));
+    let session_is_jj = is_jj_colocated(Path::new(session_cwd));
     if !session_is_jj {
         let effective_cwds = agent_shell_parser::path::effective_cwd(&pipeline, session_cwd);
         let any_jj = effective_cwds
             .iter()
-            .any(|cwd| agent_shell_parser::is_jj_colocated(Path::new(cwd)));
+            .any(|cwd| is_jj_colocated(Path::new(cwd)));
         if !any_jj {
             std::process::exit(0);
         }
