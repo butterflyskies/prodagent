@@ -1,14 +1,14 @@
 use agent_shell_parser::parse::{
-    command_characteristics, resolve_command, IndirectExecution, ResolvedCommand,
+    command_characteristics, resolve_command, tokenize, IndirectExecution, ResolvedCommand, Word,
 };
 
-fn words(s: &str) -> Vec<String> {
-    shlex::split(s).unwrap_or_else(|| s.split_whitespace().map(String::from).collect())
+fn words(s: &str) -> Vec<Word> {
+    tokenize(s)
 }
 
 fn resolved_command_name(cmd: &str) -> String {
     match resolve_command(&words(cmd)) {
-        ResolvedCommand::Resolved(p) => p.command,
+        ResolvedCommand::Resolved(p) => p.command.into_inner(),
         ResolvedCommand::Unanalyzable(u) => format!("UNANALYZABLE:{}", u.command),
         _ => "UNKNOWN".to_string(),
     }
@@ -468,16 +468,16 @@ fn resolve_dynamic_is_unanalyzable() {
 
 #[test]
 fn resolve_depth_limit() {
-    let mut tokens: Vec<String> = Vec::new();
+    let mut tokens: Vec<Word> = Vec::new();
     for i in 0..33 {
         if i % 2 == 0 {
-            tokens.push("sudo".to_string());
+            tokens.push(Word::from("sudo"));
         } else {
-            tokens.push("env".to_string());
+            tokens.push(Word::from("env"));
         }
     }
-    tokens.push("git".to_string());
-    tokens.push("commit".to_string());
+    tokens.push(Word::from("git"));
+    tokens.push(Word::from("commit"));
 
     let result = resolve_command(&tokens);
     assert!(matches!(result, ResolvedCommand::Unanalyzable(_)));

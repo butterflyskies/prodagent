@@ -1,8 +1,9 @@
 use std::sync::LazyLock;
 
-use super::tokenize::{find_base_command, is_env_assignment, parse_command};
+use super::tokenize::{find_base_command, is_env_assignment};
 use super::types::{
-    CommandConfig, IndirectExecution, ResolvedCommand, UnanalyzableCommand, WrapperSpec,
+    CommandConfig, IndirectExecution, ParsedCommand, ResolvedCommand, UnanalyzableCommand, Word,
+    WrapperSpec,
 };
 
 static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(|| {
@@ -19,7 +20,7 @@ pub fn default_command_config() -> &'static CommandConfig {
 ///
 /// Recursively strips transparent wrappers and classifies unanalyzable
 /// patterns (eval, shell spawn, source) based on the embedded command config.
-pub fn resolve_command(words: &[String]) -> ResolvedCommand {
+pub fn resolve_command(words: &[Word]) -> ResolvedCommand {
     resolve_command_with(words, &DEFAULT_CONFIG)
 }
 
@@ -30,7 +31,7 @@ const MAX_RESOLVE_DEPTH: usize = 32;
 ///
 /// Same as [`resolve_command`] but accepts caller-provided [`CommandConfig`],
 /// allowing consumers to extend or replace the default command knowledge.
-pub fn resolve_command_with(words: &[String], config: &CommandConfig) -> ResolvedCommand {
+pub fn resolve_command_with(words: &[Word], config: &CommandConfig) -> ResolvedCommand {
     resolve_command_impl(words, config, 0)
 }
 
@@ -41,7 +42,7 @@ pub fn resolve_command_with(words: &[String], config: &CommandConfig) -> Resolve
 /// looks at the outermost command.
 pub(crate) fn classify_surface(
     base: &str,
-    words: &[String],
+    words: &[Word],
     config: &CommandConfig,
 ) -> Option<IndirectExecution> {
     if base.starts_with('$') {
@@ -67,7 +68,7 @@ pub(crate) fn classify_surface(
     None
 }
 
-fn resolve_command_impl(words: &[String], config: &CommandConfig, depth: usize) -> ResolvedCommand {
+fn resolve_command_impl(words: &[Word], config: &CommandConfig, depth: usize) -> ResolvedCommand {
     if depth >= MAX_RESOLVE_DEPTH {
         return ResolvedCommand::Unanalyzable(UnanalyzableCommand {
             command: find_base_command(words),
@@ -85,7 +86,9 @@ fn resolve_command_impl(words: &[String], config: &CommandConfig, depth: usize) 
                 kind,
             });
         }
-        None => return ResolvedCommand::Resolved(parse_command(&words.join(" "))),
+        None => {
+            return ResolvedCommand::Resolved(ParsedCommand::from_words(words));
+        }
     }
 
     // It's a wrapper — check for unanalyzable flags, then strip and recurse.
@@ -110,23 +113,19 @@ fn resolve_command_impl(words: &[String], config: &CommandConfig, depth: usize) 
     }
     let inner_start = strip_with_spec_idx(spec, words);
     match inner_start {
-        None => return ResolvedCommand::Resolved(parse_command("")),
+        None => ResolvedCommand::Resolved(ParsedCommand::from_words(&[])),
         Some(idx) => {
             debug_assert_ne!(idx, 0, "wrapper should always advance past itself");
-            if idx > 0 {
-                return resolve_command_impl(&words[idx..], config, depth + 1);
-            }
+            resolve_command_impl(&words[idx..], config, depth + 1)
         }
     }
-
-    ResolvedCommand::Resolved(parse_command(&words.join(" ")))
 }
 
 /// Strip a wrapper command using its spec and return the remaining arguments.
 ///
 /// Correctly handles value-consuming flags, env assignments, and `--`
 /// terminators as specified by the [`WrapperSpec`].
-pub fn strip_with_spec(spec: &WrapperSpec, words: &[String]) -> Vec<String> {
+pub fn strip_with_spec(spec: &WrapperSpec, words: &[Word]) -> Vec<Word> {
     match strip_with_spec_idx(spec, words) {
         None => vec![],
         Some(idx) => words[idx..].to_vec(),
@@ -136,13 +135,13 @@ pub fn strip_with_spec(spec: &WrapperSpec, words: &[String]) -> Vec<String> {
 /// Strip a wrapper command using its spec and return the index where the inner
 /// command starts, or `None` if no inner command was found.
 ///
-/// This avoids allocating a new `Vec<String>` — callers can slice the original
+/// This avoids allocating a new `Vec<Word>` — callers can slice the original
 /// word list directly.
 ///
 /// Correctly handles value-consuming flags (including combined short forms like
 /// `-uroot`), env assignments, and `--` terminators as specified by the
 /// [`WrapperSpec`].
-fn strip_with_spec_idx(spec: &WrapperSpec, words: &[String]) -> Option<usize> {
+fn strip_with_spec_idx(spec: &WrapperSpec, words: &[Word]) -> Option<usize> {
     let wrapper_idx = words.iter().position(|w| {
         let base = match w.rsplit_once('/') {
             Some((_, name)) => name,
@@ -218,138 +217,5 @@ fn strip_with_spec_idx(spec: &WrapperSpec, words: &[String]) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn words(s: &str) -> Vec<String> {
-        shlex::split(s).unwrap_or_else(|| s.split_whitespace().map(String::from).collect())
-    }
-
-    fn spec(name: &str) -> WrapperSpec {
-        WrapperSpec {
-            name: name.to_string(),
-            short_value_flags: vec!["-v".to_string()],
-            long_value_flags: vec!["--val".to_string()],
-            unanalyzable_flags: vec![],
-            skip_env_assignments: false,
-            has_terminator: true,
-            skip_positionals: 0,
-        }
-    }
-
-    #[test]
-    fn strip_simple_wrapper() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn strip_value_consuming_short_flag() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap -v thing inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn strip_value_consuming_long_flag() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap --val thing inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn strip_long_flag_equals_form() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap --val=thing inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn strip_terminator_stops_flag_processing() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap -x -- -v notflag cmd"));
-        assert_eq!(result, words("-v notflag cmd"));
-    }
-
-    #[test]
-    fn strip_boolean_flag_skipped() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap -x --verbose inner"));
-        assert_eq!(result, words("inner"));
-    }
-
-    #[test]
-    fn strip_env_assignments_when_configured() {
-        let s = WrapperSpec {
-            name: "wrap".to_string(),
-            short_value_flags: vec![],
-            long_value_flags: vec![],
-            unanalyzable_flags: vec![],
-            skip_env_assignments: true,
-            has_terminator: false,
-            skip_positionals: 0,
-        };
-        let result = strip_with_spec(&s, &words("wrap FOO=bar BAZ=qux inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn strip_truncated_value_flag_returns_empty() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap -v"));
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn strip_no_inner_command_returns_empty() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("wrap -x --verbose"));
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn strip_path_prefixed_wrapper() {
-        let s = spec("wrap");
-        let result = strip_with_spec(&s, &words("/usr/bin/wrap inner cmd"));
-        assert_eq!(result, words("inner cmd"));
-    }
-
-    #[test]
-    fn resolve_with_custom_config() {
-        let config = CommandConfig {
-            wrappers: vec![WrapperSpec {
-                name: "mywrap".to_string(),
-                short_value_flags: vec!["-x".to_string()],
-                long_value_flags: vec![],
-                unanalyzable_flags: vec![],
-                skip_env_assignments: false,
-                has_terminator: false,
-                skip_positionals: 0,
-            }],
-            shells: vec!["mysh".to_string()],
-            eval_commands: vec!["myeval".to_string()],
-            source_commands: vec!["mysource".to_string()],
-        };
-
-        match resolve_command_with(&words("mywrap -x val inner"), &config) {
-            ResolvedCommand::Resolved(p) => assert_eq!(p.command, "inner"),
-            _ => panic!("expected Resolved"),
-        }
-
-        assert!(matches!(
-            resolve_command_with(&words("mysh -c 'code'"), &config),
-            ResolvedCommand::Unanalyzable(_)
-        ));
-
-        assert!(matches!(
-            resolve_command_with(&words("myeval 'code'"), &config),
-            ResolvedCommand::Unanalyzable(_)
-        ));
-
-        assert!(matches!(
-            resolve_command_with(&words("mysource file.sh"), &config),
-            ResolvedCommand::Unanalyzable(_)
-        ));
-    }
-}
+#[path = "resolve_tests.rs"]
+mod resolve_tests;

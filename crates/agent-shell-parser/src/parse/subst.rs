@@ -1,4 +1,4 @@
-use super::types::{ParseError, ParsedPipeline, Redirection, SubstitutionSpan};
+use super::types::{ParseError, ParsedPipeline, Redirection, SubstitutionSpan, Word};
 use super::walk::{SegmentInfo, WalkResult};
 use tree_sitter::Node;
 
@@ -14,6 +14,8 @@ pub(super) struct BuiltSegment {
     pub(super) trim_offset: usize,
     pub(super) command: String,
     pub(super) redirection: Option<Redirection>,
+    /// Pre-tokenized words — always populated (no implicit fallback).
+    pub(super) words: Vec<Word>,
 }
 
 const MAX_SUBSTITUTION_DEPTH: usize = 32;
@@ -68,6 +70,7 @@ pub(super) fn build_segments(walk: &WalkResult, source: &str) -> Vec<BuiltSegmen
                 trim_offset,
                 command: trimmed.to_string(),
                 redirection: seg.redirection.clone(),
+                words: seg.words.clone(),
             })
         })
         .collect()

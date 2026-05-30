@@ -1,6 +1,37 @@
 use super::redirect::detect_redirections;
-use super::types::{Operator, Redirection};
+use super::tokenize::shlex_or_whitespace_words;
+use super::types::{Operator, Redirection, Word};
 use tree_sitter::Node;
+
+/// Strip the outermost matching quote pair from a word.
+///
+/// Handles single quotes, double quotes, and `$'...'` ANSI-C quotes.
+/// Unmatched or absent quotes leave the word unchanged. Escape sequences
+/// inside `$'...'` are left as-is (they are source text, not interpreted).
+fn strip_quotes(word: &str) -> Word {
+    // $'...' ANSI-C quotes
+    if let Some(inner) = word.strip_prefix("$'") {
+        if let Some(inner) = inner.strip_suffix('\'') {
+            return Word::from(inner);
+        }
+        return Word::from(word);
+    }
+    // Single quotes
+    if let Some(inner) = word.strip_prefix('\'') {
+        if let Some(inner) = inner.strip_suffix('\'') {
+            return Word::from(inner);
+        }
+        return Word::from(word);
+    }
+    // Double quotes
+    if let Some(inner) = word.strip_prefix('"') {
+        if let Some(inner) = inner.strip_suffix('"') {
+            return Word::from(inner);
+        }
+        return Word::from(word);
+    }
+    Word::from(word)
+}
 
 pub(super) struct WalkResult {
     pub(super) segments: Vec<SegmentInfo>,
@@ -11,6 +42,13 @@ pub(super) struct SegmentInfo {
     pub(super) start: usize,
     pub(super) end: usize,
     pub(super) redirection: Option<Redirection>,
+    /// Pre-tokenized words for this segment.
+    ///
+    /// Always populated — either via tree-sitter word extraction (for known
+    /// node types like `command`, `declaration_command`, `test_command`) or
+    /// via explicit shlex tokenization at the call site (for unknown node
+    /// types and heredoc loose words). There is no implicit fallback.
+    pub(super) words: Vec<Word>,
 }
 
 impl WalkResult {
@@ -21,12 +59,18 @@ impl WalkResult {
         }
     }
 
-    pub(super) fn single(start: usize, end: usize, redir: Option<Redirection>) -> Self {
+    pub(super) fn single_with_words(
+        start: usize,
+        end: usize,
+        redir: Option<Redirection>,
+        words: Vec<Word>,
+    ) -> Self {
         Self {
             segments: vec![SegmentInfo {
                 start,
                 end,
                 redirection: redir,
+                words,
             }],
             operators: vec![],
         }
@@ -64,17 +108,211 @@ fn propagate_redirect(result: &mut WalkResult, node_kind: &str, redir: &Redirect
     }
 }
 
+/// Extract word-level tokens from a `command` node's named children.
+///
+/// Each named child of a tree-sitter `command` node represents one shell
+/// word: `command_name`, `word`, `raw_string`, `string`,
+/// `command_substitution`, `process_substitution`, `variable_assignment`
+/// (for leading `KEY=VALUE`), `concatenation`, etc.
+///
+/// The full source text of each child is used, preserving quotes and
+/// substitution delimiters. This matches shell semantics: `$(echo test)`
+/// is one word, `'hello world'` is one word.
+fn extract_command_words(node: Node, source: &[u8]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        // Skip redirect-related nodes — they are not command words.
+        if matches!(
+            child.kind(),
+            "file_redirect" | "herestring_redirect" | "heredoc_redirect" | "heredoc_body"
+        ) {
+            continue;
+        }
+        if let Ok(text) = child.utf8_text(source) {
+            words.push(strip_quotes(text));
+        }
+    }
+    words
+}
+
+/// Extract word-level tokens from a `declaration_command` node.
+///
+/// Declaration commands (`export`, `declare`, `local`, `readonly`, `typeset`)
+/// have the keyword as an anonymous child and `variable_assignment` or
+/// `word` nodes as named children. We include the keyword as the first word.
+fn extract_declaration_words(node: Node, source: &[u8]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // Anonymous keyword nodes: export, declare, local, readonly, typeset
+            "export" | "declare" | "local" | "readonly" | "typeset" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(strip_quotes(text));
+                }
+            }
+            _ if child.is_named() => {
+                // Skip redirect-related nodes.
+                if matches!(
+                    child.kind(),
+                    "file_redirect" | "herestring_redirect" | "heredoc_redirect" | "heredoc_body"
+                ) {
+                    continue;
+                }
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(strip_quotes(text));
+                }
+            }
+            _ => {}
+        }
+    }
+    words
+}
+
+/// Extract word-level tokens from a `variable_assignments` (plural) node.
+///
+/// This node wraps multiple `variable_assignment` children. Each child
+/// becomes one word (e.g. `FOO=bar BAZ=qux` -> `["FOO=bar", "BAZ=qux"]`).
+fn extract_variable_assignments_words(node: Node, source: &[u8]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Ok(text) = child.utf8_text(source) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                words.push(strip_quotes(trimmed));
+            }
+        }
+    }
+    words
+}
+
+/// Extract word-level tokens from an `unset_command` node.
+///
+/// Structure: `unset` (anonymous) followed by `variable_name` children.
+fn extract_unset_words(node: Node, source: &[u8]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "unset" | "unsetenv" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(strip_quotes(text));
+                }
+            }
+            _ if child.is_named() => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(strip_quotes(text));
+                }
+            }
+            _ => {}
+        }
+    }
+    words
+}
+
+/// Extract word-level tokens from a `test_command` node.
+///
+/// tree-sitter-bash parses `[[ -f "foo bar" ]]` into structured children:
+/// `[[` (anonymous), `test_operator`, string/word, `]]` (anonymous).
+/// This function walks those children (including nested `binary_expression`
+/// and `unary_expression`) and collects words, stripping quotes. The
+/// bracket delimiters (`[[`, `]]`, `[`, `]`) are included as words.
+fn extract_test_words(node: Node, source: &[u8]) -> Vec<Word> {
+    let mut words = Vec::new();
+    extract_test_words_recursive(node, source, &mut words);
+    words
+}
+
+fn extract_test_words_recursive(node: Node, source: &[u8], words: &mut Vec<Word>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // Bracket delimiters — include as words
+            "[[" | "]]" | "[" | "]" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(Word::from(text));
+                }
+            }
+            // Compound test expressions — recurse into them
+            "binary_expression" | "unary_expression" => {
+                extract_test_words_recursive(child, source, words);
+            }
+            // Operators and leaf tokens — extract text
+            "test_operator" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(Word::from(text));
+                }
+            }
+            // Named nodes (string, word, variable, etc.) — extract and strip quotes
+            _ if child.is_named() => {
+                if let Ok(text) = child.utf8_text(source) {
+                    words.push(strip_quotes(text));
+                }
+            }
+            // Anonymous operators like ==, !=, =~, -eq, &&, ||, etc.
+            _ => {
+                let text = child.utf8_text(source).unwrap_or("");
+                if !text.is_empty() && text != "(" && text != ")" {
+                    // Skip parentheses used for grouping, keep operators
+                    if text.starts_with('-')
+                        || text.contains('=')
+                        || text == "!"
+                        || text == ">"
+                        || text == "<"
+                        || text == "&&"
+                        || text == "||"
+                    {
+                        words.push(Word::from(text));
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn walk_ast(node: Node, source: &[u8]) -> WalkResult {
     match node.kind() {
         "program" => walk_program(node, source),
         "list" => walk_list(node, source),
         "pipeline" => walk_pipeline(node, source),
-        "command" | "declaration_command" | "test_command" | "unset_command" => {
+        "command" => {
             let redir = detect_redirections(node, source);
-            WalkResult::single(node.start_byte(), node.end_byte(), redir)
+            let words = extract_command_words(node, source);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), redir, words)
         }
-        "variable_assignment" | "variable_assignments" => {
-            WalkResult::single(node.start_byte(), node.end_byte(), None)
+        "declaration_command" => {
+            let redir = detect_redirections(node, source);
+            let words = extract_declaration_words(node, source);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), redir, words)
+        }
+        "unset_command" => {
+            let redir = detect_redirections(node, source);
+            let words = extract_unset_words(node, source);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), redir, words)
+        }
+        "test_command" => {
+            let redir = detect_redirections(node, source);
+            let words = extract_test_words(node, source);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), redir, words)
+        }
+        "variable_assignment" => {
+            // Bare variable assignment (no command). The whole text is
+            // effectively one "word". Use full text as a single-element list.
+            let text = node.utf8_text(source).unwrap_or("").trim();
+            let words: Vec<Word> = if text.is_empty() {
+                vec![]
+            } else {
+                vec![strip_quotes(text)]
+            };
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), None, words)
+        }
+        "variable_assignments" => {
+            // Multiple bare variable assignments (e.g. `FOO=bar BAZ=qux`).
+            // Iterate named children to produce one word per assignment.
+            let words = extract_variable_assignments_words(node, source);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), None, words)
         }
         "redirected_statement" => walk_redirected(node, source),
         "for_statement" | "while_statement" | "until_statement" | "c_style_for_statement" => {
@@ -89,7 +327,12 @@ pub(super) fn walk_ast(node: Node, source: &[u8]) -> WalkResult {
         "negated_command" => walk_negated(node, source),
         "function_definition" => walk_function(node, source),
         "comment" | "heredoc_body" => WalkResult::empty(),
-        _ if node.is_named() => WalkResult::single(node.start_byte(), node.end_byte(), None),
+        _ if node.is_named() => {
+            // Unknown node type — shlex fallback, explicit and auditable.
+            let text = node.utf8_text(source).unwrap_or("");
+            let words = shlex_or_whitespace_words(text);
+            WalkResult::single_with_words(node.start_byte(), node.end_byte(), None, words)
+        }
         _ => WalkResult::empty(),
     }
 }
@@ -223,10 +466,14 @@ fn walk_redirected(node: Node, source: &[u8]) -> WalkResult {
                     }
                     if is_leaf_command(sib) {
                         let end = effective_end(node).min(child.start_byte());
-                        full.append(
-                            WalkResult::single(sib.start_byte(), end, redir.clone()),
-                            None,
+                        let words = extract_leaf_words(sib, source);
+                        let wr = WalkResult::single_with_words(
+                            sib.start_byte(),
+                            end,
+                            redir.clone(),
+                            words,
                         );
+                        full.append(wr, None);
                     } else {
                         let mut body = walk_ast(sib, source);
                         if let Some(ref r) = redir {
@@ -254,7 +501,8 @@ fn walk_redirected(node: Node, source: &[u8]) -> WalkResult {
         }
         if is_leaf_command(child) {
             let end = effective_end(node);
-            return WalkResult::single(node.start_byte(), end, redir);
+            let words = extract_leaf_words(child, source);
+            return WalkResult::single_with_words(node.start_byte(), end, redir, words);
         }
         let mut result = walk_ast(child, source);
         if let Some(ref r) = redir {
@@ -264,7 +512,13 @@ fn walk_redirected(node: Node, source: &[u8]) -> WalkResult {
     }
 
     let end = effective_end(node);
-    WalkResult::single(node.start_byte(), end, redir)
+    // Redirected statement with no recognized body — shlex the visible text.
+    let text = source
+        .get(node.start_byte()..end)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+    let words = shlex_or_whitespace_words(text);
+    WalkResult::single_with_words(node.start_byte(), end, redir, words)
 }
 
 fn walk_heredoc_redirect(node: Node, source: &[u8]) -> WalkResult {
@@ -277,8 +531,14 @@ fn walk_heredoc_redirect(node: Node, source: &[u8]) -> WalkResult {
         match child.kind() {
             "pipeline" | "list" | "command" | "redirected_statement" => {
                 if let Some(start) = loose_words_start.take() {
+                    // Heredoc loose words — no tree-sitter structure, use shlex.
+                    let text = source
+                        .get(start..loose_words_end)
+                        .and_then(|b| std::str::from_utf8(b).ok())
+                        .unwrap_or("");
+                    let words = shlex_or_whitespace_words(text);
                     result.append(
-                        WalkResult::single(start, loose_words_end, None),
+                        WalkResult::single_with_words(start, loose_words_end, None, words),
                         Some(Operator::Semi),
                     );
                 }
@@ -296,8 +556,14 @@ fn walk_heredoc_redirect(node: Node, source: &[u8]) -> WalkResult {
     }
 
     if let Some(start) = loose_words_start {
+        // Heredoc trailing loose words — no tree-sitter structure, use shlex.
+        let text = source
+            .get(start..loose_words_end)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("");
+        let words = shlex_or_whitespace_words(text);
         result.append(
-            WalkResult::single(start, loose_words_end, None),
+            WalkResult::single_with_words(start, loose_words_end, None, words),
             Some(Operator::Semi),
         );
     }
@@ -454,7 +720,34 @@ fn is_leaf_command(node: Node) -> bool {
             | "test_command"
             | "unset_command"
             | "variable_assignment"
+            | "variable_assignments"
     )
+}
+
+/// Extract tree-sitter words from a leaf command node.
+///
+/// All leaf command node types have word-level extraction.
+fn extract_leaf_words(node: Node, source: &[u8]) -> Vec<Word> {
+    match node.kind() {
+        "command" => extract_command_words(node, source),
+        "declaration_command" => extract_declaration_words(node, source),
+        "unset_command" => extract_unset_words(node, source),
+        "test_command" => extract_test_words(node, source),
+        "variable_assignment" => {
+            let text = node.utf8_text(source).unwrap_or("").trim();
+            if text.is_empty() {
+                vec![]
+            } else {
+                vec![strip_quotes(text)]
+            }
+        }
+        "variable_assignments" => extract_variable_assignments_words(node, source),
+        _ => {
+            // Unknown leaf type — shlex fallback, explicit and auditable.
+            let text = node.utf8_text(source).unwrap_or("");
+            shlex_or_whitespace_words(text)
+        }
+    }
 }
 
 fn effective_end(node: Node) -> usize {
@@ -471,5 +764,45 @@ fn trim_at_heredoc_body(node: Node, end: &mut usize) {
             return;
         }
         trim_at_heredoc_body(child, end);
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::strip_quotes;
+
+    #[test]
+    fn strip_quotes_empty_string() {
+        assert_eq!(strip_quotes(""), "");
+    }
+
+    #[test]
+    fn strip_quotes_empty_single_quotes() {
+        let w = strip_quotes("''");
+        assert_eq!(w, "");
+    }
+
+    #[test]
+    fn strip_quotes_empty_double_quotes() {
+        let w = strip_quotes("\"\"");
+        assert_eq!(w, "");
+    }
+
+    #[test]
+    fn strip_quotes_ansi_c_quotes() {
+        let w = strip_quotes("$'hello'");
+        assert_eq!(w, "hello");
+    }
+
+    #[test]
+    fn strip_quotes_unclosed_double_quote() {
+        let w = strip_quotes("\"unclosed");
+        assert_eq!(w, "\"unclosed");
+    }
+
+    #[test]
+    fn strip_quotes_unmatched_single_quote() {
+        let w = strip_quotes("'unmatched");
+        assert_eq!(w, "'unmatched");
     }
 }
