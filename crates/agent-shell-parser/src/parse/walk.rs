@@ -327,6 +327,7 @@ pub(super) fn walk_ast(node: Node, source: &[u8]) -> WalkResult {
         "negated_command" => walk_negated(node, source),
         "function_definition" => walk_function(node, source),
         "comment" | "heredoc_body" => WalkResult::empty(),
+        "ERROR" => WalkResult::empty(),
         _ if node.is_named() => {
             // Unknown node type — shlex fallback, explicit and auditable.
             let text = node.utf8_text(source).unwrap_or("");
