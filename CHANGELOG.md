@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-30
+
+### Added
+
+- `agent-shell-parser`: `ShellSegment::words` — pre-tokenized words from tree-sitter at parse time. Quotes stripped, substitutions preserved as single tokens.
+- `agent-shell-parser`: Tree-sitter word extraction for `command`, `declaration_command`, `unset_command`, `variable_assignment`, and `test_command` nodes. Explicit shlex at 4 documented call sites (catch-all, redirected body, heredoc loose words).
+- `agent-shell-parser`: Word extraction tests split into `shell_tests.rs`.
+
+### Changed
+
+- **BREAKING** `agent-shell-parser`: `ShellSegment` has a new public field `words: Vec<Word>`. Code that constructs `ShellSegment` directly must include the field.
+- **BREAKING** `agent-shell-parser`: All public functions and types that previously used `String` for word/command representations now use `Word`. This includes `resolve_command`, `resolve_command_with` (`&[String]` → `&[Word]`), `strip_with_spec` (`Vec<String>` → `Vec<Word>`), `extract_cd_target` (`Option<&str>` → `Option<&Word>`), `extract_git_c_path` (`Option<String>` → `Option<&Word>`), `tokenize` (`Vec<String>` → `Vec<Word>`), `find_base_command` (`&[String]` → `&[Word]`), `parse_command` return type, and `ParsedCommand`/`CommandArg`/`ParsedFlag` field types.
+- `agent-jj`: `guard.rs` and `path.rs` migrated from `tokenize(&seg.command)` to `seg.words`.
+
+### Fixed
+
+- `agent-shell-parser`: Redirect tokens (`>`, `>>`, etc.) excluded from word lists in `redirected_statement` nodes.
+
 ## [0.4.2] - 2026-05-16
 
 ### Fixed

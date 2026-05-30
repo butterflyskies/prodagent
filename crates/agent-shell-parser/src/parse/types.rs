@@ -1,4 +1,155 @@
+use std::borrow::Borrow;
 use std::fmt;
+use std::ops::Deref;
+
+use super::tokenize::{is_env_assignment, is_valid_env_key};
+
+// ---------------------------------------------------------------------------
+// Word newtype
+// ---------------------------------------------------------------------------
+
+/// A single shell word token.
+///
+/// Wraps a `String` with domain-specific helpers for shell analysis (flag
+/// detection, env assignment parsing, basename extraction). Derefs to `str`
+/// for seamless use wherever a string slice is expected.
+///
+/// Note: `Word` carries raw shell text extracted from the parse tree. It is
+/// not sanitized or validated — consumers must not treat word equality as
+/// proof of command identity without considering the full resolution pipeline.
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Word(String);
+
+impl Word {
+    /// Returns `true` if this word starts with `-`.
+    pub fn is_flag(&self) -> bool {
+        self.0.starts_with('-')
+    }
+
+    /// Returns `true` if this word is a valid `KEY=VALUE` environment assignment.
+    pub fn is_assignment(&self) -> bool {
+        is_env_assignment(&self.0)
+    }
+
+    /// Split at the first `=` and return `(key, value)` if the key is a valid
+    /// environment variable name.
+    pub fn as_assignment(&self) -> Option<(&str, &str)> {
+        let eq_pos = self.0.find('=')?;
+        let key = &self.0[..eq_pos];
+        if is_valid_env_key(key) {
+            Some((key, &self.0[eq_pos + 1..]))
+        } else {
+            None
+        }
+    }
+
+    /// Strip the path prefix, e.g. `/usr/bin/ls` -> `ls`.
+    pub fn basename(&self) -> &str {
+        match self.0.rsplit_once('/') {
+            Some((_, name)) if !name.is_empty() => name,
+            _ => &self.0,
+        }
+    }
+
+    /// Explicit accessor for the inner string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume and return the inner `String`.
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+// --- Deref / AsRef / Borrow ---
+
+impl Deref for Word {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Word {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for Word {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+// --- Display / Debug ---
+
+impl fmt::Display for Word {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for Word {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+// --- From conversions ---
+
+impl From<String> for Word {
+    fn from(s: String) -> Self {
+        Word(s)
+    }
+}
+
+impl From<&str> for Word {
+    fn from(s: &str) -> Self {
+        Word(s.to_string())
+    }
+}
+
+// --- PartialEq with str types ---
+
+impl PartialEq<str> for Word {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for Word {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Word> for str {
+    fn eq(&self, other: &Word) -> bool {
+        self == other.0
+    }
+}
+
+impl PartialEq<Word> for &str {
+    fn eq(&self, other: &Word) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialEq<String> for Word {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Word> for String {
+    fn eq(&self, other: &Word) -> bool {
+        *self == other.0
+    }
+}
 
 /// Shell operator separating consecutive pipeline segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +331,25 @@ pub struct ShellSegment {
     /// the recursively-parsed contents with byte positions into this text.
     pub command: String,
 
+    /// Pre-tokenized word list as tree-sitter understood word boundaries.
+    ///
+    /// Unlike shlex tokenization of [`command`](Self::command), this
+    /// correctly preserves substitution syntax as single tokens. For
+    /// example, `export FOO=$(echo test) BAR=baz` produces
+    /// `["export", "FOO=$(echo test)", "BAR=baz"]` — shlex would
+    /// incorrectly split inside the `$(...)`.
+    ///
+    /// Quotes are stripped: `"foo bar"` becomes `foo bar`. Both
+    /// tree-sitter extraction and shlex fallback produce unquoted tokens.
+    /// Substitution delimiters (`$(...)`, `` `...` ``, `<(...)`) are
+    /// preserved as-is since they are semantic, not syntactic wrappers.
+    ///
+    /// Falls back to shlex/whitespace tokenization when tree-sitter does
+    /// not provide word-level structure (e.g. unknown node types or
+    /// heredoc loose words). The fallback is documented per node type in
+    /// the parser source.
+    pub words: Vec<Word>,
+
     /// Output redirection detected on a wrapping construct.
     ///
     /// When the parser extracts commands from inside a control-flow block
@@ -281,9 +451,9 @@ pub struct CommandCharacteristics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedFlag {
     /// The flag name without its value (e.g., `--force`, `-f`).
-    pub name: String,
+    pub name: Word,
     /// Value if specified with `=` (e.g., `--color=always` → `Some("always")`).
-    pub value: Option<String>,
+    pub value: Option<Word>,
 }
 
 /// An argument in a parsed command line.
@@ -293,7 +463,7 @@ pub enum CommandArg {
     /// A flag token (e.g., `--force`, `-f`, `--color=always`).
     Flag(ParsedFlag),
     /// A non-flag token (subcommand, path, or other argument).
-    Positional(String),
+    Positional(Word),
 }
 
 /// Structurally decomposed command with arguments in source order.
@@ -305,12 +475,71 @@ pub enum CommandArg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommand {
     /// Base command name (path stripped, env vars skipped).
-    pub command: String,
+    pub command: Word,
     /// Arguments in source order — flags and positionals interleaved.
     pub args: Vec<CommandArg>,
 }
 
 impl ParsedCommand {
+    /// Construct a `ParsedCommand` directly from a word slice, avoiding a
+    /// string round-trip through shlex.
+    ///
+    /// - First word that is not an env assignment becomes the `command`
+    ///   (with path prefix stripped).
+    /// - Remaining words are classified as [`CommandArg::Flag`] or
+    ///   [`CommandArg::Positional`] using the same schema-free rules as
+    ///   [`parse_command`](super::tokenize::parse_command).
+    pub fn from_words(words: &[Word]) -> Self {
+        let cmd_idx = words.iter().position(|w| !w.is_assignment());
+        let Some(cmd_idx) = cmd_idx else {
+            return ParsedCommand {
+                command: Word::from(""),
+                args: vec![],
+            };
+        };
+
+        let base = Word::from(words[cmd_idx].basename());
+
+        let mut args = Vec::new();
+        let mut past_double_dash = false;
+
+        for token in &words[cmd_idx + 1..] {
+            if past_double_dash {
+                args.push(CommandArg::Positional(token.clone()));
+                continue;
+            }
+            if token == "--" {
+                past_double_dash = true;
+                continue;
+            }
+            if let Some(rest) = token.strip_prefix("--") {
+                if let Some((name, value)) = rest.split_once('=') {
+                    args.push(CommandArg::Flag(ParsedFlag {
+                        name: Word::from(format!("--{name}")),
+                        value: Some(Word::from(value)),
+                    }));
+                } else {
+                    args.push(CommandArg::Flag(ParsedFlag {
+                        name: token.clone(),
+                        value: None,
+                    }));
+                }
+            } else if token.starts_with('-') && token.len() > 1 {
+                args.push(CommandArg::Flag(ParsedFlag {
+                    name: token.clone(),
+                    value: None,
+                }));
+            } else {
+                args.push(CommandArg::Positional(token.clone()));
+            }
+        }
+
+        ParsedCommand {
+            command: base,
+            args,
+        }
+    }
+
     /// First positional argument (often a subcommand).
     pub fn subcommand(&self) -> Option<&str> {
         self.args.iter().find_map(|a| match a {
@@ -341,12 +570,12 @@ impl ParsedCommand {
     }
 
     /// Reconstruct a flat word list.
-    pub fn to_words(&self) -> Vec<String> {
+    pub fn to_words(&self) -> Vec<Word> {
         let mut words = vec![self.command.clone()];
         for arg in &self.args {
             match arg {
                 CommandArg::Flag(f) => match &f.value {
-                    Some(v) => words.push(format!("{}={}", f.name, v)),
+                    Some(v) => words.push(Word::from(format!("{}={}", f.name, v))),
                     None => words.push(f.name.clone()),
                 },
                 CommandArg::Positional(s) => words.push(s.clone()),
@@ -430,112 +659,5 @@ pub struct CommandConfig {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::parse_with_substitutions;
-
-    fn parse(cmd: &str) -> super::ParsedPipeline {
-        parse_with_substitutions(cmd).expect("parse failed")
-    }
-
-    // --- find_segment ---
-
-    #[test]
-    fn find_segment_returns_first_match() {
-        let p = parse("echo hello && ls -la");
-        let found = p.find_segment(&|seg| {
-            if seg.command.starts_with("ls") {
-                Some(seg.command.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(found.as_deref(), Some("ls -la"));
-    }
-
-    #[test]
-    fn find_segment_returns_none_when_no_match() {
-        let p = parse("echo hello && ls -la");
-        let found = p.find_segment(&|seg| {
-            if seg.command.starts_with("git") {
-                Some(())
-            } else {
-                None
-            }
-        });
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn find_segment_recurses_into_substitutions() {
-        let p = parse("echo $(git status)");
-        let found = p.find_segment(&|seg| {
-            if seg.command.contains("git status") {
-                Some(seg.command.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(found.as_deref(), Some("git status"));
-    }
-
-    #[test]
-    fn find_segment_visits_substitutions_before_parent() {
-        // In "echo $(date)", the walker should visit "date" before "echo $(date)".
-        // filter_segments with Some for all collects in traversal order.
-        let p = parse("echo $(date)");
-        let all: Vec<String> = p.filter_segments(&|seg| Some(seg.command.clone()));
-        assert_eq!(all, vec!["date", "echo $(date)"]);
-    }
-
-    #[test]
-    fn find_segment_visits_structural_substitutions_first() {
-        let p = parse("for i in $(seq 10); do echo $i; done");
-        let all: Vec<String> = p.filter_segments(&|seg| Some(seg.command.clone()));
-        assert_eq!(all[0], "seq 10");
-    }
-
-    // --- filter_segments ---
-
-    #[test]
-    fn filter_segments_collects_all_matches() {
-        let p = parse("echo a && echo b && ls c");
-        let echoes: Vec<String> = p.filter_segments(&|seg| {
-            if seg.command.starts_with("echo") {
-                Some(seg.command.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(echoes, vec!["echo a", "echo b"]);
-    }
-
-    #[test]
-    fn filter_segments_collects_from_nested() {
-        let p = parse("echo $(git status && git diff)");
-        let gits: Vec<String> = p.filter_segments(&|seg| {
-            if seg.command.starts_with("git") {
-                Some(seg.command.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(gits, vec!["git status", "git diff"]);
-    }
-
-    // --- has_parse_errors_recursive ---
-
-    #[test]
-    fn no_errors_on_valid_input() {
-        assert!(!parse("echo hello").has_parse_errors_recursive());
-    }
-
-    #[test]
-    fn no_errors_on_compound() {
-        assert!(!parse("echo a && echo b | cat").has_parse_errors_recursive());
-    }
-
-    #[test]
-    fn no_errors_on_substitution() {
-        assert!(!parse("echo $(date)").has_parse_errors_recursive());
-    }
-}
+#[path = "types_tests.rs"]
+mod types_tests;

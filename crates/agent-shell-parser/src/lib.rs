@@ -1,6 +1,5 @@
 pub mod hook;
 pub mod parse;
-pub mod path;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

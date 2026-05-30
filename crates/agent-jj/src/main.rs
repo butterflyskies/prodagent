@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod cleanup;
 mod guard;
+mod path;
 mod policy;
 mod workspace;
 
