@@ -1,0 +1,15 @@
+[package]
+name = "agent-command-knowledge"
+version.workspace = true
+description = "Command taxonomy and knowledge layer — what commands are, not what to do about them"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-shell-parser = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
