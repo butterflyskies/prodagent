@@ -24,6 +24,7 @@ dependencies = [
 name = "agent-shell-parser"
 version = "0.5.1"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
  "shlex",
