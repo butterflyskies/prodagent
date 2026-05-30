@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-30
+
+### Fixed
+
+- `agent-shell-parser`: Tree-sitter `ERROR` nodes no longer produce spurious command segments. Previously, error recovery nodes (e.g. from `&;` sequences) hit the catch-all in `walk_ast` and became segments, causing false ASK escalations. The `has_parse_errors` flag already communicates parse failures to consumers.
+
 ## [0.5.0] - 2026-05-30
 
 ### Added

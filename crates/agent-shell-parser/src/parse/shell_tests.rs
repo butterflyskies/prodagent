@@ -201,3 +201,36 @@ fn words_heredoc_command() {
         .unwrap();
     assert_eq!(cat_seg.words, vec!["cat"]);
 }
+
+#[test]
+fn error_node_not_treated_as_segment() {
+    // `&;` triggers tree-sitter ERROR recovery — the `;` becomes an ERROR node.
+    // It must NOT become a spurious segment.
+    let p = parse("echo hello &; echo world");
+    assert!(p.has_parse_errors);
+    let commands: Vec<&str> = p.segments.iter().map(|s| s.command.trim()).collect();
+    assert!(
+        !commands.contains(&";"),
+        "ERROR node `;` should not be a segment"
+    );
+    assert!(commands.contains(&"echo hello"));
+    assert!(commands.contains(&"echo world"));
+}
+
+#[test]
+fn error_node_has_parse_errors_flag() {
+    // Even with ERROR nodes skipped from segments, the pipeline must report errors.
+    let p = parse("echo hello &; echo world");
+    assert!(p.has_parse_errors);
+}
+
+#[test]
+fn error_node_metachar_only() {
+    // Various operator-only ERROR nodes should not produce segments.
+    let p = parse("ls |; cat");
+    assert!(p.has_parse_errors);
+    for seg in &p.segments {
+        assert_ne!(seg.command.trim(), ";");
+        assert_ne!(seg.command.trim(), "|");
+    }
+}
