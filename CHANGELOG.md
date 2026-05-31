@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-31
+
+### Added
+
+- **New crate**: `agent-command-knowledge` — command taxonomy and knowledge layer separating "what commands are" from "what to do about them"
+- `agent-command-knowledge`: `classify()` function to look up a command's effect, subcommand, escalation flags, affected paths, and env gates from a `KnowledgeBase`
+- `agent-command-knowledge`: Core types — `Effect` (ReadOnly < Mutating < Destructive < Unknown), `CommandKnowledge`, `SubcommandMap` with `longest_match`, `FlagSchema`, `EnvGate` (Grant/Require), `PathSpec`, `WrapperKnowledge`
+- `agent-command-knowledge`: Embedded TOML defaults covering git (38 subcommands), cargo (32), gh (67 two-word patterns), kubectl (26), 50 simple commands, 14 wrappers
+- `agent-command-knowledge`: `KnowledgeOverlay` and `KnowledgeBase::merge()` for user config extension with extend/replace/remove semantics
+- `agent-command-knowledge`: `CommandOverlay` and `WrapperOverlay` with `Option` fields for partial merges — unspecified fields preserve base values
+- `agent-command-knowledge`: Property-based tests for fail-closed effect invariants
+- `agent-shell-parser`: 13 property-based integration tests (API totality, decomposition fidelity, wrapper transparency, fail-closed depth/size)
+
+### Fixed
+
+- `agent-command-knowledge`: `SubcommandMap` deserialization now validates `MAX_SUBCOMMAND_DEPTH` at parse time — previously derived `Deserialize` bypassed the depth check, allowing silently unreachable patterns
+- `agent-command-knowledge`: Wrapper overlays no longer silently drop `escalates_privilege` when users only override `floor_effect` in TOML
+
 ## [0.5.1] - 2026-05-30
 
 ### Fixed

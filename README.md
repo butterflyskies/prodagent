@@ -1,22 +1,31 @@
 # prodagent
 
-Agent-agnostic productivity hooks for jj-colocated repositories.
+Productionizing AI coding agents — parsing, command knowledge, and hooks for safe agent tool execution.
 
-When an AI coding agent works in a jj repo, it'll instinctively reach for `git commit`, `git push`, etc. These hooks intercept that, block the git command, and tell the agent what jj command to use instead. They also handle workspace isolation so parallel agent sessions don't step on each other.
-
-## What's in here
+## Crates
 
 | Crate | Purpose |
 |---|---|
-| `agent-jj` | Single binary with three subcommands: `guard` (blocks git in jj repos), `workspace` (creates jj workspaces), `cleanup` (removes workspaces on teardown) |
-| `agent-shell-parser` | Shared library — tree-sitter-bash parsing, config-driven wrapper resolution, CWD tracking, hook I/O types |
+| `agent-shell-parser` | Tree-sitter-bash parsing substrate — shell tokenization, wrapper resolution, CWD tracking |
+| `agent-command-knowledge` | Command taxonomy and knowledge layer — what commands *are* (effect, subcommands, flags, paths, env gates), not what to *do* about them |
+| `agent-jj` | Claude Code hooks for jj-colocated repos — git guard, workspace creation, cleanup |
 
-The guard handles compound commands (`&&`, `||`, `;`, `|`), command substitutions (`$()`), wrapper chains (`sudo env time git commit`), and various bypass attempts. It uses a config-driven approach — all command knowledge lives in `config/commands.json`, not hardcoded.
+## Architecture
+
+Three-layer separation:
+
+1. **Parsing** (`agent-shell-parser`) — Tokenize shell commands into structured segments. Handles compound commands (`&&`, `||`, `;`, `|`), command substitutions, wrapper chains (`sudo env git commit`), redirections.
+
+2. **Knowledge** (`agent-command-knowledge`) — Classify commands by effect (`ReadOnly < Mutating < Destructive < Unknown`). Embedded TOML defaults cover git (38 subcommands), cargo (32), gh (67 patterns), kubectl (26), 50+ simple commands, 14 wrappers. User config extends/overrides via `KnowledgeOverlay`.
+
+3. **Policy** (consumers like `agent-jj`, `cc-toolgate`) — Decide what to do based on classification. The knowledge layer provides the facts; policy layers make the decisions.
+
+The `Effect` enum is ordered fail-closed: `Unknown` is the most restrictive, so aggregation via `max` never underestimates risk.
 
 ## Requirements
 
-- [jj-cli](https://github.com/jj-vcs/jj) >= 0.40.0
-- Rust toolchain (for building from source)
+- Rust toolchain >= 1.88
+- [jj-cli](https://github.com/jj-vcs/jj) >= 0.40.0 (for agent-jj)
 
 ## Install
 
