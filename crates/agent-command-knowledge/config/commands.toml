@@ -1,0 +1,923 @@
+# Embedded command knowledge defaults for agent-command-knowledge.
+#
+# Sources:
+#   - cc-toolgate/config.default.toml  (allow/ask/deny lists, git/cargo/gh/kubectl sections)
+#   - cc-toolgate tool specs           (flag schemas, subcommand lists)
+#   - agent-jj policy                  (blocked git subcommands mapped to mutating/destructive)
+#
+# Effect values: "read-only", "mutating", "destructive", "unknown"
+# SubcommandMap entries live under [commands.<name>.subcommands.entries.<pattern>]
+
+# ── git ─────────────────────────────────────────────────────────────────────
+
+[commands.git]
+name = "git"
+effect = "unknown"
+
+[commands.git.properties]
+version_flag = "--version"
+
+[commands.git.flags]
+# Global flags that consume the next word as a value.
+skip_arg = ["-C", "-c", "--git-dir", "--work-tree", "--namespace"]
+# Global standalone boolean flags.
+skip_solo = [
+    "--bare", "--no-pager", "--no-replace-objects", "--literal-pathspecs",
+    "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+    "--no-optional-locks",
+]
+# Force flags — escalate push to a higher severity.
+escalation = ["--force", "-f", "--force-with-lease"]
+# Flags whose values are filesystem paths.
+path = ["-C"]
+
+# Read-only subcommands (from cc-toolgate default config + tool spec)
+[commands.git.subcommands.entries.status]
+effect = "read-only"
+
+[commands.git.subcommands.entries.log]
+effect = "read-only"
+
+[commands.git.subcommands.entries.diff]
+effect = "read-only"
+
+[commands.git.subcommands.entries.show]
+effect = "read-only"
+
+[commands.git.subcommands.entries.branch]
+effect = "read-only"
+
+[commands.git.subcommands.entries.tag]
+effect = "read-only"
+
+[commands.git.subcommands.entries.remote]
+effect = "read-only"
+
+[commands.git.subcommands.entries."rev-parse"]
+effect = "read-only"
+
+[commands.git.subcommands.entries."ls-files"]
+effect = "read-only"
+
+[commands.git.subcommands.entries."ls-tree"]
+effect = "read-only"
+
+[commands.git.subcommands.entries.shortlog]
+effect = "read-only"
+
+[commands.git.subcommands.entries.blame]
+effect = "read-only"
+
+[commands.git.subcommands.entries.describe]
+effect = "read-only"
+
+[commands.git.subcommands.entries.stash]
+effect = "read-only"
+
+[commands.git.subcommands.entries."cat-file"]
+effect = "read-only"
+
+[commands.git.subcommands.entries."for-each-ref"]
+effect = "read-only"
+
+# Mutating subcommands
+[commands.git.subcommands.entries.push]
+effect = "mutating"
+
+[commands.git.subcommands.entries.pull]
+effect = "mutating"
+
+[commands.git.subcommands.entries.fetch]
+effect = "mutating"
+
+[commands.git.subcommands.entries.commit]
+effect = "mutating"
+
+[commands.git.subcommands.entries.add]
+effect = "mutating"
+
+[commands.git.subcommands.entries.rebase]
+effect = "mutating"
+
+[commands.git.subcommands.entries.merge]
+effect = "mutating"
+
+[commands.git.subcommands.entries.checkout]
+effect = "mutating"
+
+[commands.git.subcommands.entries.switch]
+effect = "mutating"
+
+[commands.git.subcommands.entries.restore]
+effect = "mutating"
+
+[commands.git.subcommands.entries.init]
+effect = "mutating"
+
+[commands.git.subcommands.entries.clone]
+effect = "mutating"
+
+[commands.git.subcommands.entries.config]
+effect = "mutating"
+
+[commands.git.subcommands.entries."cherry-pick"]
+effect = "mutating"
+
+[commands.git.subcommands.entries.revert]
+effect = "mutating"
+
+[commands.git.subcommands.entries.am]
+effect = "mutating"
+
+[commands.git.subcommands.entries.apply]
+effect = "mutating"
+
+# Destructive subcommands (from agent-jj blocked list)
+[commands.git.subcommands.entries.reset]
+effect = "destructive"
+
+[commands.git.subcommands.entries.clean]
+effect = "destructive"
+
+[commands.git.subcommands.entries.rm]
+effect = "destructive"
+
+[commands.git.subcommands.entries."update-ref"]
+effect = "destructive"
+
+[commands.git.subcommands.entries."update-index"]
+effect = "destructive"
+
+[commands.git.subcommands.entries.submodule]
+effect = "mutating"
+
+# ── cargo ────────────────────────────────────────────────────────────────────
+
+[commands.cargo]
+name = "cargo"
+effect = "unknown"
+
+[commands.cargo.properties]
+version_flag = "--version"
+
+# Safe / read-only subcommands (from cc-toolgate default + user config)
+[commands.cargo.subcommands.entries.build]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.check]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.test]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.bench]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.run]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.clippy]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.fmt]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.doc]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.clean]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.update]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.fetch]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.tree]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.metadata]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.version]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries."verify-project"]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.search]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries."generate-lockfile"]
+effect = "read-only"
+
+# Extended safe subcommands from user config (cargo-deny, cargo-audit, etc.)
+[commands.cargo.subcommands.entries.nextest]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.deny]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.audit]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.outdated]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.package]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries."semver-checks"]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.expand]
+effect = "read-only"
+
+[commands.cargo.subcommands.entries.insta]
+effect = "read-only"
+
+# Mutating subcommands (install, publish, etc.)
+[commands.cargo.subcommands.entries.install]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries.uninstall]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries.publish]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries."add"]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries.remove]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries.init]
+effect = "mutating"
+
+[commands.cargo.subcommands.entries.new]
+effect = "mutating"
+
+# ── gh ───────────────────────────────────────────────────────────────────────
+
+[commands.gh]
+name = "gh"
+effect = "unknown"
+
+# Read-only two-word subcommands
+[commands.gh.subcommands.entries.status]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."repo view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."repo list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."repo clone"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."pr list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."pr view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."pr diff"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."pr checks"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."pr status"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."issue list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."issue view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."issue status"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."run list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."run view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."run watch"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."workflow list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."workflow view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."release list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."release view"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries.search]
+effect = "read-only"
+
+[commands.gh.subcommands.entries.browse]
+effect = "read-only"
+
+[commands.gh.subcommands.entries.api]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."auth status"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."auth token"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."extension list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."label list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."cache list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."variable list"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."variable get"]
+effect = "read-only"
+
+[commands.gh.subcommands.entries."secret list"]
+effect = "read-only"
+
+# Mutating two-word subcommands
+[commands.gh.subcommands.entries."repo create"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."repo edit"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."repo fork"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."repo rename"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."repo archive"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr create"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr merge"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr close"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr reopen"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr comment"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr review"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."pr edit"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue create"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue close"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue reopen"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue comment"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue edit"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue pin"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."issue unpin"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."run rerun"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."run cancel"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."run delete"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."workflow enable"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."workflow disable"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."workflow run"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."release create"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."release edit"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."auth login"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."auth logout"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."auth refresh"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."extension install"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."extension remove"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."extension upgrade"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."label create"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."label edit"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."variable set"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."variable delete"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."secret set"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."secret delete"]
+effect = "mutating"
+
+[commands.gh.subcommands.entries."config set"]
+effect = "mutating"
+
+# Destructive subcommands
+[commands.gh.subcommands.entries."repo delete"]
+effect = "destructive"
+
+[commands.gh.subcommands.entries."issue delete"]
+effect = "destructive"
+
+[commands.gh.subcommands.entries."issue transfer"]
+effect = "destructive"
+
+[commands.gh.subcommands.entries."release delete"]
+effect = "destructive"
+
+[commands.gh.subcommands.entries."label delete"]
+effect = "destructive"
+
+[commands.gh.subcommands.entries."cache delete"]
+effect = "destructive"
+
+# ── kubectl ──────────────────────────────────────────────────────────────────
+
+[commands.kubectl]
+name = "kubectl"
+effect = "unknown"
+
+# Read-only subcommands
+[commands.kubectl.subcommands.entries.get]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries.describe]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries.logs]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries.top]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries.explain]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries."api-resources"]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries."api-versions"]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries.version]
+effect = "read-only"
+
+[commands.kubectl.subcommands.entries."cluster-info"]
+effect = "read-only"
+
+# Mutating subcommands
+[commands.kubectl.subcommands.entries.apply]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.delete]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.rollout]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.scale]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.autoscale]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.patch]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.replace]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.create]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.edit]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.drain]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.cordon]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.uncordon]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.taint]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.exec]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.run]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries."port-forward"]
+effect = "mutating"
+
+[commands.kubectl.subcommands.entries.cp]
+effect = "mutating"
+
+# ── Simple commands from cc-toolgate allow list ──────────────────────────────
+
+[commands.ls]
+name = "ls"
+effect = "read-only"
+
+[commands.tree]
+name = "tree"
+effect = "read-only"
+
+[commands.cat]
+name = "cat"
+effect = "read-only"
+
+[commands.head]
+name = "head"
+effect = "read-only"
+
+[commands.tail]
+name = "tail"
+effect = "read-only"
+
+[commands.grep]
+name = "grep"
+effect = "read-only"
+
+[commands.find]
+name = "find"
+effect = "read-only"
+
+[commands.stat]
+name = "stat"
+effect = "read-only"
+
+[commands.diff]
+name = "diff"
+effect = "read-only"
+
+[commands.wc]
+name = "wc"
+effect = "read-only"
+
+[commands.sort]
+name = "sort"
+effect = "read-only"
+
+[commands.uniq]
+name = "uniq"
+effect = "read-only"
+
+[commands.echo]
+name = "echo"
+effect = "read-only"
+
+[commands.printf]
+name = "printf"
+effect = "read-only"
+
+[commands.date]
+name = "date"
+effect = "read-only"
+
+[commands.pwd]
+name = "pwd"
+effect = "read-only"
+
+[commands.which]
+name = "which"
+effect = "read-only"
+
+[commands.ps]
+name = "ps"
+effect = "read-only"
+
+[commands.uname]
+name = "uname"
+effect = "read-only"
+
+[commands.hostname]
+name = "hostname"
+effect = "read-only"
+
+[commands.id]
+name = "id"
+effect = "read-only"
+
+[commands.whoami]
+name = "whoami"
+effect = "read-only"
+
+[commands.df]
+name = "df"
+effect = "read-only"
+
+[commands.du]
+name = "du"
+effect = "read-only"
+
+[commands.free]
+name = "free"
+effect = "read-only"
+
+[commands.uptime]
+name = "uptime"
+effect = "read-only"
+
+[commands.printenv]
+name = "printenv"
+effect = "read-only"
+
+# Rust CLI read tools
+[commands.rg]
+name = "rg"
+effect = "read-only"
+
+[commands.fd]
+name = "fd"
+effect = "read-only"
+
+[commands.bat]
+name = "bat"
+effect = "read-only"
+
+[commands.eza]
+name = "eza"
+effect = "read-only"
+
+[commands.tokei]
+name = "tokei"
+effect = "read-only"
+
+[commands.hyperfine]
+name = "hyperfine"
+effect = "read-only"
+
+[commands.jq]
+name = "jq"
+effect = "read-only"
+
+# ── Commands from cc-toolgate ask list ────────────────────────────────────────
+
+[commands.rm]
+name = "rm"
+effect = "destructive"
+
+[commands.rm.paths]
+positionals = "all"
+
+[commands.rmdir]
+name = "rmdir"
+effect = "destructive"
+
+[commands.rmdir.paths]
+positionals = "all"
+
+[commands.mkdir]
+name = "mkdir"
+effect = "mutating"
+
+[commands.mkdir.paths]
+positionals = "all"
+
+[commands.touch]
+name = "touch"
+effect = "mutating"
+
+[commands.touch.paths]
+positionals = "all"
+
+[commands.mv]
+name = "mv"
+effect = "mutating"
+
+[commands.mv.paths]
+positionals = "last"
+
+[commands.cp]
+name = "cp"
+effect = "mutating"
+
+[commands.cp.paths]
+positionals = "last"
+
+[commands.ln]
+name = "ln"
+effect = "mutating"
+
+[commands.ln.paths]
+positionals = "last"
+
+[commands.chmod]
+name = "chmod"
+effect = "mutating"
+
+[commands.chmod.paths]
+positionals = { tail = 1 }
+
+[commands.chown]
+name = "chown"
+effect = "mutating"
+
+[commands.chown.paths]
+positionals = { tail = 1 }
+
+[commands.tee]
+name = "tee"
+effect = "mutating"
+
+[commands.curl]
+name = "curl"
+effect = "mutating"
+
+[commands.wget]
+name = "wget"
+effect = "mutating"
+
+# ── Commands from cc-toolgate deny list ───────────────────────────────────────
+
+[commands.shred]
+name = "shred"
+effect = "destructive"
+
+[commands.dd]
+name = "dd"
+effect = "destructive"
+
+[commands.mkfs]
+name = "mkfs"
+effect = "destructive"
+
+[commands.fdisk]
+name = "fdisk"
+effect = "destructive"
+
+[commands.parted]
+name = "parted"
+effect = "destructive"
+
+[commands.shutdown]
+name = "shutdown"
+effect = "destructive"
+
+[commands.reboot]
+name = "reboot"
+effect = "destructive"
+
+[commands.halt]
+name = "halt"
+effect = "destructive"
+
+[commands.poweroff]
+name = "poweroff"
+effect = "destructive"
+
+# ── Wrappers ─────────────────────────────────────────────────────────────────
+
+[wrappers.sudo]
+name = "sudo"
+floor_effect = "mutating"
+clears_env = false
+escalates_privilege = true
+
+[wrappers.su]
+name = "su"
+floor_effect = "mutating"
+clears_env = true
+escalates_privilege = true
+
+[wrappers.doas]
+name = "doas"
+floor_effect = "mutating"
+clears_env = false
+escalates_privilege = true
+
+[wrappers.env]
+name = "env"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.xargs]
+name = "xargs"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.nohup]
+name = "nohup"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.nice]
+name = "nice"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.timeout]
+name = "timeout"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.time]
+name = "time"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.watch]
+name = "watch"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.strace]
+name = "strace"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.ltrace]
+name = "ltrace"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.parallel]
+name = "parallel"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.pkexec]
+name = "pkexec"
+floor_effect = "mutating"
+clears_env = true
+escalates_privilege = true
