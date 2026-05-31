@@ -1,0 +1,21 @@
+//! Policy engine for agent tool-use authorization.
+//!
+//! Maps command [`Effect`](agent_command_knowledge::Effect)s to
+//! [`PolicyDecision`]s via configurable defaults and per-command overrides.
+//!
+//! Two API levels:
+//! - **High-level:** [`PolicyEngine::evaluate_command`] takes a raw command
+//!   string and a [`KnowledgeBase`](agent_command_knowledge::KnowledgeBase),
+//!   handles parsing, classification, wrapper resolution, escalation, and
+//!   redirection detection, and returns a [`PolicyResult`].
+//! - **Low-level:** [`PolicyEngine::evaluate`] takes a pre-classified
+//!   [`CommandInfo`](agent_command_knowledge::CommandInfo) and returns a
+//!   [`PolicyDecision`]. Useful for consumers that do their own parsing.
+
+pub mod config;
+pub mod decision;
+pub mod engine;
+
+pub use config::{PolicyConfig, PolicyConfigBuilder};
+pub use decision::PolicyDecision;
+pub use engine::{PolicyEngine, PolicyResult, SegmentResult};
