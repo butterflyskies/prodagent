@@ -14,6 +14,56 @@ use crate::types::{
     SubcommandMap, WrapperKnowledge,
 };
 
+/// Overlay for a single wrapper — optional fields so unset values don't
+/// clobber base values during merge.
+///
+/// Mirrors the [`CommandOverlay`] pattern: fields are `Option` so that
+/// omitting a field in TOML preserves the base value instead of silently
+/// resetting it to a serde default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WrapperOverlay {
+    /// Override floor_effect. `None` preserves the base value.
+    #[serde(default)]
+    pub floor_effect: Option<Effect>,
+    /// Override clears_env. `None` preserves the base value.
+    #[serde(default)]
+    pub clears_env: Option<bool>,
+    /// Override escalates_privilege. `None` preserves the base value.
+    #[serde(default)]
+    pub escalates_privilege: Option<bool>,
+}
+
+impl WrapperOverlay {
+    /// Apply this overlay onto an existing base wrapper, mutating it in place.
+    ///
+    /// Only fields that are `Some` override the base value; `None` fields
+    /// are left untouched. The `name` field is never modified — it's an
+    /// identity field derived from the HashMap key.
+    pub(crate) fn apply_to(self, base: &mut WrapperKnowledge) {
+        if let Some(floor_effect) = self.floor_effect {
+            base.floor_effect = floor_effect;
+        }
+        if let Some(clears_env) = self.clears_env {
+            base.clears_env = clears_env;
+        }
+        if let Some(escalates_privilege) = self.escalates_privilege {
+            base.escalates_privilege = escalates_privilege;
+        }
+    }
+
+    /// Convert this overlay into a full [`WrapperKnowledge`] for insertion as a
+    /// new wrapper. `floor_effect` defaults to [`Effect::Unknown`] (fail-closed)
+    /// when not specified; booleans default to `false`.
+    pub(crate) fn into_knowledge(self, key: String) -> WrapperKnowledge {
+        WrapperKnowledge {
+            name: key,
+            floor_effect: self.floor_effect.unwrap_or(Effect::Unknown),
+            clears_env: self.clears_env.unwrap_or(false),
+            escalates_privilege: self.escalates_privilege.unwrap_or(false),
+        }
+    }
+}
+
 /// Overlay config for extending/modifying a [`KnowledgeBase`].
 ///
 /// Applied via [`KnowledgeBase::merge`]: removals are processed first, then
@@ -23,9 +73,9 @@ pub struct KnowledgeOverlay {
     /// Commands to add or merge into the base.
     #[serde(default)]
     pub commands: HashMap<String, CommandOverlay>,
-    /// Wrappers to add or wholesale-replace in the base.
+    /// Wrappers to add or merge into the base.
     #[serde(default)]
-    pub wrappers: HashMap<String, WrapperKnowledge>,
+    pub wrappers: HashMap<String, WrapperOverlay>,
     /// Command names to remove from the base.
     #[serde(default)]
     pub remove_commands: Vec<String>,
@@ -126,8 +176,9 @@ impl KnowledgeBase {
     ///    `remove_wrappers` are deleted from the base.
     /// 2. **Additions / overrides** — overlay commands are merged into existing
     ///    entries (via [`CommandOverlay::apply_to`]) or inserted as new commands
-    ///    (via [`CommandOverlay::into_knowledge`]). Overlay wrappers wholesale-
-    ///    replace any existing wrapper with the same key.
+    ///    (via [`CommandOverlay::into_knowledge`]). Overlay wrappers are merged
+    ///    into existing entries (via [`WrapperOverlay::apply_to`]) or inserted
+    ///    as new wrappers (via [`WrapperOverlay::into_knowledge`]).
     pub fn merge(&mut self, overlay: KnowledgeOverlay) {
         // 1. Removals first.
         for key in &overlay.remove_commands {
@@ -147,14 +198,13 @@ impl KnowledgeBase {
             }
         }
 
-        for (key, wrapper) in overlay.wrappers {
-            self.wrappers.insert(
-                key.clone(),
-                WrapperKnowledge {
-                    name: key,
-                    ..wrapper
-                },
-            );
+        for (key, wrapper_overlay) in overlay.wrappers {
+            if let Some(base) = self.wrappers.get_mut(&key) {
+                wrapper_overlay.apply_to(base);
+            } else {
+                self.wrappers
+                    .insert(key.clone(), wrapper_overlay.into_knowledge(key));
+            }
         }
     }
 }

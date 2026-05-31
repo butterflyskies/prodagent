@@ -373,19 +373,20 @@ fn add_new_wrapper() {
     let mut overlay = empty_overlay();
     overlay.wrappers.insert(
         "env".into(),
-        WrapperKnowledge {
-            name: "env".into(),
-            floor_effect: Effect::ReadOnly,
-            clears_env: true,
-            escalates_privilege: false,
+        WrapperOverlay {
+            floor_effect: Some(Effect::ReadOnly),
+            clears_env: Some(true),
+            escalates_privilege: Some(false),
         },
     );
 
     kb.merge(overlay);
 
     let env_w = kb.wrappers.get("env").expect("env wrapper should exist");
+    assert_eq!(env_w.name, "env", "name should come from the key");
     assert_eq!(env_w.floor_effect, Effect::ReadOnly);
     assert!(env_w.clears_env);
+    assert!(!env_w.escalates_privilege);
 }
 
 // ── 14. Replace wrapper ─────────────────────────────────────────────────────
@@ -398,11 +399,10 @@ fn replace_existing_wrapper() {
     let mut overlay = empty_overlay();
     overlay.wrappers.insert(
         "sudo".into(),
-        WrapperKnowledge {
-            name: "sudo".into(),
-            floor_effect: Effect::Mutating,
-            clears_env: true,
-            escalates_privilege: false,
+        WrapperOverlay {
+            floor_effect: Some(Effect::Mutating),
+            clears_env: Some(true),
+            escalates_privilege: Some(false),
         },
     );
 
@@ -623,7 +623,6 @@ remove_subcommands = ["push"]
 effect = "mutating"
 
 [wrappers.nice]
-name = "nice"
 floor_effect = "read-only"
 "#;
 
@@ -698,7 +697,108 @@ fn classify_uses_merged_kb() {
     assert_eq!(info.subcommand.as_deref(), Some("stash"));
 }
 
-// ── 23. Multi-word subcommand removal ─────────────────────────────────────
+// ── 23. Partial wrapper update preserves unspecified fields ───────────────
+
+#[test]
+fn partial_wrapper_update_preserves_unspecified_fields() {
+    let mut kb = base_kb();
+    // sudo starts with: floor_effect=Destructive, clears_env=false, escalates_privilege=true
+    let sudo_before = kb.wrappers.get("sudo").unwrap().clone();
+    assert_eq!(sudo_before.floor_effect, Effect::Destructive);
+    assert!(!sudo_before.clears_env);
+    assert!(sudo_before.escalates_privilege);
+
+    let mut overlay = empty_overlay();
+    overlay.wrappers.insert(
+        "sudo".into(),
+        WrapperOverlay {
+            floor_effect: Some(Effect::Mutating),
+            // clears_env and escalates_privilege deliberately omitted
+            ..Default::default()
+        },
+    );
+
+    kb.merge(overlay);
+
+    let sudo = kb.wrappers.get("sudo").unwrap();
+    assert_eq!(
+        sudo.floor_effect,
+        Effect::Mutating,
+        "floor_effect should be overridden"
+    );
+    assert_eq!(
+        sudo.clears_env, sudo_before.clears_env,
+        "clears_env should be preserved from base"
+    );
+    assert_eq!(
+        sudo.escalates_privilege, sudo_before.escalates_privilege,
+        "escalates_privilege should be preserved from base"
+    );
+}
+
+// ── 24. New wrapper defaults floor_effect to Unknown ─────────────────────
+
+#[test]
+fn new_wrapper_defaults_floor_effect_to_unknown() {
+    let mut kb = base_kb();
+
+    let mut overlay = empty_overlay();
+    overlay.wrappers.insert(
+        "my-wrapper".into(),
+        WrapperOverlay::default(), // all fields omitted
+    );
+
+    kb.merge(overlay);
+
+    let w = kb
+        .wrappers
+        .get("my-wrapper")
+        .expect("my-wrapper should exist");
+    assert_eq!(
+        w.floor_effect,
+        Effect::Unknown,
+        "new wrapper without floor_effect should default to Unknown (fail-closed)"
+    );
+    assert!(!w.clears_env, "clears_env should default to false");
+    assert!(
+        !w.escalates_privilege,
+        "escalates_privilege should default to false"
+    );
+}
+
+// ── 25. TOML partial wrapper preserves base fields ───────────────────────
+
+#[test]
+fn toml_partial_wrapper_preserves_base_fields() {
+    let overlay_toml = r#"
+[wrappers.sudo]
+floor_effect = "mutating"
+"#;
+
+    let overlay: KnowledgeOverlay =
+        toml::from_str(overlay_toml).expect("overlay TOML should parse");
+
+    let mut kb = base_kb();
+    // sudo starts with: escalates_privilege=true, clears_env=false
+    assert!(kb.wrappers.get("sudo").unwrap().escalates_privilege);
+    assert!(!kb.wrappers.get("sudo").unwrap().clears_env);
+
+    kb.merge(overlay);
+
+    let sudo = kb.wrappers.get("sudo").unwrap();
+    assert_eq!(
+        sudo.floor_effect,
+        Effect::Mutating,
+        "floor_effect should be overridden from TOML"
+    );
+    assert!(
+        sudo.escalates_privilege,
+        "escalates_privilege should be preserved — omitting it in TOML must not reset it"
+    );
+    assert!(!sudo.clears_env, "clears_env should be preserved from base");
+}
+
+// ── 26. Multi-word subcommand removal ─────────────────────────────────────
 
 #[test]
 fn remove_multi_word_subcommand() {

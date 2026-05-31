@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use agent_shell_parser::parse::types::Word;
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of words that can form a subcommand pattern.
@@ -48,9 +49,44 @@ pub struct CommandKnowledge {
 
 /// Map of subcommand patterns to their entries. Patterns are space-separated
 /// strings (e.g. `"pr create"`) matched via [`longest_match`](SubcommandMap::longest_match).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// Deserialization validates that every pattern key respects
+/// [`MAX_SUBCOMMAND_DEPTH`] — patterns with more words are rejected at parse
+/// time with a clear error naming the offending key. Nested `SubcommandEntry`
+/// maps are validated recursively because `SubcommandEntry::subcommands` is
+/// itself a `SubcommandMap`.
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SubcommandMap {
     entries: HashMap<String, SubcommandEntry>,
+}
+
+impl<'de> Deserialize<'de> for SubcommandMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        /// Wrapper struct to leverage the derived `Deserialize` for the outer
+        /// `{ entries: { ... } }` shape while giving us access to the inner map
+        /// for validation.
+        #[derive(Deserialize)]
+        struct SubcommandMapRepr {
+            #[serde(default)]
+            entries: HashMap<String, SubcommandEntry>,
+        }
+
+        let repr = SubcommandMapRepr::deserialize(deserializer)?;
+        for key in repr.entries.keys() {
+            if key.split_whitespace().count() > MAX_SUBCOMMAND_DEPTH {
+                return Err(serde::de::Error::custom(format!(
+                    "subcommand pattern '{}' exceeds MAX_SUBCOMMAND_DEPTH ({})",
+                    key, MAX_SUBCOMMAND_DEPTH
+                )));
+            }
+        }
+        Ok(SubcommandMap {
+            entries: repr.entries,
+        })
+    }
 }
 
 /// A subcommand's knowledge: its effect, flags, env gates, path semantics,
@@ -233,6 +269,14 @@ impl SubcommandMap {
         }
     }
 
+    /// Insert a subcommand pattern and its entry.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Debug-asserts that the pattern does not exceed [`MAX_SUBCOMMAND_DEPTH`].
+    /// The deserialization path validates this invariant at parse time, so
+    /// patterns from TOML config are always safe. This assert catches mistakes
+    /// in programmatic construction during development.
     pub fn insert(&mut self, pattern: impl Into<String>, entry: SubcommandEntry) {
         let pattern = pattern.into();
         debug_assert!(
