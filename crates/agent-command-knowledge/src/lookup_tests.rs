@@ -51,7 +51,7 @@ fn gh_knowledge() -> KnowledgeBase {
         gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Mutating));
     }
     for pattern in &["repo delete"] {
-        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Destructive));
+        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Mutating));
     }
 
     let mut gh = CommandKnowledge::simple("gh", Effect::Unknown);
@@ -62,7 +62,7 @@ fn gh_knowledge() -> KnowledgeBase {
 
 fn rm_knowledge() -> KnowledgeBase {
     let mut kb = KnowledgeBase::default();
-    let mut rm = CommandKnowledge::simple("rm", Effect::Destructive);
+    let mut rm = CommandKnowledge::simple("rm", Effect::Mutating);
     rm.paths = PathSpec {
         positionals: PathPositionals::All,
         flags: vec![],
@@ -174,14 +174,14 @@ fn gh_pr_create_is_mutating() {
 }
 
 #[test]
-fn gh_repo_delete_is_destructive() {
+fn gh_repo_delete_is_mutating() {
     let kb = gh_knowledge();
     let info = classify(
         &Word::from("gh"),
         &words(&["gh", "repo", "delete", "myrepo"]),
         &kb,
     );
-    assert_eq!(info.effect, Effect::Destructive);
+    assert_eq!(info.effect, Effect::Mutating);
     assert_eq!(info.subcommand.as_deref(), Some("repo delete"));
 }
 
@@ -198,7 +198,7 @@ fn gh_unknown_subcommand() {
 fn rm_extracts_all_paths() {
     let kb = rm_knowledge();
     let info = classify(&Word::from("rm"), &words(&["rm", "-rf", "foo", "bar"]), &kb);
-    assert_eq!(info.effect, Effect::Destructive);
+    assert_eq!(info.effect, Effect::Mutating);
     assert!(info.affected_paths.contains(&Word::from("foo")));
     assert!(info.affected_paths.contains(&Word::from("bar")));
 }

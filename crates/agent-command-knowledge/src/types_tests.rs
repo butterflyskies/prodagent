@@ -5,8 +5,7 @@ use super::*;
 #[test]
 fn effect_ordering() {
     assert!(Effect::ReadOnly < Effect::Mutating);
-    assert!(Effect::Mutating < Effect::Destructive);
-    assert!(Effect::Destructive < Effect::Unknown);
+    assert!(Effect::Mutating < Effect::Unknown);
 }
 
 #[test]

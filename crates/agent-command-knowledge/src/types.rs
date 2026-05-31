@@ -13,7 +13,7 @@ pub const MAX_SUBCOMMAND_DEPTH: usize = 4;
 /// The effect level of a command or subcommand.
 ///
 /// The derived `Ord` implementation is intentional: variants are ordered from
-/// least to most restrictive (`ReadOnly < Mutating < Destructive < Unknown`).
+/// least to most restrictive (`ReadOnly < Mutating < Unknown`).
 /// `Unknown` is the most restrictive value so that aggregation via `max` is
 /// fail-closed — when the effect cannot be determined, the result is treated as
 /// the worst case rather than silently underestimating risk.
@@ -22,7 +22,6 @@ pub const MAX_SUBCOMMAND_DEPTH: usize = 4;
 pub enum Effect {
     ReadOnly,
     Mutating,
-    Destructive,
     Unknown,
 }
 
