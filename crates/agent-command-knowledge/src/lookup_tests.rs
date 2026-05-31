@@ -12,28 +12,10 @@ fn git_knowledge() -> KnowledgeBase {
 
     let mut git_subs = SubcommandMap::new();
     for cmd in &["status", "log", "diff", "show", "branch", "blame"] {
-        git_subs.insert(
-            *cmd,
-            SubcommandEntry {
-                effect: Effect::ReadOnly,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
-        );
+        git_subs.insert(*cmd, SubcommandEntry::with_effect(Effect::ReadOnly));
     }
     for cmd in &["push", "commit", "add", "pull", "fetch", "rebase"] {
-        git_subs.insert(
-            *cmd,
-            SubcommandEntry {
-                effect: Effect::Mutating,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
-        );
+        git_subs.insert(*cmd, SubcommandEntry::with_effect(Effect::Mutating));
     }
 
     kb.commands.insert(
@@ -63,74 +45,29 @@ fn gh_knowledge() -> KnowledgeBase {
 
     let mut gh_subs = SubcommandMap::new();
     for pattern in &["pr list", "pr view", "pr diff", "issue list", "issue view"] {
-        gh_subs.insert(
-            *pattern,
-            SubcommandEntry {
-                effect: Effect::ReadOnly,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
-        );
+        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::ReadOnly));
     }
     for pattern in &["pr create", "pr merge", "issue create", "issue close"] {
-        gh_subs.insert(
-            *pattern,
-            SubcommandEntry {
-                effect: Effect::Mutating,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
-        );
+        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Mutating));
     }
     for pattern in &["repo delete"] {
-        gh_subs.insert(
-            *pattern,
-            SubcommandEntry {
-                effect: Effect::Destructive,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
-        );
+        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Destructive));
     }
 
-    kb.commands.insert(
-        "gh".to_string(),
-        CommandKnowledge {
-            name: "gh".to_string(),
-            effect: Effect::Unknown,
-            subcommands: gh_subs,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut gh = CommandKnowledge::simple("gh", Effect::Unknown);
+    gh.subcommands = gh_subs;
+    kb.commands.insert("gh".to_string(), gh);
     kb
 }
 
 fn rm_knowledge() -> KnowledgeBase {
     let mut kb = KnowledgeBase::default();
-    kb.commands.insert(
-        "rm".to_string(),
-        CommandKnowledge {
-            name: "rm".to_string(),
-            effect: Effect::Destructive,
-            subcommands: SubcommandMap::new(),
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec {
-                positionals: PathPositionals::All,
-                flags: vec![],
-            },
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut rm = CommandKnowledge::simple("rm", Effect::Destructive);
+    rm.paths = PathSpec {
+        positionals: PathPositionals::All,
+        flags: vec![],
+    };
+    kb.commands.insert("rm".to_string(), rm);
     kb
 }
 
@@ -312,22 +249,13 @@ fn wrapper_returns_wrapper_info() {
 #[test]
 fn env_gates_from_command() {
     let mut kb = KnowledgeBase::default();
-    kb.commands.insert(
-        "git".to_string(),
-        CommandKnowledge {
-            name: "git".to_string(),
-            effect: Effect::Unknown,
-            subcommands: SubcommandMap::new(),
-            flags: FlagSchema::default(),
-            env_gates: vec![EnvGate::Grant {
-                var: "GIT_CONFIG_GLOBAL".into(),
-                value: "~/.gitconfig.ai".into(),
-                unlocks: Effect::ReadOnly,
-            }],
-            paths: PathSpec::default(),
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut git = CommandKnowledge::simple("git", Effect::Unknown);
+    git.env_gates = vec![EnvGate::Grant {
+        var: "GIT_CONFIG_GLOBAL".into(),
+        value: "~/.gitconfig.ai".into(),
+        unlocks: Effect::ReadOnly,
+    }];
+    kb.commands.insert("git".to_string(), git);
 
     let info = classify(&Word::from("git"), &words(&["git", "push"]), &kb);
     assert_eq!(info.env_gates.len(), 1);
@@ -339,19 +267,12 @@ fn env_gates_from_command() {
 fn git_add_paths_exclude_subcommand_word() {
     let mut kb = git_knowledge();
     let git = kb.commands.get_mut("git").unwrap();
-    git.subcommands.insert(
-        "add",
-        SubcommandEntry {
-            effect: Effect::Mutating,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec {
-                positionals: PathPositionals::All,
-                flags: vec![],
-            },
-            subcommands: SubcommandMap::new(),
-        },
-    );
+    let mut add_entry = SubcommandEntry::with_effect(Effect::Mutating);
+    add_entry.paths = PathSpec {
+        positionals: PathPositionals::All,
+        flags: vec![],
+    };
+    git.subcommands.insert("add", add_entry);
 
     let info = classify(
         &Word::from("git"),
@@ -387,41 +308,17 @@ fn nested_subcommand_resolution() {
     let mut kb = KnowledgeBase::default();
 
     let mut push_subs = SubcommandMap::new();
-    push_subs.insert(
-        "push",
-        SubcommandEntry {
-            effect: Effect::Mutating,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
+    push_subs.insert("push", SubcommandEntry::with_effect(Effect::Mutating));
+
+    let mut git_entry = SubcommandEntry::with_effect(Effect::Unknown);
+    git_entry.subcommands = push_subs;
 
     let mut git_subs = SubcommandMap::new();
-    git_subs.insert(
-        "git",
-        SubcommandEntry {
-            effect: Effect::Unknown,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: push_subs,
-        },
-    );
+    git_subs.insert("git", git_entry);
 
-    kb.commands.insert(
-        "jj".to_string(),
-        CommandKnowledge {
-            name: "jj".to_string(),
-            effect: Effect::Unknown,
-            subcommands: git_subs,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut jj = CommandKnowledge::simple("jj", Effect::Unknown);
+    jj.subcommands = git_subs;
+    kb.commands.insert("jj".to_string(), jj);
 
     let info = classify(&Word::from("jj"), &words(&["jj", "git", "push"]), &kb);
     assert_eq!(info.effect, Effect::Mutating);
@@ -433,21 +330,12 @@ fn nested_subcommand_resolution() {
 #[test]
 fn chmod_tail_skips_mode() {
     let mut kb = KnowledgeBase::default();
-    kb.commands.insert(
-        "chmod".to_string(),
-        CommandKnowledge {
-            name: "chmod".to_string(),
-            effect: Effect::Mutating,
-            subcommands: SubcommandMap::new(),
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec {
-                positionals: PathPositionals::Tail(1),
-                flags: vec![],
-            },
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut chmod = CommandKnowledge::simple("chmod", Effect::Mutating);
+    chmod.paths = PathSpec {
+        positionals: PathPositionals::Tail(1),
+        flags: vec![],
+    };
+    kb.commands.insert("chmod".to_string(), chmod);
 
     let info = classify(
         &Word::from("chmod"),
@@ -464,21 +352,12 @@ fn chmod_tail_skips_mode() {
 #[test]
 fn cp_last_gets_destination() {
     let mut kb = KnowledgeBase::default();
-    kb.commands.insert(
-        "cp".to_string(),
-        CommandKnowledge {
-            name: "cp".to_string(),
-            effect: Effect::Mutating,
-            subcommands: SubcommandMap::new(),
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec {
-                positionals: PathPositionals::Last,
-                flags: vec![],
-            },
-            properties: CommandProperties::default(),
-        },
-    );
+    let mut cp = CommandKnowledge::simple("cp", Effect::Mutating);
+    cp.paths = PathSpec {
+        positionals: PathPositionals::Last,
+        flags: vec![],
+    };
+    kb.commands.insert("cp".to_string(), cp);
 
     let info = classify(
         &Word::from("cp"),

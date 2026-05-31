@@ -91,6 +91,19 @@ pub struct FlagSchema {
     pub path: Vec<String>,
 }
 
+impl FlagSchema {
+    /// Append all flags from `other` onto `self`. Duplicates in `skip_arg`,
+    /// `skip_solo`, and `escalation` are harmless (consumers use `.any()` scans).
+    /// Duplicate `path` entries will produce duplicate `affected_paths` from
+    /// `extract_paths` — consumers should tolerate this.
+    pub fn extend(&mut self, other: FlagSchema) {
+        self.skip_arg.extend(other.skip_arg);
+        self.skip_solo.extend(other.skip_solo);
+        self.escalation.extend(other.escalation);
+        self.path.extend(other.path);
+    }
+}
+
 /// Environment variable conditions that modify classification.
 ///
 /// `Grant` unlocks a more permissive classification when the env var matches.
@@ -181,6 +194,37 @@ pub struct WrapperInfo {
     pub escalates_privilege: bool,
 }
 
+impl SubcommandEntry {
+    /// Create an entry with the given effect and all other fields defaulted.
+    #[cfg(test)]
+    pub fn with_effect(effect: Effect) -> Self {
+        Self {
+            effect,
+            flags: FlagSchema::default(),
+            env_gates: vec![],
+            paths: PathSpec::default(),
+            subcommands: SubcommandMap::new(),
+        }
+    }
+}
+
+impl CommandKnowledge {
+    /// Create a command with the given name, effect, and all other fields defaulted.
+    #[cfg(test)]
+    pub fn simple(name: impl Into<String>, effect: Effect) -> Self {
+        let name = name.into();
+        Self {
+            name,
+            effect,
+            subcommands: SubcommandMap::new(),
+            flags: FlagSchema::default(),
+            env_gates: vec![],
+            paths: PathSpec::default(),
+            properties: CommandProperties::default(),
+        }
+    }
+}
+
 impl SubcommandMap {
     #[must_use = "returns an empty SubcommandMap"]
     pub fn new() -> Self {
@@ -212,6 +256,21 @@ impl SubcommandMap {
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &SubcommandEntry)> {
         self.entries.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    pub fn extend(&mut self, other: SubcommandMap) {
+        for (pattern, entry) in other.entries {
+            self.insert(pattern, entry);
+        }
+    }
+
+    pub fn remove(&mut self, pattern: &str) {
+        self.entries.remove(pattern);
+    }
+
+    #[must_use = "returns the number of entries in the map"]
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
     #[must_use = "returns the best-matching entry and how many words it consumed"]

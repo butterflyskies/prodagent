@@ -13,13 +13,7 @@ fn arb_effect() -> impl Strategy<Value = Effect> {
 }
 
 fn arb_subcommand_entry() -> impl Strategy<Value = SubcommandEntry> {
-    arb_effect().prop_map(|effect| SubcommandEntry {
-        effect,
-        flags: FlagSchema::default(),
-        env_gates: vec![],
-        paths: PathSpec::default(),
-        subcommands: SubcommandMap::new(),
-    })
+    arb_effect().prop_map(SubcommandEntry::with_effect)
 }
 
 fn arb_word() -> impl Strategy<Value = String> {
