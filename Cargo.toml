@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/butterflyskies/prodagent"
@@ -19,7 +19,7 @@ clap = { version = "4", features = ["derive"] }
 shlex = "1"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
-agent-shell-parser = { path = "crates/agent-shell-parser", version = "^0.5" }
+agent-shell-parser = { path = "crates/agent-shell-parser", version = "^0.6" }
 
 [profile.release]
 lto = true
