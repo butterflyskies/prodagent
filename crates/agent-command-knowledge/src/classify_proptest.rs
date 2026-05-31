@@ -54,19 +54,11 @@ fn single_cmd_kb(
 ) -> KnowledgeBase {
     let mut sub_map = SubcommandMap::new();
     sub_map.insert(sub_pattern.to_string(), entry);
+    let mut command = CommandKnowledge::simple(cmd, Effect::Unknown);
+    command.subcommands = sub_map;
+    command.flags = cmd_flags;
     let mut kb = KnowledgeBase::default();
-    kb.commands.insert(
-        cmd.to_string(),
-        CommandKnowledge {
-            name: cmd.to_string(),
-            effect: Effect::Unknown,
-            subcommands: sub_map,
-            flags: cmd_flags,
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            properties: CommandProperties::default(),
-        },
-    );
+    kb.commands.insert(cmd.to_string(), command);
     kb
 }
 
@@ -86,15 +78,10 @@ fn arb_positional_path_case() -> impl Strategy<Value = (KnowledgeBase, String, V
         arb_effect(),
     )
         .prop_map(|(cmd, sub_words, p, mode, effect)| {
-            let entry = SubcommandEntry {
-                effect,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec {
-                    positionals: mode.clone(),
-                    flags: vec![],
-                },
-                subcommands: SubcommandMap::new(),
+            let mut entry = SubcommandEntry::with_effect(effect);
+            entry.paths = PathSpec {
+                positionals: mode.clone(),
+                flags: vec![],
             };
             let kb = single_cmd_kb(&cmd, &sub_words.join(" "), entry, FlagSchema::default());
 
@@ -131,13 +118,7 @@ fn arb_path_flag_case() -> impl Strategy<Value = (KnowledgeBase, String, Vec<Wor
         any::<bool>(),
     )
         .prop_map(|(cmd, sub, flag, vals, use_equals)| {
-            let entry = SubcommandEntry {
-                effect: Effect::Mutating,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            };
+            let entry = SubcommandEntry::with_effect(Effect::Mutating);
             let cmd_flags = FlagSchema {
                 path: vec![flag.clone()],
                 ..Default::default()
@@ -173,15 +154,10 @@ fn arb_skip_arg_before_subcommand(
         prop::collection::vec(arb_word(), 0..3),
     )
         .prop_map(|(cmd, sub, skip_flag, skip_val, p)| {
-            let entry = SubcommandEntry {
-                effect: Effect::Mutating,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec {
-                    positionals: PathPositionals::All,
-                    flags: vec![],
-                },
-                subcommands: SubcommandMap::new(),
+            let mut entry = SubcommandEntry::with_effect(Effect::Mutating);
+            entry.paths = PathSpec {
+                positionals: PathPositionals::All,
+                flags: vec![],
             };
             let cmd_flags = FlagSchema {
                 skip_arg: vec![skip_flag.clone()],
@@ -212,15 +188,10 @@ fn arb_escalation_kb(
         prop::collection::vec(arb_flag(), 0..3),
     )
         .prop_map(|(cmd, sub, esc_cmd, esc_sub)| {
-            let entry = SubcommandEntry {
-                effect: Effect::Mutating,
-                flags: FlagSchema {
-                    escalation: esc_sub.clone(),
-                    ..Default::default()
-                },
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
+            let mut entry = SubcommandEntry::with_effect(Effect::Mutating);
+            entry.flags = FlagSchema {
+                escalation: esc_sub.clone(),
+                ..Default::default()
             };
             let cmd_flags = FlagSchema {
                 escalation: esc_cmd.clone(),
@@ -306,13 +277,7 @@ proptest! {
         let mut kb = single_cmd_kb(
             &name,
             "noop",
-            SubcommandEntry {
-                effect: Effect::ReadOnly,
-                flags: FlagSchema::default(),
-                env_gates: vec![],
-                paths: PathSpec::default(),
-                subcommands: SubcommandMap::new(),
-            },
+            SubcommandEntry::with_effect(Effect::ReadOnly),
             FlagSchema::default(),
         );
         kb.commands.get_mut(&name).unwrap().effect = eff;
@@ -356,13 +321,8 @@ proptest! {
         sub_gate in arb_env_gate(),
         extra in prop::collection::vec(arb_word(), 0..3),
     ) {
-        let entry = SubcommandEntry {
-            effect: Effect::ReadOnly,
-            flags: FlagSchema::default(),
-            env_gates: vec![sub_gate.clone()],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        };
+        let mut entry = SubcommandEntry::with_effect(Effect::ReadOnly);
+        entry.env_gates = vec![sub_gate.clone()];
         let mut kb = single_cmd_kb(&cmd, &sub, entry, FlagSchema::default());
         kb.commands.get_mut(&cmd).unwrap().env_gates = vec![cmd_gate.clone()];
 
@@ -383,13 +343,8 @@ proptest! {
     ) {
         // Ensure the non-matching word is distinct from the registered subcommand.
         prop_assume!(other != sub);
-        let entry = SubcommandEntry {
-            effect: Effect::ReadOnly,
-            flags: FlagSchema::default(),
-            env_gates: vec![sub_gate.clone()],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        };
+        let mut entry = SubcommandEntry::with_effect(Effect::ReadOnly);
+        entry.env_gates = vec![sub_gate.clone()];
         let mut kb = single_cmd_kb(&cmd, &sub, entry, FlagSchema::default());
         kb.commands.get_mut(&cmd).unwrap().env_gates = vec![cmd_gate.clone()];
 

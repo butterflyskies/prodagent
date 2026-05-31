@@ -12,36 +12,9 @@ fn effect_ordering() {
 #[test]
 fn subcommand_map_longest_match_two_word() {
     let mut map = SubcommandMap::new();
-    map.insert(
-        "pr",
-        SubcommandEntry {
-            effect: Effect::Unknown,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
-    map.insert(
-        "pr list",
-        SubcommandEntry {
-            effect: Effect::ReadOnly,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
-    map.insert(
-        "pr create",
-        SubcommandEntry {
-            effect: Effect::Mutating,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
+    map.insert("pr", SubcommandEntry::with_effect(Effect::Unknown));
+    map.insert("pr list", SubcommandEntry::with_effect(Effect::ReadOnly));
+    map.insert("pr create", SubcommandEntry::with_effect(Effect::Mutating));
 
     let words: Vec<Word> = ["pr", "create", "--draft"]
         .iter()
@@ -56,16 +29,7 @@ fn subcommand_map_longest_match_two_word() {
 #[test]
 fn subcommand_map_longest_match_single_word() {
     let mut map = SubcommandMap::new();
-    map.insert(
-        "status",
-        SubcommandEntry {
-            effect: Effect::ReadOnly,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
+    map.insert("status", SubcommandEntry::with_effect(Effect::ReadOnly));
 
     let words = [Word::from("status")];
     let refs: Vec<&Word> = words.iter().collect();
@@ -85,16 +49,7 @@ fn subcommand_map_no_match() {
 #[test]
 fn subcommand_map_fallback_to_shorter() {
     let mut map = SubcommandMap::new();
-    map.insert(
-        "pr",
-        SubcommandEntry {
-            effect: Effect::Unknown,
-            flags: FlagSchema::default(),
-            env_gates: vec![],
-            paths: PathSpec::default(),
-            subcommands: SubcommandMap::new(),
-        },
-    );
+    map.insert("pr", SubcommandEntry::with_effect(Effect::Unknown));
 
     let words: Vec<Word> = ["pr", "unknown-sub"]
         .iter()

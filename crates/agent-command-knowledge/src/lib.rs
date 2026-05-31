@@ -10,10 +10,12 @@
 
 pub mod defaults;
 pub mod lookup;
+pub mod merge;
 pub mod types;
 
 pub use defaults::default_knowledge_base;
 pub use lookup::classify;
+pub use merge::{CommandOverlay, KnowledgeOverlay};
 pub use types::{
     CommandInfo, CommandKnowledge, CommandProperties, Effect, EnvGate, FlagSchema, KnowledgeBase,
     PathPositionals, PathSpec, SubcommandEntry, SubcommandMap, WrapperInfo, WrapperKnowledge,
