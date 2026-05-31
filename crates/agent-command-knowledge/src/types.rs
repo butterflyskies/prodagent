@@ -34,6 +34,7 @@ pub struct CommandKnowledge {
     pub name: String,
     /// Base effect when no subcommand matches.
     pub effect: Effect,
+    #[serde(default)]
     pub subcommands: SubcommandMap,
     #[serde(default)]
     pub flags: FlagSchema,
