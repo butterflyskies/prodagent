@@ -1,9 +1,9 @@
 # Publish workspace crates to crates.io using Trusted Publishing (OIDC).
 # Called by the release workflow after the draft release is created.
 #
-# Publish order: agent-shell-parser (lib) first, then binary crates.
-# The binary crates depend on the lib, so crates.io must index it before
-# the bins can resolve their dependency.
+# Publish order: agent-shell-parser (lib) first, then agent-command-knowledge
+# (lib, depends on parser), then agent-jj (binary). Each lib must be indexed
+# by crates.io before its dependents can resolve.
 name: Publish Crate
 
 on:
@@ -33,15 +33,41 @@ jobs:
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
         id: auth
 
-      - name: Publish lib crate
+      - name: Publish agent-shell-parser
         run: cargo publish -p agent-shell-parser --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-      - name: Wait for crates.io index
-        run: sleep 30
+      - name: Wait for agent-shell-parser on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for agent-shell-parser@${version} to appear on crates.io..."
+          for i in $(seq 1 30); do
+            if cargo search agent-shell-parser 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 5
+          done
 
-      - name: Publish binary crate
+      - name: Publish agent-command-knowledge
+        run: cargo publish -p agent-command-knowledge --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for agent-command-knowledge on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for agent-command-knowledge@${version} to appear on crates.io..."
+          for i in $(seq 1 30); do
+            if cargo search agent-command-knowledge 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Publish agent-jj
         run: cargo publish -p agent-jj --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
