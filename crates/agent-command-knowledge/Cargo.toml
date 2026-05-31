@@ -2,6 +2,7 @@
 name = "agent-command-knowledge"
 version.workspace = true
 description = "Command taxonomy and knowledge layer — what commands are, not what to do about them"
+readme = "../../README.md"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
