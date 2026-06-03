@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-31
+
+### Added
+
+- **New crate**: `agent-policy` — policy engine for agent tool authorization, maps command effects to allow/ask/deny decisions
+- `agent-policy`: Full parse→classify→decide pipeline via `PolicyEngine::evaluate_command()` — takes a raw command string, returns a final authorization decision
+- `agent-policy`: `PolicyConfig` with configurable effect-class defaults and per-command/subcommand overrides
+- `agent-policy`: `PolicyConfigBuilder` for ergonomic config construction (`.allow()` / `.ask()` / `.deny()` / `.subcommand()`)
+- `agent-policy`: Config validation — rejects non-monotonic effect defaults and no-op override entries at construction time
+- `agent-policy`: Wrapper handling with floor effect, `escalates_privilege` enforcement, and fail-closed fallback for unresolved inner commands
+- `agent-policy`: Compound command aggregation (strictest wins), escalation flag detection, redirection escalation
+- `agent-policy`: 7 property-based tests including wrapper sampling from KB (caught wrapper list drift bug)
+- `agent-policy`: 43 pipeline and engine integration tests
+
+### Changed
+
+- **BREAKING** `agent-command-knowledge`: `Effect` enum is now `ReadOnly | Mutating | Unknown` — `Destructive` variant removed. Commands previously classified as Destructive are now Mutating; the deny/allow decision belongs in the policy layer, not the knowledge layer.
+- `agent-command-knowledge`: All 22 `effect = "destructive"` entries in `commands.toml` changed to `effect = "mutating"`
+
+### Fixed
+
+- `agent-policy`: Wrapper fail-open bypass — KB-only wrappers (doas, su, pkexec, watch, ltrace) that the parser couldn't strip now correctly apply floor effect and escalates_privilege instead of defaulting to Allow
+- `agent-policy`: Bare wrappers (e.g. `sudo` with no arguments) fail-closed to Ask instead of Allow
+
 ## [0.6.0] - 2026-05-31
 
 ### Added

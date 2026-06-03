@@ -1,0 +1,423 @@
+use super::*;
+use crate::config::{EffectDefaults, PolicyConfig};
+use agent_command_knowledge::{Effect, KnowledgeBase, WrapperKnowledge};
+
+// ── PolicyDecision ordering ─────────────────────────────────────────────
+
+#[test]
+fn policy_decision_ordering() {
+    assert!(PolicyDecision::Allow < PolicyDecision::Ask);
+    assert!(PolicyDecision::Ask < PolicyDecision::Deny);
+    assert!(PolicyDecision::Allow < PolicyDecision::Deny);
+}
+
+// ── Default effect mapping ──────────────────────────────────────────────
+
+#[test]
+fn default_effect_mapping() {
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+
+    let read_only = CommandInfo {
+        effect: Effect::ReadOnly,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(engine.evaluate("cat", &read_only), PolicyDecision::Allow);
+
+    let mutating = CommandInfo {
+        effect: Effect::Mutating,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(engine.evaluate("rm", &mutating), PolicyDecision::Ask);
+
+    let unknown = CommandInfo::unknown();
+    assert_eq!(engine.evaluate("mystery", &unknown), PolicyDecision::Ask);
+}
+
+// ── Config from TOML round-trip ─────────────────────────────────────────
+
+#[test]
+fn config_toml_round_trip() {
+    let config = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Allow)
+        .mutating_default(PolicyDecision::Ask)
+        .unknown_default(PolicyDecision::Deny)
+        .build()
+        .unwrap();
+    let serialized = toml::to_string(&config).expect("serialize");
+    let deserialized: PolicyConfig = toml::from_str(&serialized).expect("deserialize");
+    assert_eq!(deserialized.defaults.read_only, PolicyDecision::Allow);
+    assert_eq!(deserialized.defaults.mutating, PolicyDecision::Ask);
+    assert_eq!(deserialized.defaults.unknown, PolicyDecision::Deny);
+}
+
+// ── Per-command override (flat) ─────────────────────────────────────────
+
+#[test]
+fn per_command_flat_override_parses() {
+    let toml_str = r#"
+[commands]
+ls = "allow"
+rm = "deny"
+"#;
+    let config: PolicyConfig = toml::from_str(toml_str).expect("parse");
+    assert!(matches!(
+        config.commands.get("ls"),
+        Some(CommandPolicy::Flat(PolicyDecision::Allow))
+    ));
+    assert!(matches!(
+        config.commands.get("rm"),
+        Some(CommandPolicy::Flat(PolicyDecision::Deny))
+    ));
+}
+
+// ── Per-command override (detailed with subcommands) ────────────────────
+
+#[test]
+fn per_command_detailed_override_parses() {
+    let toml_str = r#"
+[commands.git]
+base = "ask"
+
+[commands.git.subcommands]
+status = "allow"
+push = "ask"
+reset = "deny"
+"#;
+    let config: PolicyConfig = toml::from_str(toml_str).expect("parse");
+    match config.commands.get("git") {
+        Some(CommandPolicy::Detailed(detail)) => {
+            assert_eq!(detail.base, Some(PolicyDecision::Ask));
+            assert_eq!(
+                detail.subcommands.get("status"),
+                Some(&PolicyDecision::Allow)
+            );
+            assert_eq!(detail.subcommands.get("push"), Some(&PolicyDecision::Ask));
+            assert_eq!(detail.subcommands.get("reset"), Some(&PolicyDecision::Deny));
+        }
+        other => panic!("expected Detailed, got {:?}", other),
+    }
+}
+
+// ── Effect defaults customization ───────────────────────────────────────
+
+#[test]
+fn effect_defaults_customization() {
+    let config = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Allow)
+        .mutating_default(PolicyDecision::Deny)
+        .unknown_default(PolicyDecision::Deny)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let mutating = CommandInfo {
+        effect: Effect::Mutating,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(
+        engine.evaluate("rm", &mutating),
+        PolicyDecision::Deny,
+        "custom mutating default should be Deny"
+    );
+
+    let unknown = CommandInfo::unknown();
+    assert_eq!(
+        engine.evaluate("mystery", &unknown),
+        PolicyDecision::Deny,
+        "custom unknown default should be Deny"
+    );
+}
+
+// ── Command override tests (wired) ─────────────────────────────────────
+
+#[test]
+fn flat_override_affects_decision() {
+    let config = PolicyConfig::builder().deny("rm").build().unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    // Even with a ReadOnly effect, the flat override should win
+    let info = CommandInfo {
+        effect: Effect::ReadOnly,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(engine.evaluate("rm", &info), PolicyDecision::Deny);
+}
+
+#[test]
+fn detailed_subcommand_override() {
+    let config = PolicyConfig::builder()
+        .command_base("git", PolicyDecision::Ask)
+        .subcommand("git", "status", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let info = CommandInfo {
+        effect: Effect::Unknown,
+        subcommand: Some("status".to_string()),
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(engine.evaluate("git", &info), PolicyDecision::Allow);
+}
+
+#[test]
+fn detailed_base_override() {
+    let config = PolicyConfig::builder()
+        .command_base("git", PolicyDecision::Ask)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let info = CommandInfo {
+        effect: Effect::ReadOnly,
+        subcommand: None,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(engine.evaluate("git", &info), PolicyDecision::Ask);
+}
+
+#[test]
+fn override_precedence() {
+    // Subcommand override = Allow, base override = Ask, effect default for Unknown = Deny
+    let config = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Deny)
+        .mutating_default(PolicyDecision::Deny)
+        .unknown_default(PolicyDecision::Deny)
+        .command_base("git", PolicyDecision::Ask)
+        .subcommand("git", "status", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    // Subcommand match → Allow (beats base Ask and effect Deny)
+    let with_sub = CommandInfo {
+        effect: Effect::Unknown,
+        subcommand: Some("status".to_string()),
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(
+        engine.evaluate("git", &with_sub),
+        PolicyDecision::Allow,
+        "subcommand override should beat base and effect default"
+    );
+
+    // No subcommand match → base Ask (beats effect Deny)
+    let no_sub = CommandInfo {
+        effect: Effect::Unknown,
+        subcommand: None,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(
+        engine.evaluate("git", &no_sub),
+        PolicyDecision::Ask,
+        "base override should beat effect default"
+    );
+
+    // Unmatched subcommand → base Ask (beats effect Deny)
+    let wrong_sub = CommandInfo {
+        effect: Effect::Unknown,
+        subcommand: Some("push".to_string()),
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(
+        engine.evaluate("git", &wrong_sub),
+        PolicyDecision::Ask,
+        "unmatched subcommand should fall through to base override"
+    );
+}
+
+#[test]
+fn unmatched_command_falls_through() {
+    let config = PolicyConfig::builder().deny("rm").build().unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    // "ls" is not in overrides, so it should fall through to effect default
+    let info = CommandInfo {
+        effect: Effect::ReadOnly,
+        ..CommandInfo::unknown()
+    };
+    assert_eq!(
+        engine.evaluate("ls", &info),
+        PolicyDecision::Allow,
+        "unmatched command should use effect default"
+    );
+}
+
+// ── PolicyDecision Display and Default ─────────────────────────────────
+
+#[test]
+fn policy_decision_display() {
+    assert_eq!(format!("{}", PolicyDecision::Allow), "Allow");
+    assert_eq!(format!("{}", PolicyDecision::Ask), "Ask");
+    assert_eq!(format!("{}", PolicyDecision::Deny), "Deny");
+}
+
+#[test]
+fn policy_decision_default_is_ask() {
+    assert_eq!(PolicyDecision::default(), PolicyDecision::Ask);
+}
+
+// ── Mechanism-level wrapper test (P2-9) ────────────────────────────────
+
+#[test]
+fn wrapper_floor_applied_from_minimal_kb() {
+    // Construct a minimal KB with a known wrapper (floor_effect=Mutating)
+    // and a read-only inner command, then verify the floor is applied.
+    // We use "nice" because it's in the parser's embedded commands.json
+    // wrapper list, so resolve_command will strip it.
+    let mut kb = KnowledgeBase::default();
+    kb.wrappers.insert(
+        "nice".to_string(),
+        WrapperKnowledge {
+            name: "nice".to_string(),
+            floor_effect: Effect::Mutating,
+            clears_env: false,
+            escalates_privilege: false,
+        },
+    );
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    // "nice ls" — nice is a wrapper with Mutating floor, ls is unknown to this
+    // minimal KB but the parser resolves it. With Mutating floor and default
+    // policy (mutating=Ask), the floor should be Ask.
+    let result = engine.evaluate_command("nice ls", &kb);
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "wrapper floor_effect=Mutating should raise inner command to at least Ask: {result:?}"
+    );
+}
+
+// ── Detailed no-match fallthrough test (P3-14) ─────────────────────────
+
+#[test]
+fn detailed_no_match_falls_through_to_effect_default() {
+    // Detailed policy for "git" with base: None and only push -> Deny.
+    // Calling with subcommand "status" should fall through to effect default.
+    let config = PolicyConfig::builder()
+        .subcommand("git", "push", PolicyDecision::Deny)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let info = CommandInfo {
+        effect: Effect::ReadOnly,
+        subcommand: Some("status".to_string()),
+        ..CommandInfo::unknown()
+    };
+    // No match for "status" subcommand and no base override → effect default for ReadOnly = Allow
+    assert_eq!(
+        engine.evaluate("git", &info),
+        PolicyDecision::Allow,
+        "unmatched subcommand with no base should fall through to effect default"
+    );
+}
+
+// ── Validation tests ────────────────────────────────────────────────────
+
+#[test]
+fn monotonic_config_validates() {
+    let result = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Allow)
+        .mutating_default(PolicyDecision::Ask)
+        .unknown_default(PolicyDecision::Ask)
+        .build();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn non_monotonic_config_rejected() {
+    let err = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Deny)
+        .mutating_default(PolicyDecision::Allow)
+        .unknown_default(PolicyDecision::Ask)
+        .build()
+        .unwrap_err();
+    assert!(
+        err.contains("non-monotonic"),
+        "error message should mention non-monotonic: {}",
+        err
+    );
+    assert!(
+        err.contains("read-only"),
+        "error message should name read-only: {}",
+        err
+    );
+}
+
+#[test]
+fn equal_values_are_monotonic() {
+    let result = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Ask)
+        .mutating_default(PolicyDecision::Ask)
+        .unknown_default(PolicyDecision::Ask)
+        .build();
+    assert!(
+        result.is_ok(),
+        "all-equal values should be considered monotonic"
+    );
+}
+
+// ── No-op Detailed entry validation (P1-2) ─────────────────────────────
+
+#[test]
+fn noop_detailed_entry_rejected() {
+    // Build a config with an empty Detailed entry manually — the builder
+    // would reject this at build() time, but we want to test validate()
+    // directly too.
+    let mut commands = std::collections::HashMap::new();
+    commands.insert(
+        "git".to_string(),
+        CommandPolicy::Detailed(crate::config::DetailedCommandPolicy {
+            base: None,
+            subcommands: std::collections::HashMap::new(),
+        }),
+    );
+    let config = PolicyConfig {
+        defaults: EffectDefaults::default(),
+        commands,
+    };
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.contains("git"),
+        "error should name the command: {}",
+        err
+    );
+    assert!(err.contains("no-op"), "error should mention no-op: {}", err);
+}
+
+// ── PolicyEngine::new rejects invalid config (P2-6) ────────────────────
+
+#[test]
+fn engine_new_rejects_invalid_config() {
+    let result = PolicyConfig::builder()
+        .read_only_default(PolicyDecision::Deny)
+        .mutating_default(PolicyDecision::Allow)
+        .unknown_default(PolicyDecision::Ask)
+        .build();
+    assert!(
+        result.is_err(),
+        "builder should reject non-monotonic config"
+    );
+}
+
+// ── Fail-closed guard ───────────────────────────────────────────────────
+
+#[test]
+fn default_config_is_fail_closed() {
+    let config = PolicyConfig::default();
+    assert_eq!(
+        config.defaults.unknown,
+        PolicyDecision::Ask,
+        "Unknown effect should default to Ask, not Allow"
+    );
+    assert_eq!(
+        config.defaults.mutating,
+        PolicyDecision::Ask,
+        "Mutating effect should default to Ask, not Allow"
+    );
+    assert_eq!(
+        config.defaults.read_only,
+        PolicyDecision::Allow,
+        "ReadOnly effect should default to Allow"
+    );
+}

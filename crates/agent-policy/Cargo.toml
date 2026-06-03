@@ -1,0 +1,18 @@
+[package]
+name = "agent-policy"
+version.workspace = true
+description = "Policy engine for agent tool authorization — maps command effects to allow/ask/deny decisions"
+readme = "../../README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agent-command-knowledge = { workspace = true }
+agent-shell-parser = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
+proptest = "1"
