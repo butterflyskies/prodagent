@@ -110,18 +110,18 @@ mod tests {
             ("tee",    Effect::Mutating),
             ("curl",   Effect::Mutating),
             ("wget",   Effect::Mutating),
-            // destructive
-            ("rm",       Effect::Destructive),
-            ("rmdir",    Effect::Destructive),
-            ("shred",    Effect::Destructive),
-            ("dd",       Effect::Destructive),
-            ("mkfs",     Effect::Destructive),
-            ("fdisk",    Effect::Destructive),
-            ("parted",   Effect::Destructive),
-            ("shutdown", Effect::Destructive),
-            ("reboot",   Effect::Destructive),
-            ("halt",     Effect::Destructive),
-            ("poweroff", Effect::Destructive),
+            // mutating (formerly destructive)
+            ("rm",       Effect::Mutating),
+            ("rmdir",    Effect::Mutating),
+            ("shred",    Effect::Mutating),
+            ("dd",       Effect::Mutating),
+            ("mkfs",     Effect::Mutating),
+            ("fdisk",    Effect::Mutating),
+            ("parted",   Effect::Mutating),
+            ("shutdown", Effect::Mutating),
+            ("reboot",   Effect::Mutating),
+            ("halt",     Effect::Mutating),
+            ("poweroff", Effect::Mutating),
             // unknown (subcommand-dispatch commands)
             ("git",     Effect::Unknown),
             ("cargo",   Effect::Unknown),
@@ -185,12 +185,12 @@ mod tests {
             ("git", "am",          Effect::Mutating),
             ("git", "apply",       Effect::Mutating),
             ("git", "submodule",   Effect::Mutating),
-            // ── git destructive ────────────────────────────────────────────
-            ("git", "reset",        Effect::Destructive),
-            ("git", "clean",        Effect::Destructive),
-            ("git", "rm",           Effect::Destructive),
-            ("git", "update-ref",   Effect::Destructive),
-            ("git", "update-index", Effect::Destructive),
+            // ── git mutating (formerly destructive) ────────────────────────
+            ("git", "reset",        Effect::Mutating),
+            ("git", "clean",        Effect::Mutating),
+            ("git", "rm",           Effect::Mutating),
+            ("git", "update-ref",   Effect::Mutating),
+            ("git", "update-index", Effect::Mutating),
             // ── cargo read-only ────────────────────────────────────────────
             ("cargo", "build",            Effect::ReadOnly),
             ("cargo", "check",            Effect::ReadOnly),
@@ -297,13 +297,13 @@ mod tests {
             ("gh", "secret set",        Effect::Mutating),
             ("gh", "secret delete",     Effect::Mutating),
             ("gh", "config set",        Effect::Mutating),
-            // ── gh destructive ─────────────────────────────────────────────
-            ("gh", "repo delete",    Effect::Destructive),
-            ("gh", "issue delete",   Effect::Destructive),
-            ("gh", "issue transfer", Effect::Destructive),
-            ("gh", "release delete", Effect::Destructive),
-            ("gh", "label delete",   Effect::Destructive),
-            ("gh", "cache delete",   Effect::Destructive),
+            // ── gh mutating (formerly destructive) ─────────────────────────
+            ("gh", "repo delete",    Effect::Mutating),
+            ("gh", "issue delete",   Effect::Mutating),
+            ("gh", "issue transfer", Effect::Mutating),
+            ("gh", "release delete", Effect::Mutating),
+            ("gh", "label delete",   Effect::Mutating),
+            ("gh", "cache delete",   Effect::Mutating),
             // ── kubectl read-only ──────────────────────────────────────────
             ("kubectl", "get",           Effect::ReadOnly),
             ("kubectl", "describe",      Effect::ReadOnly),
@@ -362,12 +362,12 @@ mod tests {
             (&["git", "log"], Effect::ReadOnly, Some("log")),
             (&["git", "diff"], Effect::ReadOnly, Some("diff")),
             (&["git", "push"], Effect::Mutating, Some("push")),
-            (&["git", "reset"], Effect::Destructive, Some("reset")),
+            (&["git", "reset"], Effect::Mutating, Some("reset")),
             (&["gh", "pr", "list"], Effect::ReadOnly, Some("pr list")),
             (&["gh", "pr", "create"], Effect::Mutating, Some("pr create")),
             (
                 &["gh", "repo", "delete"],
-                Effect::Destructive,
+                Effect::Mutating,
                 Some("repo delete"),
             ),
             (&["cargo", "test"], Effect::ReadOnly, Some("test")),
@@ -424,18 +424,14 @@ mod tests {
     // ── deny-list ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn deny_list_commands_are_destructive() {
+    fn deny_list_commands_are_mutating() {
         let kb = default_knowledge_base();
         for cmd in &["shred", "dd", "shutdown", "reboot"] {
             let entry = kb
                 .commands
                 .get(*cmd)
                 .unwrap_or_else(|| panic!("{cmd} should be in the KB"));
-            assert_eq!(
-                entry.effect,
-                Effect::Destructive,
-                "{cmd} should be Destructive"
-            );
+            assert_eq!(entry.effect, Effect::Mutating, "{cmd} should be Mutating");
         }
     }
 

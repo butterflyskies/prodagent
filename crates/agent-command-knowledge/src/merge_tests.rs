@@ -41,7 +41,7 @@ fn base_kb() -> KnowledgeBase {
         },
     );
 
-    let mut rm = CommandKnowledge::simple("rm", Effect::Destructive);
+    let mut rm = CommandKnowledge::simple("rm", Effect::Mutating);
     rm.paths = PathSpec {
         positionals: PathPositionals::All,
         flags: vec![],
@@ -52,7 +52,7 @@ fn base_kb() -> KnowledgeBase {
         "sudo".into(),
         WrapperKnowledge {
             name: "sudo".into(),
-            floor_effect: Effect::Destructive,
+            floor_effect: Effect::Mutating,
             clears_env: false,
             escalates_privilege: true,
         },
@@ -149,7 +149,7 @@ fn override_existing_subcommand_effect() {
     let mut overlay = empty_overlay();
 
     let mut override_subs = SubcommandMap::new();
-    override_subs.insert("push", SubcommandEntry::with_effect(Effect::Destructive));
+    override_subs.insert("push", SubcommandEntry::with_effect(Effect::Unknown));
     overlay.commands.insert(
         "git".into(),
         CommandOverlay {
@@ -163,7 +163,7 @@ fn override_existing_subcommand_effect() {
     let git = kb.commands.get("git").unwrap();
     assert_eq!(
         git.subcommands.get("push").unwrap().effect,
-        Effect::Destructive,
+        Effect::Unknown,
         "push effect should be overridden"
     );
     // status untouched.
@@ -419,15 +419,15 @@ fn replace_existing_wrapper() {
 #[test]
 fn remove_then_readd_replaces_command() {
     let mut kb = base_kb();
-    // rm exists as Destructive with PathSpec::All
-    assert_eq!(kb.commands.get("rm").unwrap().effect, Effect::Destructive);
+    // rm exists as Mutating with PathSpec::All
+    assert_eq!(kb.commands.get("rm").unwrap().effect, Effect::Mutating);
 
     let mut overlay = empty_overlay();
     // Remove and re-add with different effect.
     overlay.remove_commands.push("rm".into());
     overlay
         .commands
-        .insert("rm".into(), CommandOverlay::with_effect(Effect::Mutating));
+        .insert("rm".into(), CommandOverlay::with_effect(Effect::ReadOnly));
 
     kb.merge(overlay);
 
@@ -437,7 +437,7 @@ fn remove_then_readd_replaces_command() {
         .expect("rm should exist as replacement");
     assert_eq!(
         rm.effect,
-        Effect::Mutating,
+        Effect::ReadOnly,
         "should be the replacement, not the original"
     );
     // Original paths should be gone — this is a fresh insertion.
@@ -544,7 +544,7 @@ fn subcommand_remove_and_readd_in_same_overlay() {
     );
 
     let mut new_subs = SubcommandMap::new();
-    new_subs.insert("push", SubcommandEntry::with_effect(Effect::Destructive));
+    new_subs.insert("push", SubcommandEntry::with_effect(Effect::Unknown));
 
     let mut overlay = empty_overlay();
     overlay.commands.insert(
@@ -561,7 +561,7 @@ fn subcommand_remove_and_readd_in_same_overlay() {
     let git = kb.commands.get("git").unwrap();
     assert_eq!(
         git.subcommands.get("push").unwrap().effect,
-        Effect::Destructive,
+        Effect::Unknown,
         "re-added push should have the overlay's effect"
     );
 }
@@ -702,9 +702,9 @@ fn classify_uses_merged_kb() {
 #[test]
 fn partial_wrapper_update_preserves_unspecified_fields() {
     let mut kb = base_kb();
-    // sudo starts with: floor_effect=Destructive, clears_env=false, escalates_privilege=true
+    // sudo starts with: floor_effect=Mutating, clears_env=false, escalates_privilege=true
     let sudo_before = kb.wrappers.get("sudo").unwrap().clone();
-    assert_eq!(sudo_before.floor_effect, Effect::Destructive);
+    assert_eq!(sudo_before.floor_effect, Effect::Mutating);
     assert!(!sudo_before.clears_env);
     assert!(sudo_before.escalates_privilege);
 
@@ -712,7 +712,7 @@ fn partial_wrapper_update_preserves_unspecified_fields() {
     overlay.wrappers.insert(
         "sudo".into(),
         WrapperOverlay {
-            floor_effect: Some(Effect::Mutating),
+            floor_effect: Some(Effect::Unknown),
             // clears_env and escalates_privilege deliberately omitted
             ..Default::default()
         },
@@ -723,7 +723,7 @@ fn partial_wrapper_update_preserves_unspecified_fields() {
     let sudo = kb.wrappers.get("sudo").unwrap();
     assert_eq!(
         sudo.floor_effect,
-        Effect::Mutating,
+        Effect::Unknown,
         "floor_effect should be overridden"
     );
     assert_eq!(
@@ -779,7 +779,11 @@ floor_effect = "mutating"
         toml::from_str(overlay_toml).expect("overlay TOML should parse");
 
     let mut kb = base_kb();
-    // sudo starts with: escalates_privilege=true, clears_env=false
+    // sudo starts with: floor_effect=Mutating, escalates_privilege=true, clears_env=false
+    assert_eq!(
+        kb.wrappers.get("sudo").unwrap().floor_effect,
+        Effect::Mutating
+    );
     assert!(kb.wrappers.get("sudo").unwrap().escalates_privilege);
     assert!(!kb.wrappers.get("sudo").unwrap().clears_env);
 

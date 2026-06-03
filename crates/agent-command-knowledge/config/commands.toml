@@ -3,9 +3,9 @@
 # Sources:
 #   - cc-toolgate/config.default.toml  (allow/ask/deny lists, git/cargo/gh/kubectl sections)
 #   - cc-toolgate tool specs           (flag schemas, subcommand lists)
-#   - agent-jj policy                  (blocked git subcommands mapped to mutating/destructive)
+#   - agent-jj policy                  (blocked git subcommands mapped to mutating)
 #
-# Effect values: "read-only", "mutating", "destructive", "unknown"
+# Effect values: "read-only", "mutating", "unknown"
 # SubcommandMap entries live under [commands.<name>.subcommands.entries.<pattern>]
 
 # ── git ─────────────────────────────────────────────────────────────────────
@@ -132,21 +132,21 @@ effect = "mutating"
 [commands.git.subcommands.entries.apply]
 effect = "mutating"
 
-# Destructive subcommands (from agent-jj blocked list)
+# Mutating subcommands (from agent-jj blocked list)
 [commands.git.subcommands.entries.reset]
-effect = "destructive"
+effect = "mutating"
 
 [commands.git.subcommands.entries.clean]
-effect = "destructive"
+effect = "mutating"
 
 [commands.git.subcommands.entries.rm]
-effect = "destructive"
+effect = "mutating"
 
 [commands.git.subcommands.entries."update-ref"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.git.subcommands.entries."update-index"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.git.subcommands.entries.submodule]
 effect = "mutating"
@@ -477,24 +477,24 @@ effect = "mutating"
 [commands.gh.subcommands.entries."config set"]
 effect = "mutating"
 
-# Destructive subcommands
+# Mutating subcommands
 [commands.gh.subcommands.entries."repo delete"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.gh.subcommands.entries."issue delete"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.gh.subcommands.entries."issue transfer"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.gh.subcommands.entries."release delete"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.gh.subcommands.entries."label delete"]
-effect = "destructive"
+effect = "mutating"
 
 [commands.gh.subcommands.entries."cache delete"]
-effect = "destructive"
+effect = "mutating"
 
 # ── kubectl ──────────────────────────────────────────────────────────────────
 
@@ -725,14 +725,14 @@ effect = "read-only"
 
 [commands.rm]
 name = "rm"
-effect = "destructive"
+effect = "mutating"
 
 [commands.rm.paths]
 positionals = "all"
 
 [commands.rmdir]
 name = "rmdir"
-effect = "destructive"
+effect = "mutating"
 
 [commands.rmdir.paths]
 positionals = "all"
@@ -802,39 +802,39 @@ effect = "mutating"
 
 [commands.shred]
 name = "shred"
-effect = "destructive"
+effect = "mutating"
 
 [commands.dd]
 name = "dd"
-effect = "destructive"
+effect = "mutating"
 
 [commands.mkfs]
 name = "mkfs"
-effect = "destructive"
+effect = "mutating"
 
 [commands.fdisk]
 name = "fdisk"
-effect = "destructive"
+effect = "mutating"
 
 [commands.parted]
 name = "parted"
-effect = "destructive"
+effect = "mutating"
 
 [commands.shutdown]
 name = "shutdown"
-effect = "destructive"
+effect = "mutating"
 
 [commands.reboot]
 name = "reboot"
-effect = "destructive"
+effect = "mutating"
 
 [commands.halt]
 name = "halt"
-effect = "destructive"
+effect = "mutating"
 
 [commands.poweroff]
 name = "poweroff"
-effect = "destructive"
+effect = "mutating"
 
 # ── Wrappers ─────────────────────────────────────────────────────────────────
 

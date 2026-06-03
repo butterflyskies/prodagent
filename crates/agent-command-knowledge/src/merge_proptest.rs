@@ -9,7 +9,6 @@ fn arb_effect() -> impl Strategy<Value = Effect> {
     prop_oneof![
         Just(Effect::ReadOnly),
         Just(Effect::Mutating),
-        Just(Effect::Destructive),
         Just(Effect::Unknown),
     ]
 }
