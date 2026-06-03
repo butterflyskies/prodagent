@@ -342,9 +342,8 @@ proptest! {
         prop_assert!(!c.has_dynamic_command);
     }
 
-    /// Fail-safe: a token matching a wrapper's unanalyzable-flag namespace forces
-    /// Unanalyzable, because the parser can't distinguish it from the wrapper's own
-    /// flag. Documents the (intentional, safe) over-broad scan.
+    /// Fail-safe: an unanalyzable flag in the wrapper's own flag region
+    /// (before the inner command starts) forces Unanalyzable.
     #[test]
     fn wrapper_unanalyzable_flag_collision_fails_closed(
         (wrapper, flag) in prop_oneof![
@@ -356,12 +355,62 @@ proptest! {
         inner_base in arb_plain_word(),
         extra in prop::collection::vec(arb_plain_word(), 0..3),
     ) {
-        let mut words = vec![Word::from(wrapper), Word::from(inner_base.as_str())];
+        // Place the unanalyzable flag before the inner command — i.e. in
+        // the wrapper's own flag region where it should be detected.
+        let mut words = vec![Word::from(wrapper), Word::from(flag)];
+        words.push(Word::from(inner_base.as_str()));
         words.extend(extra.iter().map(|s| Word::from(s.as_str())));
-        words.push(Word::from(flag));
         prop_assert!(
             matches!(resolve_command(&words), ResolvedCommand::Unanalyzable(_)),
             "a token colliding with the wrapper's unanalyzable flags must fail closed"
         );
+    }
+
+    /// Dual of wrapper_unanalyzable_flag_collision_fails_closed: when a flag
+    /// that collides with the wrapper's unanalyzable list appears *after* the
+    /// inner command starts, it belongs to the inner command and must not
+    /// trigger the wrapper's fail-closed path.
+    ///
+    /// Two placement strategies:
+    ///   1. After a `--` terminator:  `sudo -- inner -s`
+    ///   2. As a trailing arg (no terminator): `sudo inner -s`
+    ///
+    /// In both cases the result must be Resolved(inner).
+    #[test]
+    fn colliding_flag_after_inner_command_resolves(
+        (wrapper, flag) in prop_oneof![
+            Just(("sudo", "-i")),
+            Just(("sudo", "-s")),
+            Just(("env", "-S")),
+            Just(("env", "--split-string")),
+        ],
+        inner_base in arb_plain_word(),
+        extra in prop::collection::vec(arb_plain_word(), 0..3),
+        use_terminator in any::<bool>(),
+    ) {
+        // Build: wrapper [--] inner [extra...] flag
+        let mut words = vec![Word::from(wrapper)];
+        if use_terminator {
+            words.push(Word::from("--"));
+        }
+        words.push(Word::from(inner_base.as_str()));
+        words.extend(extra.iter().map(|s| Word::from(s.as_str())));
+        words.push(Word::from(flag));
+
+        match resolve_command(&words) {
+            ResolvedCommand::Resolved(p) => {
+                prop_assert_eq!(
+                    p.command.as_str(),
+                    inner_base.as_str(),
+                    "colliding flag after inner command must resolve to the inner command"
+                );
+            }
+            other => prop_assert!(
+                false,
+                "expected Resolved({inner_base}), got {:?} — colliding flag placed after \
+                 inner command start should not trigger wrapper's unanalyzable check",
+                other,
+            ),
+        }
     }
 }

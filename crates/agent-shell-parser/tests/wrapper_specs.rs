@@ -432,6 +432,27 @@ fn sudo_s_is_unanalyzable() {
     assert!(resolved_command_name("sudo -s git commit").starts_with("UNANALYZABLE"));
 }
 
+// --- terminator scopes unanalyzable-flag check ---
+
+#[test]
+fn sudo_terminator_scopes_unanalyzable_flags() {
+    // -s after -- belongs to `git commit`, not sudo
+    assert_eq!(resolved_command_name("sudo -- git commit -s"), "git");
+}
+
+#[test]
+fn sudo_s_before_terminator_is_unanalyzable() {
+    assert!(resolved_command_name("sudo -s -- git commit").starts_with("UNANALYZABLE"));
+}
+
+#[test]
+fn sudo_git_commit_s_without_terminator() {
+    // -s is git-commit's signoff flag, not sudo's -s (login shell).
+    // Without a `--` terminator, the parser must still recognize that -s
+    // appears after the inner command starts and scope it to git, not sudo.
+    assert_eq!(resolved_command_name("sudo git commit -s"), "git");
+}
+
 // --- combined short flags ---
 
 #[test]
