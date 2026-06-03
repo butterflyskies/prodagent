@@ -89,6 +89,77 @@ fn filter_segments_collects_from_nested() {
     assert_eq!(gits, vec!["git status", "git diff"]);
 }
 
+// --- fold_segments ---
+
+#[test]
+fn fold_segments_counts_all() {
+    let p = parse("echo a && ls -la && cat file");
+    let count = p.fold_segments(0usize, &|acc, _seg| acc + 1);
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn fold_segments_counts_nested() {
+    let p = parse("echo $(git status && git diff)");
+    let count = p.fold_segments(0usize, &|acc, _seg| acc + 1);
+    // "git status", "git diff" (nested), then "echo $(git status && git diff)" (parent)
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn fold_segments_accumulates_value() {
+    let p = parse("echo a && echo b && echo c");
+    let commands = p.fold_segments(String::new(), &|mut acc, seg| {
+        if !acc.is_empty() {
+            acc.push(',');
+        }
+        acc.push_str(&seg.command);
+        acc
+    });
+    assert_eq!(commands, "echo a,echo b,echo c");
+}
+
+#[test]
+fn fold_segments_matches_filter_segments_count() {
+    let p = parse("echo $(git status) && ls");
+    let filtered: Vec<String> = p.filter_segments(&|seg| Some(seg.command.clone()));
+    let folded = p.fold_segments(0usize, &|acc, _seg| acc + 1);
+    assert_eq!(folded, filtered.len());
+}
+
+#[test]
+fn fold_segments_visits_structural_substitutions() {
+    let p = parse("for i in $(seq 10); do echo $i; done");
+    let first = p.fold_segments(String::new(), &|acc, seg| {
+        if acc.is_empty() {
+            seg.command.clone()
+        } else {
+            acc
+        }
+    });
+    assert_eq!(first, "seq 10");
+}
+
+#[test]
+fn fold_segments_traversal_order_matches_filter_segments() {
+    // Stronger than count-only: assert that fold visits segments in the
+    // exact same order as filter_segments.
+    for input in [
+        "echo a && ls -la && cat file",
+        "echo $(git status && git diff)",
+        "for i in $(seq 10); do echo $i; done",
+        "echo $(date) && ls $(pwd) | grep foo",
+    ] {
+        let p = parse(input);
+        let filtered: Vec<String> = p.filter_segments(&|seg| Some(seg.command.clone()));
+        let folded: Vec<String> = p.fold_segments(Vec::new(), &|mut acc, seg| {
+            acc.push(seg.command.clone());
+            acc
+        });
+        assert_eq!(folded, filtered, "traversal order mismatch for {:?}", input);
+    }
+}
+
 // --- has_parse_errors_recursive ---
 
 #[test]
