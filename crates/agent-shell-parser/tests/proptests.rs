@@ -121,6 +121,7 @@ fn hammer(s: &str) {
     if let Ok(p) = parse_with_substitutions(s) {
         let _ = p.has_parse_errors_recursive();
         let _ = p.filter_segments(&|seg| Some(seg.words.len()));
+        let _ = p.fold_segments(0usize, &|acc, seg| acc + seg.words.len());
         let _ = p.find_segment(&|seg| seg.words.first().map(|w| w.as_str().to_string()));
         let _ = p.any_pipeline(&|q| q.has_parse_errors);
     }
@@ -340,6 +341,29 @@ proptest! {
             "plain command misclassified as indirect"
         );
         prop_assert!(!c.has_dynamic_command);
+    }
+
+    /// fold_segments collecting all segments produces the same sequence as
+    /// filter_segments returning Some for all — formalizes the traversal-order
+    /// guarantee.
+    #[test]
+    fn fold_segments_traversal_order_matches_filter_segments(
+        cmds in prop::collection::vec(arb_simple_command(), 1..6),
+        op in prop_oneof![Just("&&"), Just("||"), Just("|"), Just(";")],
+    ) {
+        let sep = format!(" {op} ");
+        let rendered = cmds.iter().map(|c| c.join(" ")).collect::<Vec<_>>().join(&sep);
+        let p = parse_with_substitutions(&rendered).unwrap();
+
+        let filtered: Vec<String> = p.filter_segments(&|seg| Some(seg.command.clone()));
+        let folded: Vec<String> = p.fold_segments(Vec::new(), &|mut acc, seg| {
+            acc.push(seg.command.clone());
+            acc
+        });
+        prop_assert_eq!(
+            folded, filtered,
+            "traversal order mismatch for {:?}", rendered
+        );
     }
 
     /// Fail-safe: an unanalyzable flag in the wrapper's own flag region

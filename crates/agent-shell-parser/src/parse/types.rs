@@ -310,6 +310,30 @@ impl ParsedPipeline {
         }
     }
 
+    /// Walk the pipeline tree depth-first, threading an accumulator through
+    /// every [`ShellSegment`] and returning the final value.
+    ///
+    /// Same traversal order as [`filter_segments`](Self::filter_segments) but
+    /// without allocating — callers that only need to aggregate a value
+    /// (count, sum, max, boolean) avoid the intermediate `Vec`.
+    ///
+    /// Unlike `filter_segments`, which only collects `Some` results, `f` is
+    /// called unconditionally on every segment in the tree — there is no
+    /// filtering step. Callers control what to accumulate inside `f`.
+    pub fn fold_segments<T>(&self, init: T, f: &impl Fn(T, &ShellSegment) -> T) -> T {
+        let mut acc = init;
+        for sub in &self.structural_substitutions {
+            acc = sub.pipeline.fold_segments(acc, f);
+        }
+        for seg in &self.segments {
+            for sub in &seg.substitutions {
+                acc = sub.pipeline.fold_segments(acc, f);
+            }
+            acc = f(acc, seg);
+        }
+        acc
+    }
+
     /// Returns `true` if this pipeline or any nested substitution has
     /// parse errors.
     ///
