@@ -633,11 +633,11 @@ fn resolve_sudo_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot 
 /// or there are no gates. When multiple gates match, the **strictest** action
 /// wins (Deny > Ask > Allow). A Deny gate short-circuits remaining evaluation.
 ///
-/// Unknown env var handling (conservative):
+/// Unknown env var handling (conservative fail-closed):
 /// - `Equals` with unknown value → non-matching (gate has no effect)
 /// - `NotEquals` with unknown value → non-matching (gate has no effect)
-/// - `Set` with unknown value → matching (var was assigned *something*)
-/// - `Unset` with unknown value → non-matching (conservative: assume set)
+/// - `Set` with unknown value → non-matching (can't confirm the var is set)
+/// - `Unset` with unknown value → non-matching (can't confirm the var is absent)
 fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecision> {
     if gates.is_empty() {
         return None;
@@ -668,6 +668,10 @@ fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecisio
 }
 
 /// Evaluate an env condition against a resolved env value.
+///
+/// Conservative fail-closed behavior: when the value is `Unknown`, all
+/// conditions return `false` — the gate does not fire. Only concrete
+/// `Known` values (or `None` for `Unset`) cause a gate to match.
 fn evaluate_condition(condition: &EnvCondition, value: Option<&EnvValueOwned>) -> bool {
     match condition {
         EnvCondition::Equals(expected) => match value {
@@ -680,7 +684,7 @@ fn evaluate_condition(condition: &EnvCondition, value: Option<&EnvValueOwned>) -
             Some(EnvValueOwned::Unknown) => false, // can't confirm inequality
             None => true,                          // var not set ≠ any value
         },
-        EnvCondition::Set => value.is_some(),
+        EnvCondition::Set => matches!(value, Some(EnvValueOwned::Known(_))),
         EnvCondition::Unset => value.is_none(),
     }
 }

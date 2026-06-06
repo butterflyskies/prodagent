@@ -166,7 +166,7 @@ pub enum EnvCondition {
 /// An environment gate — a condition on an environment variable that, when
 /// matched, applies a decision to the command.
 ///
-/// When the condition **matches**, the gate's `action` is applied.
+/// When the condition **matches**, the gate's `decision` is applied.
 /// When the condition **does not match**, the gate has no effect.
 /// Multiple gates on the same command: the **strictest** action wins
 /// (Deny > Ask > Allow). A Deny gate short-circuits remaining gates.

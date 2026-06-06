@@ -26,6 +26,9 @@ pub struct EnvSnapshot {
     unsets: HashSet<String>,
     /// Variables whose values are unknown (from substitutions we can't evaluate).
     unknown: HashSet<String>,
+    /// When true, the entire environment is opaque (e.g. after bare `sudo`).
+    /// Explicit overrides set after this flag are still visible via `get_value`.
+    fully_unknown: bool,
 }
 
 impl EnvSnapshot {
@@ -36,6 +39,7 @@ impl EnvSnapshot {
             overrides: HashMap::new(),
             unsets: HashSet::new(),
             unknown: HashSet::new(),
+            fully_unknown: false,
         }
     }
 
@@ -47,6 +51,7 @@ impl EnvSnapshot {
             overrides: HashMap::new(),
             unsets: HashSet::new(),
             unknown: HashSet::new(),
+            fully_unknown: false,
         }
     }
 
@@ -107,24 +112,26 @@ impl EnvSnapshot {
         self.overrides.clear();
         self.unsets.clear();
         self.unknown.clear();
+        self.fully_unknown = false;
     }
 
     /// Mark all variables as unknown (e.g., after `sudo` without `-E`).
+    ///
+    /// Sets the `fully_unknown` flag and clears overrides, unsets, and
+    /// per-variable unknowns — the entire env is opaque. Explicit overrides
+    /// set *after* this call are still visible via `get_value` (overrides
+    /// are checked before the fully_unknown guard).
     pub fn mark_all_unknown(&mut self) {
-        // We can't enumerate all possible env vars, so we track this state
-        // by setting the base to an empty map and clearing overrides.
-        // The `is_fully_unknown` flag is checked separately.
         self.base = Some(HashMap::new());
         self.overrides.clear();
         self.unsets.clear();
         self.unknown.clear();
-        // We use a sentinel to indicate "everything is unknown"
-        self.unknown.insert(String::new());
+        self.fully_unknown = true;
     }
 
     /// Returns true if the entire environment is unknown (e.g., after bare `sudo`).
     pub fn is_fully_unknown(&self) -> bool {
-        self.unknown.contains("")
+        self.fully_unknown
     }
 
     /// Resolve a variable's value, returning an owned string.
@@ -132,27 +139,29 @@ impl EnvSnapshot {
     /// This is the primary resolution method — it handles process env lookup
     /// correctly (unlike `get` which cannot return references to temporaries).
     pub fn get_value(&self, var: &str) -> Option<EnvValueOwned> {
-        // Explicit unset wins
+        // 1. Explicit unset wins
         if self.unsets.contains(var) {
             return None;
         }
 
-        // If the entire env is unknown, everything is unknown
-        if self.is_fully_unknown() {
-            return Some(EnvValueOwned::Unknown);
-        }
-
-        // Unknown from substitution
-        if self.unknown.contains(var) {
-            return Some(EnvValueOwned::Unknown);
-        }
-
-        // Explicit override
+        // 2. Explicit override (checked BEFORE fully_unknown so that
+        //    assignments set after mark_all_unknown are visible)
         if let Some(value) = self.overrides.get(var) {
             return Some(EnvValueOwned::Known(value.clone()));
         }
 
-        // Base env
+        // 3. Per-variable unknown (from substitutions we can't evaluate)
+        if self.unknown.contains(var) {
+            return Some(EnvValueOwned::Unknown);
+        }
+
+        // 4. Fully-unknown environment (e.g. after bare sudo)
+        if self.fully_unknown {
+            return Some(EnvValueOwned::Unknown);
+        }
+
+        // 5. Base env
+        // 6. Process env (when base is None / inherited)
         match &self.base {
             Some(explicit_base) => explicit_base
                 .get(var)
@@ -349,6 +358,22 @@ mod tests {
     }
 
     #[test]
+    fn reset_to_clean_clears_fully_unknown() {
+        let mut snap = EnvSnapshot::from_process_env();
+        snap.mark_all_unknown();
+        assert!(snap.is_fully_unknown());
+        snap.reset_to_clean();
+        assert!(
+            !snap.is_fully_unknown(),
+            "fully_unknown should be cleared after reset_to_clean"
+        );
+        assert!(
+            snap.get_value("ANY").is_none(),
+            "vars should be None (absent) after reset_to_clean, not Unknown"
+        );
+    }
+
+    #[test]
     fn with_assignments_clears_unknown_when_known_value_set() {
         // Start with FOO in unknown, then with_assignments sets FOO=bar
         let mut snap = EnvSnapshot::from_process_env();
@@ -377,5 +402,24 @@ mod tests {
             snap.get_value("FOO"),
             Some(EnvValueOwned::Unknown)
         ));
+    }
+
+    #[test]
+    fn set_after_mark_all_unknown_is_visible() {
+        // mark_all_unknown, then set FOO=bar → get_value(FOO) should return Known("bar")
+        // because explicit overrides are checked before the fully_unknown guard.
+        let mut snap = EnvSnapshot::from_process_env();
+        snap.mark_all_unknown();
+        assert!(snap.is_fully_unknown());
+        snap.set("FOO", "bar");
+        match snap.get_value("FOO") {
+            Some(EnvValueOwned::Known(v)) => assert_eq!(v, "bar"),
+            other => panic!("expected Known(bar) after set on fully-unknown env, got {other:?}"),
+        }
+        // Other vars should still be unknown
+        assert!(
+            matches!(snap.get_value("OTHER"), Some(EnvValueOwned::Unknown)),
+            "unset vars should still be Unknown in fully-unknown env"
+        );
     }
 }

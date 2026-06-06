@@ -436,6 +436,14 @@ fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
 proptest! {
     /// Strictest-wins monotonicity: adding a gate can only maintain or increase
     /// strictness. Never relaxes below the strictest gate.
+    ///
+    /// Limitation: when two gates target the same variable with conflicting
+    /// conditions (e.g. Set and Unset on "FOO"), the env snapshot can only
+    /// satisfy one at a time. The property still holds because the env is built
+    /// from the last condition seen per variable, so one gate fires and the
+    /// other doesn't — but this means same-var conflicts don't exercise the
+    /// "both gates fire" path. A richer generator that avoids same-var
+    /// conflicts would strengthen coverage.
     #[test]
     fn env_gate_strictest_wins_monotonicity(
         gates in prop::collection::vec(arb_env_gate(), 0..6),

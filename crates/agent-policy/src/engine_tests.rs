@@ -641,8 +641,8 @@ fn env_gate_not_equals_unknown_no_effect() {
 }
 
 #[test]
-fn env_gate_set_unknown_matches() {
-    // Unknown means *something* was assigned — Set should match
+fn env_gate_set_unknown_no_match() {
+    // Unknown means we can't confirm the var is set — conservative fail-closed
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Set,
@@ -652,8 +652,8 @@ fn env_gate_set_unknown_matches() {
     env.set_unknown("FOO");
     assert_eq!(
         super::apply_env_gates(&gates, &env),
-        Some(PolicyDecision::Allow),
-        "Set with unknown value should match (something was assigned)"
+        None,
+        "Set with unknown value should not match (fail-closed)"
     );
 }
 
@@ -815,8 +815,9 @@ fn evaluate_condition_set_with_known() {
 
 #[test]
 fn evaluate_condition_set_with_unknown() {
+    // Unknown value: can't confirm the var is set — fail-closed → false
     let val = Some(EnvValueOwned::Unknown);
-    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
+    assert!(!super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
 }
 
 #[test]
@@ -836,4 +837,59 @@ fn evaluate_condition_unset_with_known() {
         &EnvCondition::Unset,
         val.as_ref()
     ));
+}
+
+// ── Sentinel rework tests (round-2 review P1) ──────────────────────────
+
+#[test]
+fn set_condition_with_unknown_value_does_not_match() {
+    // Set gate on an unknown var → gate should NOT fire (fail-closed)
+    let val = Some(EnvValueOwned::Unknown);
+    assert!(
+        !super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
+        "Set with Unknown value should not match (conservative fail-closed)"
+    );
+}
+
+#[test]
+fn unset_condition_with_unknown_value_does_not_match() {
+    // Unset gate on an unknown var → gate should NOT fire (fail-closed)
+    let val = Some(EnvValueOwned::Unknown);
+    assert!(
+        !super::evaluate_condition(&EnvCondition::Unset, val.as_ref()),
+        "Unset with Unknown value should not match (conservative fail-closed)"
+    );
+}
+
+#[test]
+fn sudo_with_set_deny_gate_does_not_over_deny() {
+    // Bare sudo with a Set/Deny gate → the gate should NOT fire because the
+    // env is fully unknown (Set on unknown = false). The result should be Ask
+    // (from sudo escalation), not Deny.
+    let gate = EnvGate {
+        var: "PATH".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+
+    // Build a command knowledge entry with the gate
+    let cmd = agent_command_knowledge::CommandKnowledge {
+        name: "mycmd".to_string(),
+        effect: agent_command_knowledge::Effect::ReadOnly,
+        subcommands: Default::default(),
+        flags: Default::default(),
+        env_gates: vec![gate],
+        paths: Default::default(),
+        properties: Default::default(),
+    };
+    kb.commands.insert("mycmd".to_string(), cmd);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("sudo mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "sudo with Set/Deny gate should be Ask (gate suppressed by unknown env), not Deny: {result:?}"
+    );
 }

@@ -597,8 +597,9 @@ fn env_gate_set_condition_with_inline_assignment() {
     let kb = kb_with_env_gate("mycmd", gate);
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("TESTGATE_VAR=anything mycmd", &kb);
-    assert!(
-        result.decision >= PolicyDecision::Ask,
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
         "Set condition should match inline assignment: {result:?}"
     );
 }
