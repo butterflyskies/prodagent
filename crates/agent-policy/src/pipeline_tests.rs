@@ -90,6 +90,29 @@ fn simple_command_has_one_segment() {
     assert_eq!(result.segments[0].decision, result.decision);
 }
 
+// ── Compound header: substitution counting ────────────────────────────
+
+#[test]
+fn compound_header_counts_nested_substitutions() {
+    let engine = default_engine();
+    // echo has 1 sub, cat has 1 sub, basename has 1 sub = 3 total
+    let result = engine.evaluate_command("echo $(cat $(basename $(date)))", default_kb());
+    assert!(
+        result.reason.contains("3 substitution(s)"),
+        "deeply nested substitutions should all be counted: {result:?}"
+    );
+}
+
+#[test]
+fn compound_header_counts_structural_substitutions() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("for i in $(seq 10); do echo $i; done", default_kb());
+    assert!(
+        result.reason.contains("1 substitution(s)"),
+        "structural substitution should be counted: {result:?}"
+    );
+}
+
 // ── Wrapper command ────────────────────────────────────────────────────
 
 #[test]
