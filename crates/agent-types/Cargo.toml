@@ -1,18 +1,17 @@
 [package]
-name = "agent-command-knowledge"
+name = "agent-types"
 version.workspace = true
-description = "Command taxonomy and knowledge layer — what commands are, not what to do about them"
+description = "Shared types for agent crates — Word, WrapperSpec, SubcommandPattern, default wrapper configs"
 readme = "../../README.md"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish = false
 
 [dependencies]
-agent-types = { workspace = true }
-agent-shell-parser = { workspace = true }
 serde = { workspace = true }
-toml = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 proptest = "1"

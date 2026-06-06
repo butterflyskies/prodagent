@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 
-use agent_shell_parser::parse::types::Word;
+use agent_types::Word;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of words that can form a subcommand pattern.
-///
-/// Patterns with more words than this will never be matched by `longest_match`.
-/// `insert` will assert in debug builds that inserted patterns respect this limit.
-pub const MAX_SUBCOMMAND_DEPTH: usize = 4;
+// Re-export from agent-types — single source of truth.
+pub use agent_types::MAX_SUBCOMMAND_DEPTH;
 
 /// The effect level of a command or subcommand.
 ///

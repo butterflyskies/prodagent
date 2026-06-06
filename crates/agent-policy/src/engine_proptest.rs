@@ -369,6 +369,36 @@ proptest! {
             w, result
         );
     }
+
+    /// derive_wrapper_specs must never produce a spec whose name collides with
+    /// a default wrapper. Sampled from the real KB so any future KB addition
+    /// that collides with a newly-added default is caught.
+    ///
+    /// The assertions are w-dependent only — the sampled wrapper determines
+    /// which branch is tested. No exhaustive loop over derived specs.
+    #[test]
+    fn derive_wrapper_specs_no_overlap_with_defaults(w in arb_kb_wrapper()) {
+        let kb = default_knowledge_base();
+        let derived = super::derive_wrapper_specs(kb);
+        let default_config = parse::default_command_config();
+
+        // If the sampled wrapper IS in defaults, it must NOT be in derived
+        let is_default = default_config.wrappers.iter().any(|d| d.name == w);
+        let is_derived = derived.iter().any(|s| s.name == w);
+        if is_default {
+            prop_assert!(
+                !is_derived,
+                "wrapper '{}' is in defaults but also in derived specs", w
+            );
+        }
+        // If the sampled wrapper is NOT in defaults, it MUST be in derived
+        if !is_default {
+            prop_assert!(
+                is_derived,
+                "wrapper '{}' is not in defaults and not in derived specs", w
+            );
+        }
+    }
 }
 
 // Out of scope for this PR: env_gates. `CommandInfo.env_gates` is populated by

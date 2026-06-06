@@ -1,15 +1,14 @@
 use std::sync::LazyLock;
 
-use super::tokenize::{find_base_command, is_env_assignment};
+use agent_types::word::is_env_assignment;
+
+use super::tokenize::find_base_command;
 use super::types::{
     CommandConfig, IndirectExecution, ParsedCommand, ResolvedCommand, UnanalyzableCommand, Word,
     WrapperSpec,
 };
 
-static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../config/commands.json"))
-        .expect("embedded commands.json is invalid")
-});
+static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(agent_types::default_command_config);
 
 /// Return the embedded default command configuration.
 pub fn default_command_config() -> &'static CommandConfig {
@@ -33,6 +32,21 @@ const MAX_RESOLVE_DEPTH: usize = 32;
 /// allowing consumers to extend or replace the default command knowledge.
 pub fn resolve_command_with(words: &[Word], config: &CommandConfig) -> ResolvedCommand {
     resolve_command_impl(words, config, 0)
+}
+
+/// Build a [`CommandConfig`] by merging the defaults with additional wrappers.
+///
+/// Wrappers already present (by name) in the defaults are not duplicated.
+/// This is intended to be called once per evaluation and the result threaded
+/// through the call chain as `&CommandConfig`, eliminating per-depth cloning.
+pub fn merged_config(extra_wrappers: &[WrapperSpec]) -> CommandConfig {
+    let mut config = DEFAULT_CONFIG.clone();
+    for spec in extra_wrappers {
+        if !config.wrappers.iter().any(|w| w.name == spec.name) {
+            config.wrappers.push(spec.clone());
+        }
+    }
+    config
 }
 
 /// Classify the surface-level command without recursing into wrappers.

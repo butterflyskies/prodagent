@@ -33,7 +33,9 @@ pub mod tokenize;
 pub mod types;
 mod walk;
 
-pub use resolve::{default_command_config, resolve_command, resolve_command_with, strip_with_spec};
+pub use resolve::{
+    default_command_config, merged_config, resolve_command, resolve_command_with, strip_with_spec,
+};
 pub use shell::{dump_ast, has_output_redirection, parse_with_substitutions};
 pub use tokenize::{
     base_command, command_characteristics, env_vars, find_base_command, parse_command, tokenize,
