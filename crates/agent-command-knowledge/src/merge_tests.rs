@@ -26,10 +26,10 @@ fn base_kb() -> KnowledgeBase {
                 escalation: vec!["--force".into()],
                 path: vec!["-C".into()],
             },
-            env_gates: vec![EnvGate::Grant {
+            env_gates: vec![EnvGate {
                 var: "GIT_DIR".into(),
-                value: "/repo".into(),
-                unlocks: Effect::ReadOnly,
+                condition: EnvCondition::Equals("/repo".into()),
+                decision: EnvGateAction::Allow,
             }],
             paths: PathSpec {
                 positionals: PathPositionals::None,
@@ -294,9 +294,10 @@ fn extend_env_gates() {
     overlay.commands.insert(
         "git".into(),
         CommandOverlay {
-            env_gates: vec![EnvGate::Require {
+            env_gates: vec![EnvGate {
                 var: "GIT_AUTHOR_NAME".into(),
-                value: "test".into(),
+                condition: EnvCondition::Set,
+                decision: EnvGateAction::Ask,
             }],
             ..Default::default()
         },

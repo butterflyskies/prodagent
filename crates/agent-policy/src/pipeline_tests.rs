@@ -523,3 +523,237 @@ fn derive_wrapper_specs_does_not_duplicate_defaults() {
         "derived spec count should match KB-only wrapper count"
     );
 }
+
+// ── Env gate integration tests ────────────────────────────────────────────
+
+use agent_command_knowledge::{
+    CommandKnowledge, CommandProperties, EnvCondition, EnvGate, EnvGateAction, FlagSchema,
+    PathSpec, SubcommandMap,
+};
+
+fn simple_command(name: &str, effect: agent_command_knowledge::Effect) -> CommandKnowledge {
+    CommandKnowledge {
+        name: name.to_string(),
+        effect,
+        subcommands: SubcommandMap::new(),
+        flags: FlagSchema::default(),
+        env_gates: vec![],
+        paths: PathSpec::default(),
+        properties: CommandProperties::default(),
+    }
+}
+
+fn kb_with_env_gate(cmd: &str, gate: EnvGate) -> KnowledgeBase {
+    let mut kb = KnowledgeBase::default();
+    let mut command = simple_command(cmd, agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert(cmd.to_string(), command);
+    kb
+}
+
+#[test]
+fn env_gate_inline_assignment_matches_equals() {
+    // FOO=bar mycmd → gate on FOO==bar → Allow should match
+    let gate = EnvGate {
+        var: "TESTGATE_FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let kb = kb_with_env_gate("mycmd", gate);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("TESTGATE_FOO=bar mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "inline assignment should match Equals gate: {result:?}"
+    );
+}
+
+#[test]
+fn env_gate_inline_assignment_no_match() {
+    // FOO=baz mycmd → gate on FOO==bar → no match → Allow (read-only)
+    let gate = EnvGate {
+        var: "TESTGATE_FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let kb = kb_with_env_gate("mycmd", gate);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("TESTGATE_FOO=baz mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "non-matching inline assignment should not trigger gate: {result:?}"
+    );
+}
+
+#[test]
+fn env_gate_set_condition_with_inline_assignment() {
+    let gate = EnvGate {
+        var: "TESTGATE_VAR".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Ask,
+    };
+    let kb = kb_with_env_gate("mycmd", gate);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("TESTGATE_VAR=anything mycmd", &kb);
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "Set condition should match inline assignment: {result:?}"
+    );
+}
+
+#[test]
+fn env_gate_unset_condition_no_inline_assignment() {
+    let gate = EnvGate {
+        var: "TESTGATE_DEFINITELY_UNSET_VAR_12345".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Deny,
+    };
+    let kb = kb_with_env_gate("mycmd", gate);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "Unset condition should match when var is not in env: {result:?}"
+    );
+}
+
+#[test]
+fn env_gate_no_gates_no_effect() {
+    // Command with no env gates — env is not considered
+    let mut kb = KnowledgeBase::default();
+    kb.commands.insert(
+        "mycmd".to_string(),
+        simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly),
+    );
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "no gates should not affect decision: {result:?}"
+    );
+}
+
+// ── Wrapper env threading integration ──────────────────────────────────────
+
+#[test]
+fn env_wrapper_assignments_visible_to_inner() {
+    // env FOO=bar mycmd → inner command sees FOO=bar
+    let gate = EnvGate {
+        var: "TESTGATE_FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("env TESTGATE_FOO=bar mycmd", &kb);
+    assert!(
+        result.decision >= PolicyDecision::Deny,
+        "env wrapper assignment should be visible to inner command gate: {result:?}"
+    );
+}
+
+#[test]
+fn env_wrapper_unset_removes_var() {
+    // First set a gate on TESTGATE_X being Set → Deny.
+    // Then: env -u TESTGATE_X mycmd → TESTGATE_X is unset → Set condition doesn't match
+    let gate = EnvGate {
+        var: "TESTGATE_X".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    // TESTGATE_X is not in process env (or if it is, env -u removes it)
+    let result = engine.evaluate_command("env -u TESTGATE_X mycmd", &kb);
+    // The Set condition should NOT match because we unset it
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "env -u should unset var for inner command: {result:?}"
+    );
+}
+
+#[test]
+fn env_wrapper_clean_env_hides_process_vars() {
+    // env -i mycmd → clean env → Set condition on any var should not match
+    let gate = EnvGate {
+        var: "PATH".into(), // PATH is almost always set in process env
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("env -i mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "env -i should hide process env from inner command: {result:?}"
+    );
+}
+
+#[test]
+fn sudo_without_e_marks_env_unknown() {
+    // Use a gate with Equals/Deny where the var IS set in the process env.
+    // If sudo correctly marks env as unknown, the Equals condition can't
+    // confirm, so the Deny gate is suppressed. Result should be exactly Ask
+    // (from sudo escalation), NOT Deny.
+    let gate = EnvGate {
+        var: "PATH".into(), // PATH is always set in process env
+        condition: EnvCondition::Equals(std::env::var("PATH").unwrap_or_default()),
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    // sudo without -E → env is unknown → Equals can't confirm → Deny suppressed
+    let result = engine.evaluate_command("sudo mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "sudo without -E should be exactly Ask (gate suppressed by unknown env): {result:?}"
+    );
+}
+
+#[test]
+fn sudo_with_e_preserves_env() {
+    // Use a gate with Set/Deny on a var that IS set in the process env.
+    // If sudo -E correctly preserves env, the Set condition fires and
+    // produces Deny, proving the env was preserved.
+    let gate = EnvGate {
+        var: "PATH".into(), // PATH is always set
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    // sudo -E → env preserved → PATH is Set → Deny gate fires
+    let result = engine.evaluate_command("sudo -E mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "sudo -E should produce Deny (gate fired because env preserved): {result:?}"
+    );
+}

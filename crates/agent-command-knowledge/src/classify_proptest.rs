@@ -25,15 +25,31 @@ fn arb_flag() -> impl Strategy<Value = String> {
     ]
 }
 
-fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
+fn arb_env_gate_decision() -> impl Strategy<Value = EnvGateAction> {
     prop_oneof![
-        (arb_word(), arb_word(), arb_effect()).prop_map(|(var, value, unlocks)| EnvGate::Grant {
-            var,
-            value,
-            unlocks,
-        }),
-        (arb_word(), arb_word()).prop_map(|(var, value)| EnvGate::Require { var, value }),
+        Just(EnvGateAction::Allow),
+        Just(EnvGateAction::Ask),
+        Just(EnvGateAction::Deny),
     ]
+}
+
+fn arb_env_condition() -> impl Strategy<Value = EnvCondition> {
+    prop_oneof![
+        arb_word().prop_map(EnvCondition::Equals),
+        arb_word().prop_map(EnvCondition::NotEquals),
+        Just(EnvCondition::Set),
+        Just(EnvCondition::Unset),
+    ]
+}
+
+fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
+    (arb_word(), arb_env_condition(), arb_env_gate_decision()).prop_map(
+        |(var, condition, decision)| EnvGate {
+            var,
+            condition,
+            decision,
+        },
+    )
 }
 
 fn arb_path_positionals() -> impl Strategy<Value = PathPositionals> {
@@ -340,8 +356,10 @@ proptest! {
         cmd_gate in arb_env_gate(),
         sub_gate in arb_env_gate(),
     ) {
-        // Ensure the non-matching word is distinct from the registered subcommand.
+        // Ensure the non-matching word is distinct from the registered subcommand,
+        // and the two gates are distinct (so the sub_gate check is meaningful).
         prop_assume!(other != sub);
+        prop_assume!(cmd_gate != sub_gate);
         let mut entry = SubcommandEntry::with_effect(Effect::ReadOnly);
         entry.env_gates = vec![sub_gate.clone()];
         let mut kb = single_cmd_kb(&cmd, &sub, entry, FlagSchema::default());

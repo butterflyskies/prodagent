@@ -19,6 +19,6 @@ mod wrapper;
 pub use subcommand_pattern::{SubcommandPattern, SubcommandPatternError, MAX_SUBCOMMAND_DEPTH};
 pub use word::Word;
 pub use wrapper::{
-    default_command_config, CommandConfig, WrapperSpec, DEFAULT_EVAL_COMMANDS, DEFAULT_SHELLS,
-    DEFAULT_SOURCE_COMMANDS, DEFAULT_WRAPPER_SPECS,
+    default_command_config, CommandConfig, WrapperEnvPolicy, WrapperSpec, DEFAULT_EVAL_COMMANDS,
+    DEFAULT_SHELLS, DEFAULT_SOURCE_COMMANDS, DEFAULT_WRAPPER_SPECS,
 };

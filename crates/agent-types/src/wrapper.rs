@@ -1,5 +1,21 @@
 use std::sync::LazyLock;
 
+/// How a wrapper affects the environment visible to its inner command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WrapperEnvPolicy {
+    /// Environment passes through unchanged (default for most wrappers:
+    /// `timeout`, `nice`, `chrt`, etc.).
+    #[default]
+    Inherit,
+    /// Environment state is unknowable without external config (e.g. `sudo`
+    /// depends on sudoers `env_reset`/`env_keep`). Explicit flags like `-E`
+    /// or `--preserve-env` override this to `Inherit`.
+    Unknown,
+    /// Environment is explicitly set/unset/cleaned per flags (e.g. `env`).
+    Explicit,
+}
+
 /// Describes how to strip a transparent wrapper command to find the inner command.
 ///
 /// Each wrapper has different flag semantics. This struct captures just enough
@@ -34,6 +50,9 @@ pub struct WrapperSpec {
     /// the next non-flag token as the inner command.
     #[serde(default)]
     pub skip_positionals: usize,
+    /// How this wrapper affects the environment for its inner command.
+    #[serde(default)]
+    pub env_policy: WrapperEnvPolicy,
 }
 
 /// Complete command classification configuration.
@@ -95,6 +114,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Unknown,
         },
         WrapperSpec {
             name: "env".into(),
@@ -104,6 +124,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: true,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Explicit,
         },
         WrapperSpec {
             name: "nice".into(),
@@ -113,6 +134,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "nohup".into(),
@@ -122,6 +144,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "command".into(),
@@ -131,6 +154,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "builtin".into(),
@@ -140,6 +164,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "xargs".into(),
@@ -167,6 +192,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "parallel".into(),
@@ -215,6 +241,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "time".into(),
@@ -224,6 +251,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "timeout".into(),
@@ -233,6 +261,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 1,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "exec".into(),
@@ -242,6 +271,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: true,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "setsid".into(),
@@ -251,6 +281,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "strace".into(),
@@ -274,6 +305,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "ionice".into(),
@@ -283,6 +315,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "chrt".into(),
@@ -292,6 +325,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 1,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "taskset".into(),
@@ -301,6 +335,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 1,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "watch".into(),
@@ -310,6 +345,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "ltrace".into(),
@@ -326,6 +362,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::Inherit,
         },
         WrapperSpec {
             name: "su".into(),
@@ -340,6 +377,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 1,
+            env_policy: WrapperEnvPolicy::Unknown,
         },
     ]
 });

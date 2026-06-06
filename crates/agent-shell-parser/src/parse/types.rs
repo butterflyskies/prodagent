@@ -1,7 +1,7 @@
 use std::fmt;
 
 // Re-export shared types from agent-types.
-pub use agent_types::{CommandConfig, Word, WrapperSpec};
+pub use agent_types::{CommandConfig, Word, WrapperEnvPolicy, WrapperSpec};
 
 /// Shell operator separating consecutive pipeline segments.
 #[derive(Debug, Clone, PartialEq, Eq)]

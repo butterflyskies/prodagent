@@ -28,17 +28,31 @@ fn arb_flag_schema() -> impl Strategy<Value = FlagSchema> {
         })
 }
 
-fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
+fn arb_env_gate_decision() -> impl Strategy<Value = EnvGateAction> {
     prop_oneof![
-        ("[A-Z]{2,6}", "[a-z]{1,5}", arb_effect()).prop_map(|(var, value, unlocks)| {
-            EnvGate::Grant {
-                var,
-                value,
-                unlocks,
-            }
-        }),
-        ("[A-Z]{2,6}", "[a-z]{1,5}").prop_map(|(var, value)| EnvGate::Require { var, value }),
+        Just(EnvGateAction::Allow),
+        Just(EnvGateAction::Ask),
+        Just(EnvGateAction::Deny),
     ]
+}
+
+fn arb_env_condition() -> impl Strategy<Value = EnvCondition> {
+    prop_oneof![
+        "[a-z]{1,5}".prop_map(EnvCondition::Equals),
+        "[a-z]{1,5}".prop_map(EnvCondition::NotEquals),
+        Just(EnvCondition::Set),
+        Just(EnvCondition::Unset),
+    ]
+}
+
+fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
+    ("[A-Z]{2,6}", arb_env_condition(), arb_env_gate_decision()).prop_map(
+        |(var, condition, decision)| EnvGate {
+            var,
+            condition,
+            decision,
+        },
+    )
 }
 
 fn arb_command_overlay_without_effect() -> impl Strategy<Value = CommandOverlay> {

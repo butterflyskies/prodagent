@@ -136,22 +136,48 @@ impl FlagSchema {
     }
 }
 
-/// Environment variable conditions that modify classification.
+/// The action an env gate applies when its condition matches.
 ///
-/// `Grant` unlocks a more permissive classification when the env var matches.
-/// `Require` blocks the command unless the env var matches.
-/// Values are compared after shell expansion (`~`, `$HOME`).
+/// This is the KB-side decision type — it describes what should happen, not
+/// the policy engine's final decision. The policy engine maps these to
+/// [`PolicyDecision`](agent_policy::PolicyDecision) values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvGateAction {
+    Allow,
+    Ask,
+    Deny,
+}
+
+/// Condition on an environment variable's value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvCondition {
+    /// Matches when the var is set and equals this value.
+    Equals(String),
+    /// Matches when the var is unset or has a different value.
+    NotEquals(String),
+    /// Matches when the var is set (any value).
+    Set,
+    /// Matches when the var is not set.
+    Unset,
+}
+
+/// An environment gate — a condition on an environment variable that, when
+/// matched, applies a decision to the command.
+///
+/// When the condition **matches**, the gate's `action` is applied.
+/// When the condition **does not match**, the gate has no effect.
+/// Multiple gates on the same command: the **strictest** action wins
+/// (Deny > Ask > Allow). A Deny gate short-circuits remaining gates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum EnvGate {
-    /// Presence of this env var unlocks a more permissive effect.
-    Grant {
-        var: String,
-        value: String,
-        unlocks: Effect,
-    },
-    /// Command is blocked unless this env var matches.
-    Require { var: String, value: String },
+pub struct EnvGate {
+    /// Environment variable name to check.
+    pub var: String,
+    /// Condition to evaluate against the variable's value.
+    pub condition: EnvCondition,
+    /// Decision to apply when the condition matches.
+    pub decision: EnvGateAction,
 }
 
 /// Which arguments are filesystem paths — used by the policy layer for

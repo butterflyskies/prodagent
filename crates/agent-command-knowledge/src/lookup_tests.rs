@@ -250,10 +250,10 @@ fn wrapper_returns_wrapper_info() {
 fn env_gates_from_command() {
     let mut kb = KnowledgeBase::default();
     let mut git = CommandKnowledge::simple("git", Effect::Unknown);
-    git.env_gates = vec![EnvGate::Grant {
+    git.env_gates = vec![EnvGate {
         var: "GIT_CONFIG_GLOBAL".into(),
-        value: "~/.gitconfig.ai".into(),
-        unlocks: Effect::ReadOnly,
+        condition: EnvCondition::Equals("~/.gitconfig.ai".into()),
+        decision: EnvGateAction::Allow,
     }];
     kb.commands.insert("git".to_string(), git);
 

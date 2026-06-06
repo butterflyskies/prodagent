@@ -28,11 +28,11 @@ const SHELLS: &[&str] = &[
 ];
 const WRAPPER_NAMES: &[&str] = &[
     "sudo", "env", "nice", "nohup", "command", "builtin", "xargs", "parallel", "time", "timeout",
-    "exec", "setsid", "strace", "ionice", "chrt", "taskset",
+    "exec", "setsid", "strace", "ionice", "chrt", "taskset", "watch", "ltrace", "su",
 ];
 const BARE_WRAPPERS: &[&str] = &[
     "sudo", "env", "nice", "nohup", "command", "builtin", "time", "exec", "setsid", "ionice",
-    "xargs", "parallel", "strace",
+    "xargs", "parallel", "strace", "watch", "ltrace",
 ];
 
 fn is_special(w: &str) -> bool {

@@ -1,4 +1,5 @@
 use super::super::tokenize::tokenize;
+use super::super::types::WrapperEnvPolicy;
 use super::*;
 
 fn words(s: &str) -> Vec<Word> {
@@ -14,6 +15,7 @@ fn spec(name: &str) -> WrapperSpec {
         skip_env_assignments: false,
         has_terminator: true,
         skip_positionals: 0,
+        env_policy: WrapperEnvPolicy::default(),
     }
 }
 
@@ -69,6 +71,7 @@ fn strip_env_assignments_when_configured() {
         skip_env_assignments: true,
         has_terminator: false,
         skip_positionals: 0,
+        env_policy: WrapperEnvPolicy::default(),
     };
     let result = strip_with_spec(&s, &words("wrap FOO=bar BAZ=qux inner cmd"));
     assert_eq!(result, words("inner cmd"));
@@ -106,6 +109,7 @@ fn resolve_with_custom_config() {
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: WrapperEnvPolicy::default(),
         }],
         shells: vec!["mysh".to_string()],
         eval_commands: vec!["myeval".to_string()],
@@ -145,6 +149,7 @@ fn extra_wrapper_recognized_and_inner_resolved() {
         skip_env_assignments: false,
         has_terminator: false,
         skip_positionals: 0,
+        env_policy: WrapperEnvPolicy::default(),
     }];
     let config = merged_config(&extra);
     match resolve_command_with(&words("mywrap -x val inner"), &config) {
@@ -163,6 +168,7 @@ fn duplicate_extra_wrapper_not_double_added() {
         skip_env_assignments: false,
         has_terminator: false,
         skip_positionals: 0,
+        env_policy: WrapperEnvPolicy::default(),
     }];
 
     let config = merged_config(&extra);

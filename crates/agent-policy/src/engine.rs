@@ -1,11 +1,14 @@
-use agent_command_knowledge::{classify, CommandInfo, Effect, KnowledgeBase};
+use agent_command_knowledge::{
+    classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, KnowledgeBase,
+};
 use agent_shell_parser::parse::{
     self, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand, ShellSegment, Word,
-    WrapperSpec,
+    WrapperEnvPolicy, WrapperSpec,
 };
 
 use crate::config::{CommandPolicy, PolicyConfig};
 use crate::decision::PolicyDecision;
+use crate::env_snapshot::{EnvSnapshot, EnvValueOwned};
 
 /// Per-segment breakdown within a compound command evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,10 @@ impl PolicyEngine {
 
     /// Core wrapper resolution: classify inner command, apply floor and escalates_privilege.
     /// Redirection is handled by the caller (`evaluate_segment`).
+    ///
+    /// `env` is the accumulated environment snapshot from outer wrappers and
+    /// inline assignments. Each wrapper may mutate the snapshot before passing
+    /// it to the inner command.
     fn resolve_wrapper_core(
         &self,
         base_command: &str,
@@ -122,6 +129,7 @@ impl PolicyEngine {
         kb: &KnowledgeBase,
         merged_config: &CommandConfig,
         depth: u8,
+        env: &EnvSnapshot,
     ) -> PolicyResult {
         if depth > 8 {
             return PolicyResult::simple(
@@ -129,6 +137,9 @@ impl PolicyEngine {
                 "wrapper chain too deep (fail-closed)",
             );
         }
+
+        // Compute the env snapshot for the inner command based on wrapper type
+        let inner_env = resolve_wrapper_env(base_command, words, env, merged_config);
 
         let resolved = parse::resolve_command_with(words, merged_config);
         match resolved {
@@ -153,10 +164,18 @@ impl PolicyEngine {
                         kb,
                         merged_config,
                         depth + 1,
+                        &inner_env,
                     );
                     inner_result.decision
                 } else {
                     let mut d = self.evaluate(parsed.command.as_str(), &inner_info);
+
+                    // Apply env gates with the accumulated snapshot
+                    if let Some(gate_decision) = apply_env_gates(&inner_info.env_gates, &inner_env)
+                    {
+                        d = d.max(gate_decision);
+                    }
+
                     if inner_info.has_escalation_flags && d < PolicyDecision::Ask {
                         d = PolicyDecision::Ask;
                     }
@@ -285,15 +304,25 @@ impl PolicyEngine {
         let base_word = Word::from(base_command.as_str());
         let info = classify(&base_word, words, kb);
 
+        // Build env snapshot: process env + inline assignments
+        let env = EnvSnapshot::from_process_env().with_assignments(words);
+
         // Wrapper handling — use pre-built merged config
         if info.wrapper.is_some() {
-            let mut result = self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0);
+            let mut result =
+                self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0, &env);
             maybe_escalate_for_redirection(&mut result, segment);
             return result;
         }
 
+        // Apply env gates after classification and per-command overrides (gates can only escalate)
+        let mut decision = self.evaluate(&base_command, &info);
+        if let Some(gate_decision) = apply_env_gates(&info.env_gates, &env) {
+            decision = decision.max(gate_decision);
+        }
+
         let mut result = PolicyResult::simple(
-            self.evaluate(&base_command, &info),
+            decision,
             format!("{base_command}: effect={:?}", info.effect),
         );
 
@@ -446,9 +475,9 @@ fn is_benign_redirection(redir: &Redirection) -> bool {
 fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
     let default_config = parse::default_command_config();
     kb.wrappers
-        .keys()
-        .filter(|name| !default_config.wrappers.iter().any(|w| &w.name == *name))
-        .map(|name| WrapperSpec {
+        .iter()
+        .filter(|(name, _)| !default_config.wrappers.iter().any(|w| &w.name == *name))
+        .map(|(name, knowledge)| WrapperSpec {
             name: name.clone(),
             short_value_flags: vec![],
             long_value_flags: vec![],
@@ -456,10 +485,214 @@ fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
             skip_env_assignments: false,
             has_terminator: false,
             skip_positionals: 0,
+            env_policy: if knowledge.clears_env {
+                WrapperEnvPolicy::Unknown
+            } else {
+                WrapperEnvPolicy::Inherit
+            },
         })
         .collect()
 }
 
+/// Compute the inner command's environment based on the wrapper's env policy.
+///
+/// Dispatches on [`WrapperEnvPolicy`] from the wrapper's spec:
+/// - `Explicit` (e.g. `env`): captures assignments, `-u` (unset), `-i` (clean).
+/// - `Unknown` (e.g. `sudo`, `su`): marks env as unknown unless `-E`/`--preserve-env`.
+/// - `Inherit` (e.g. `nice`, `timeout`): env passes through unchanged.
+fn resolve_wrapper_env(
+    wrapper_name: &str,
+    words: &[Word],
+    outer_env: &EnvSnapshot,
+    merged_config: &CommandConfig,
+) -> EnvSnapshot {
+    let policy = merged_config
+        .wrappers
+        .iter()
+        .find(|w| w.name == wrapper_name)
+        .map(|w| w.env_policy)
+        .unwrap_or_default();
+
+    match policy {
+        WrapperEnvPolicy::Explicit => resolve_env_wrapper(words, outer_env),
+        WrapperEnvPolicy::Unknown => resolve_sudo_wrapper(words, outer_env),
+        WrapperEnvPolicy::Inherit => outer_env.clone(),
+    }
+}
+
+/// Resolve env mutations from an `env` wrapper invocation.
+///
+/// Handles:
+/// - `env -i` → clean base (discard all inherited env)
+/// - `env -u VAR` → unset VAR
+/// - `env FOO=bar` → set FOO=bar
+fn resolve_env_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
+    let mut env = outer_env.clone();
+
+    // Find the `env` command in the words (skip leading assignments)
+    let env_idx = words
+        .iter()
+        .position(|w| w.basename() == "env")
+        .unwrap_or(0);
+
+    let mut i = env_idx + 1;
+    while i < words.len() {
+        let w = &words[i];
+
+        // -i / --ignore-environment → clean env
+        if w == "-i" || w == "--ignore-environment" {
+            env.reset_to_clean();
+            i += 1;
+            continue;
+        }
+
+        // -u VAR / --unset=VAR → unset
+        if w == "-u" || w == "--unset" {
+            if i + 1 < words.len() {
+                env.unset(words[i + 1].as_str());
+                i += 2;
+                continue;
+            }
+            break;
+        }
+        if let Some(rest) = w.strip_prefix("--unset=") {
+            env.unset(rest);
+            i += 1;
+            continue;
+        }
+
+        // Combined -uVAR form
+        if w.starts_with("-u") && w.len() > 2 && !w.starts_with("--") {
+            env.unset(&w[2..]);
+            i += 1;
+            continue;
+        }
+
+        // -C dir / --chdir=dir → skip (doesn't affect env)
+        if w == "-C" || w == "--chdir" {
+            i += 2;
+            continue;
+        }
+        if w.starts_with("--chdir=") {
+            i += 1;
+            continue;
+        }
+
+        // -S / --split-string → the rest is unanalyzable, stop
+        if w == "-S" || w == "--split-string" {
+            break;
+        }
+
+        // Skip other flags
+        if w.starts_with('-') && w.len() > 1 {
+            i += 1;
+            continue;
+        }
+
+        // KEY=VALUE assignment → set override
+        if let Some((key, value)) = w.as_assignment() {
+            if value.contains("$(") || value.contains('`') {
+                env.set_unknown(key);
+            } else {
+                env.set(key, value);
+            }
+            i += 1;
+            continue;
+        }
+
+        // Non-flag, non-assignment → inner command starts, stop
+        break;
+    }
+
+    env
+}
+
+/// Resolve env for a `sudo`-like wrapper (any wrapper with `WrapperEnvPolicy::Unknown`).
+///
+/// Default sudo behavior resets the environment (sudoers `env_reset`), which
+/// we can't observe from userspace. The conservative approach:
+/// - No flag → mark all env as unknown
+/// - `-E` / `--preserve-env` (without `=`) → env passes through
+/// - `--preserve-env=VAR,VAR` → treated as unknown (same as no flag); partial
+///   preservation is too fine-grained to model safely without sudoers knowledge
+fn resolve_sudo_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
+    let has_full_preserve = words.iter().any(|w| w == "-E" || w == "--preserve-env");
+
+    if has_full_preserve {
+        outer_env.clone()
+    } else {
+        let mut env = outer_env.clone();
+        env.mark_all_unknown();
+        env
+    }
+}
+
+/// Evaluate env gates against an environment snapshot.
+///
+/// Returns `Some(decision)` if any gate matched, `None` if no gates matched
+/// or there are no gates. When multiple gates match, the **strictest** action
+/// wins (Deny > Ask > Allow). A Deny gate short-circuits remaining evaluation.
+///
+/// Unknown env var handling (conservative):
+/// - `Equals` with unknown value → non-matching (gate has no effect)
+/// - `NotEquals` with unknown value → non-matching (gate has no effect)
+/// - `Set` with unknown value → matching (var was assigned *something*)
+/// - `Unset` with unknown value → non-matching (conservative: assume set)
+fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecision> {
+    if gates.is_empty() {
+        return None;
+    }
+
+    let mut strictest: Option<PolicyDecision> = None;
+
+    for gate in gates {
+        let env_val = env.get_value(&gate.var);
+        let matches = evaluate_condition(&gate.condition, env_val.as_ref());
+
+        if matches {
+            let decision = gate_action_to_decision(gate.decision);
+
+            // Deny short-circuits
+            if decision == PolicyDecision::Deny {
+                return Some(PolicyDecision::Deny);
+            }
+
+            strictest = Some(match strictest {
+                Some(current) => current.max(decision),
+                None => decision,
+            });
+        }
+    }
+
+    strictest
+}
+
+/// Evaluate an env condition against a resolved env value.
+fn evaluate_condition(condition: &EnvCondition, value: Option<&EnvValueOwned>) -> bool {
+    match condition {
+        EnvCondition::Equals(expected) => match value {
+            Some(EnvValueOwned::Known(actual)) => actual == expected,
+            Some(EnvValueOwned::Unknown) => false, // can't confirm equality
+            None => false,                         // var not set
+        },
+        EnvCondition::NotEquals(expected) => match value {
+            Some(EnvValueOwned::Known(actual)) => actual != expected,
+            Some(EnvValueOwned::Unknown) => false, // can't confirm inequality
+            None => true,                          // var not set ≠ any value
+        },
+        EnvCondition::Set => value.is_some(),
+        EnvCondition::Unset => value.is_none(),
+    }
+}
+
+/// Map a KB-side gate action to a policy decision.
+fn gate_action_to_decision(action: EnvGateAction) -> PolicyDecision {
+    match action {
+        EnvGateAction::Allow => PolicyDecision::Allow,
+        EnvGateAction::Ask => PolicyDecision::Ask,
+        EnvGateAction::Deny => PolicyDecision::Deny,
+    }
+}
 /// Extract the base command name from pre-tokenized words.
 ///
 /// Skips leading `KEY=VALUE` env var assignments, then returns the basename
