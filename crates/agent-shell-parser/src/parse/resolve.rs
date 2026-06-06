@@ -91,10 +91,21 @@ fn resolve_command_impl(words: &[Word], config: &CommandConfig, depth: usize) ->
         }
     }
 
-    // It's a wrapper — check for unanalyzable flags, then strip and recurse.
+    // It's a wrapper — find where the inner command starts, check for
+    // unanalyzable flags only in the wrapper's own flag region, then recurse.
     let spec = config.wrappers.iter().find(|s| s.name == base).unwrap();
+    let inner_start = strip_with_spec_idx(spec, words);
+
+    // Scope the unanalyzable-flag scan to the wrapper's own tokens —
+    // everything before the inner command starts. Tokens after `--` or
+    // after the inner command boundary belong to the inner command and
+    // must not be matched against the wrapper's unanalyzable flags.
+    let flag_region = match inner_start {
+        Some(idx) => &words[..idx],
+        None => words,
+    };
     if !spec.unanalyzable_flags.is_empty()
-        && words.iter().any(|w| {
+        && flag_region.iter().any(|w| {
             spec.unanalyzable_flags.iter().any(|f| {
                 w == f
                     || w.starts_with(&format!("{f}="))
@@ -111,7 +122,7 @@ fn resolve_command_impl(words: &[Word], config: &CommandConfig, depth: usize) ->
             kind: IndirectExecution::Eval,
         });
     }
-    let inner_start = strip_with_spec_idx(spec, words);
+
     match inner_start {
         None => ResolvedCommand::Resolved(ParsedCommand::from_words(&[])),
         Some(idx) => {

@@ -132,3 +132,20 @@ fn resolve_with_custom_config() {
         ResolvedCommand::Unanalyzable(_)
     ));
 }
+
+/// After fix: `sudo -- git commit -s` should resolve to `git commit -s`,
+/// not Unanalyzable. The `-s` belongs to `git commit` (signoff), not sudo.
+#[test]
+fn terminator_scopes_unanalyzable_check() {
+    let words = vec![
+        Word::from("sudo"),
+        Word::from("--"),
+        Word::from("git"),
+        Word::from("commit"),
+        Word::from("-s"),
+    ];
+    match resolve_command(&words) {
+        ResolvedCommand::Resolved(p) => assert_eq!(p.command.as_str(), "git"),
+        other => panic!("expected Resolved(git), got {:?}", other),
+    }
+}
