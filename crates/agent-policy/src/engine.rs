@@ -388,15 +388,8 @@ fn compound_header(
         desc.push(unique_ops.join(", "));
     }
     if has_substitutions {
-        let sub_count = pipeline.filter_segments(&|seg| {
-            if !seg.substitutions.is_empty() {
-                Some(seg.substitutions.len())
-            } else {
-                None
-            }
-        });
-        let total: usize =
-            sub_count.iter().sum::<usize>() + pipeline.structural_substitutions.len();
+        let total: usize = pipeline.fold_segments(0, &|acc, seg| acc + seg.substitutions.len())
+            + pipeline.structural_substitutions.len();
         desc.push(format!("{total} substitution(s)"));
     }
     if desc.is_empty() {
