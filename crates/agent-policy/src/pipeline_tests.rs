@@ -413,25 +413,113 @@ fn doas_wrapper_fails_closed() {
 #[test]
 fn su_wrapper_fails_closed() {
     // su is in the KB (escalates_privilege=true, floor_effect=mutating)
-    // but NOT in the parser's wrapper list.
+    // and in the parser's default wrapper list. su -c is an unanalyzable flag,
+    // so this triggers the unanalyzable path.
     let engine = default_engine();
     let kb = default_kb();
     let result = engine.evaluate_command("su -c 'rm -rf /'", kb);
     assert!(
         result.decision >= PolicyDecision::Ask,
-        "su -c 'rm -rf /' must be at least Ask (KB-only wrapper, fail-closed): {result:?}"
+        "su -c 'rm -rf /' must be at least Ask (unanalyzable -c flag): {result:?}"
     );
 }
 
 #[test]
 fn pkexec_wrapper_fails_closed() {
-    // pkexec is in the KB (escalates_privilege=true, floor_effect=mutating)
-    // but NOT in the parser's wrapper list.
+    // pkexec is in the KB (escalates_privilege=true, floor_effect=mutating).
+    // It is KB-only (not in the parser's default wrapper list) but gets
+    // stripped via KB-derived wrapper specs at evaluation time.
     let engine = default_engine();
     let kb = default_kb();
     let result = engine.evaluate_command("pkexec rm foo", kb);
     assert!(
         result.decision >= PolicyDecision::Ask,
         "pkexec rm foo must be at least Ask (KB-only wrapper, fail-closed): {result:?}"
+    );
+}
+
+// ── KB-primed parser: wrapper stripping for KB-only wrappers ──────────
+
+#[test]
+fn doas_wrapper_resolves_inner_command() {
+    // With the unified wrapper list, the policy engine primes the parser
+    // with KB-derived WrapperSpecs. This means doas (a KB-only wrapper)
+    // can now be stripped to reveal the inner command, and the reason
+    // should mention "wraps" rather than just "inner command not resolved".
+    let engine = default_engine();
+    let kb = default_kb();
+    let result = engine.evaluate_command("doas ls", kb);
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "doas ls must be at least Ask (escalates_privilege): {result:?}"
+    );
+    assert!(
+        result.reason.contains("wraps"),
+        "reason should show wrapper resolved inner command: {result:?}"
+    );
+    assert!(
+        result.reason.contains("ls"),
+        "reason should name the inner command 'ls': {result:?}"
+    );
+}
+
+#[test]
+fn pkexec_wrapper_resolves_inner_command() {
+    let engine = default_engine();
+    let kb = default_kb();
+    let result = engine.evaluate_command("pkexec cat /etc/shadow", kb);
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "pkexec cat must be at least Ask: {result:?}"
+    );
+    assert!(
+        result.reason.contains("wraps"),
+        "reason should show wrapper resolved inner command: {result:?}"
+    );
+    assert!(
+        result.reason.contains("cat"),
+        "reason should name the inner command 'cat': {result:?}"
+    );
+}
+
+// ── derive_wrapper_specs only adds KB-only wrappers ───────────────────
+
+#[test]
+fn derive_wrapper_specs_does_not_duplicate_defaults() {
+    let kb = default_kb();
+    let specs = super::derive_wrapper_specs(kb);
+    let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+
+    // Default wrappers must NOT appear in derived specs
+    for default_name in &[
+        "sudo", "env", "nice", "timeout", "strace", "watch", "ltrace", "su",
+    ] {
+        assert!(
+            !names.contains(default_name),
+            "{default_name} is a default wrapper — should not appear in derived specs"
+        );
+    }
+
+    // KB-only wrappers (doas, pkexec) should be present
+    assert!(
+        names.contains(&"doas"),
+        "doas is KB-only — should appear in derived specs"
+    );
+    assert!(
+        names.contains(&"pkexec"),
+        "pkexec is KB-only — should appear in derived specs"
+    );
+
+    // Total count should match exactly the number of KB wrappers not in defaults
+    let default_config = agent_shell_parser::parse::default_command_config();
+    let expected_count = kb
+        .wrappers
+        .keys()
+        .filter(|name| !default_config.wrappers.iter().any(|w| &w.name == *name))
+        .count();
+    assert_eq!(
+        specs.len(),
+        expected_count,
+        "derived spec count should match KB-only wrapper count"
     );
 }

@@ -921,3 +921,45 @@ name = "pkexec"
 floor_effect = "mutating"
 clears_env = true
 escalates_privilege = true
+
+[wrappers.builtin]
+name = "builtin"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.command]
+name = "command"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.exec]
+name = "exec"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.setsid]
+name = "setsid"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.ionice]
+name = "ionice"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.chrt]
+name = "chrt"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false
+
+[wrappers.taskset]
+name = "taskset"
+floor_effect = "read-only"
+clears_env = false
+escalates_privilege = false

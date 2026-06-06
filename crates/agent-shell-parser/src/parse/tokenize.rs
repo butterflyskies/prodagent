@@ -75,21 +75,8 @@ pub fn tokenize(command: &str) -> Vec<Word> {
     shlex_or_whitespace_words(command)
 }
 
-pub(crate) fn is_env_assignment(token: &str) -> bool {
-    match token.find('=') {
-        Some(eq_pos) => is_valid_env_key(&token[..eq_pos]),
-        None => false,
-    }
-}
-
-pub(crate) fn is_valid_env_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && key
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-}
+// Re-export from agent-types for use within the parser crate.
+pub(crate) use agent_types::word::{is_env_assignment, is_valid_env_key};
 
 /// Parse a command string into structured components with arguments in source order.
 ///

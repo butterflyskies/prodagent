@@ -1,6 +1,7 @@
 use agent_command_knowledge::{classify, CommandInfo, Effect, KnowledgeBase};
 use agent_shell_parser::parse::{
-    self, ParsedPipeline, Redirection, ResolvedCommand, ShellSegment, Word,
+    self, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand, ShellSegment, Word,
+    WrapperSpec,
 };
 
 use crate::config::{CommandPolicy, PolicyConfig};
@@ -67,11 +68,16 @@ impl PolicyEngine {
             .is_some()
             || !pipeline.structural_substitutions.is_empty();
 
+        // Build the merged config once: defaults + KB-derived wrappers.
+        // This is threaded through as &CommandConfig, eliminating per-depth cloning.
+        let kb_wrapper_specs = derive_wrapper_specs(kb);
+        let merged_config = parse::merged_config(&kb_wrapper_specs);
+
         // Single segment, no compound structure → evaluate directly
         if pipeline.segments.len() <= 1 && !has_substitutions && !has_parse_errors {
             return match pipeline.segments.first() {
                 Some(segment) => {
-                    let result = self.evaluate_segment(segment, kb);
+                    let result = self.evaluate_segment(segment, kb, &merged_config);
                     let seg = SegmentResult {
                         label: segment.command.trim().to_string(),
                         decision: result.decision,
@@ -89,7 +95,7 @@ impl PolicyEngine {
 
         // Compound or error case: evaluate full pipeline, strictest wins
         let mut segments = Vec::new();
-        let mut strictest = self.evaluate_pipeline(&pipeline, kb, &mut segments);
+        let mut strictest = self.evaluate_pipeline(&pipeline, kb, &merged_config, &mut segments);
         if has_parse_errors {
             strictest = strictest.max(PolicyDecision::Ask);
         }
@@ -114,6 +120,7 @@ impl PolicyEngine {
         base_command: &str,
         words: &[Word],
         kb: &KnowledgeBase,
+        merged_config: &CommandConfig,
         depth: u8,
     ) -> PolicyResult {
         if depth > 8 {
@@ -123,7 +130,7 @@ impl PolicyEngine {
             );
         }
 
-        let resolved = parse::resolve_command(words);
+        let resolved = parse::resolve_command_with(words, merged_config);
         match resolved {
             ResolvedCommand::Resolved(ref parsed)
                 if !parsed.command.is_empty() && parsed.command.as_str() != base_command =>
@@ -144,6 +151,7 @@ impl PolicyEngine {
                         parsed.command.as_str(),
                         &inner_words,
                         kb,
+                        merged_config,
                         depth + 1,
                     );
                     inner_result.decision
@@ -204,12 +212,13 @@ impl PolicyEngine {
         &self,
         pipeline: &ParsedPipeline,
         kb: &KnowledgeBase,
+        merged_config: &CommandConfig,
         segments: &mut Vec<SegmentResult>,
     ) -> PolicyDecision {
         let mut strictest = PolicyDecision::Allow;
 
         for sub in &pipeline.structural_substitutions {
-            let sub_decision = self.evaluate_pipeline(&sub.pipeline, kb, segments);
+            let sub_decision = self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
             let label = pipeline_label(&sub.pipeline, "structural-subst");
             segments.push(SegmentResult {
                 label,
@@ -223,7 +232,8 @@ impl PolicyEngine {
 
         for segment in &pipeline.segments {
             for sub in &segment.substitutions {
-                let sub_decision = self.evaluate_pipeline(&sub.pipeline, kb, segments);
+                let sub_decision =
+                    self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
                 let label = pipeline_label(&sub.pipeline, "subst");
                 segments.push(SegmentResult {
                     label,
@@ -235,7 +245,7 @@ impl PolicyEngine {
                 }
             }
 
-            let result = self.evaluate_segment(segment, kb);
+            let result = self.evaluate_segment(segment, kb, merged_config);
             let label = segment.command.trim().to_string();
             segments.push(SegmentResult {
                 label,
@@ -251,7 +261,12 @@ impl PolicyEngine {
     }
 
     /// Evaluate a single shell segment from a parsed pipeline.
-    fn evaluate_segment(&self, segment: &ShellSegment, kb: &KnowledgeBase) -> PolicyResult {
+    fn evaluate_segment(
+        &self,
+        segment: &ShellSegment,
+        kb: &KnowledgeBase,
+        merged_config: &CommandConfig,
+    ) -> PolicyResult {
         let words = &segment.words;
         let base_command = base_command_from_words(words);
 
@@ -270,9 +285,9 @@ impl PolicyEngine {
         let base_word = Word::from(base_command.as_str());
         let info = classify(&base_word, words, kb);
 
-        // Wrapper handling
+        // Wrapper handling — use pre-built merged config
         if info.wrapper.is_some() {
-            let mut result = self.resolve_wrapper_core(&base_command, words, kb, 0);
+            let mut result = self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0);
             maybe_escalate_for_redirection(&mut result, segment);
             return result;
         }
@@ -415,6 +430,34 @@ fn is_benign_redirection(redir: &Redirection) -> bool {
         return true;
     }
     false
+}
+
+/// Derive [`WrapperSpec`]s from the knowledge base's wrapper entries.
+///
+/// KB wrappers that are already in the parser's default config are skipped —
+/// this only produces specs for KB-only wrappers (e.g. `doas`, `pkexec`)
+/// that the parser doesn't know about by default. These minimal specs have no
+/// value flags or special behavior, but they let the parser recognize the
+/// wrapper and strip it to find the inner command.
+///
+/// This is the bridge that closes the drift gap: the KB is the single source
+/// of truth for "what is a wrapper," and the policy engine primes the parser
+/// with that knowledge at evaluation time.
+fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
+    let default_config = parse::default_command_config();
+    kb.wrappers
+        .keys()
+        .filter(|name| !default_config.wrappers.iter().any(|w| &w.name == *name))
+        .map(|name| WrapperSpec {
+            name: name.clone(),
+            short_value_flags: vec![],
+            long_value_flags: vec![],
+            unanalyzable_flags: vec![],
+            skip_env_assignments: false,
+            has_terminator: false,
+            skip_positionals: 0,
+        })
+        .collect()
 }
 
 /// Extract the base command name from pre-tokenized words.

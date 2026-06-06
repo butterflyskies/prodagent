@@ -420,6 +420,66 @@ fn taskset_c_flag() {
     assert_eq!(resolved_command_name("taskset -c 0-3 git commit"), "git");
 }
 
+// --- watch ---
+
+#[test]
+fn watch_n_strips_interval_to_inner() {
+    // watch -n 5 rm somefile → inner command is rm
+    // -n consumes the next token (interval), so rm is the inner command.
+    assert_eq!(resolved_command_name("watch -n 5 rm somefile"), "rm");
+}
+
+#[test]
+fn watch_interval_long_strips_to_inner() {
+    assert_eq!(
+        resolved_command_name("watch --interval 5 rm somefile"),
+        "rm"
+    );
+}
+
+// --- ltrace ---
+
+#[test]
+fn ltrace_e_strips_filter_to_inner() {
+    // ltrace -e malloc rm somefile → inner command is rm
+    // -e consumes the next token (filter), so rm is the inner command.
+    assert_eq!(resolved_command_name("ltrace -e malloc rm somefile"), "rm");
+}
+
+#[test]
+fn ltrace_multiple_value_flags_strips() {
+    assert_eq!(
+        resolved_command_name("ltrace -e malloc -o /tmp/trace rm somefile"),
+        "rm"
+    );
+}
+
+// --- su ---
+
+#[test]
+fn su_skips_username_to_inner() {
+    assert_eq!(resolved_command_name("su root ls"), "ls");
+}
+
+#[test]
+fn su_with_shell_flag_skips_value_and_username() {
+    assert_eq!(resolved_command_name("su -s /bin/bash root ls"), "ls");
+}
+
+#[test]
+fn su_c_is_unanalyzable() {
+    assert!(resolved_command_name("su -c 'rm -rf /'").starts_with("UNANALYZABLE"));
+}
+
+#[test]
+fn su_terminator_treats_next_as_inner() {
+    // After --, the parser treats everything as inner command — skip_positionals
+    // doesn't apply post-terminator. `su -- root ls` resolves to `root`, not `ls`.
+    // This is a semantic mismatch (real su treats root as username after --)
+    // but is fail-closed: `root` as a command is Unknown → Ask.
+    assert_eq!(resolved_command_name("su -- root ls"), "root");
+}
+
 // --- sudo unanalyzable flags ---
 
 #[test]

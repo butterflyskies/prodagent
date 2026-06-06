@@ -1,4 +1,4 @@
-use agent_shell_parser::parse::types::Word;
+use agent_types::Word;
 use proptest::prelude::*;
 
 use crate::lookup::classify;

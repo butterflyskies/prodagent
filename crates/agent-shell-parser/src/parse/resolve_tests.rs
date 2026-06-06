@@ -133,6 +133,65 @@ fn resolve_with_custom_config() {
     ));
 }
 
+// ── merged_config + resolve_command_with ───────────────────────────────
+
+#[test]
+fn extra_wrapper_recognized_and_inner_resolved() {
+    let extra = vec![WrapperSpec {
+        name: "mywrap".to_string(),
+        short_value_flags: vec!["-x".to_string()],
+        long_value_flags: vec![],
+        unanalyzable_flags: vec![],
+        skip_env_assignments: false,
+        has_terminator: false,
+        skip_positionals: 0,
+    }];
+    let config = merged_config(&extra);
+    match resolve_command_with(&words("mywrap -x val inner"), &config) {
+        ResolvedCommand::Resolved(p) => assert_eq!(p.command, "inner"),
+        other => panic!("expected Resolved(inner), got {:?}", other),
+    }
+}
+
+#[test]
+fn duplicate_extra_wrapper_not_double_added() {
+    let extra = vec![WrapperSpec {
+        name: "sudo".to_string(),
+        short_value_flags: vec![],
+        long_value_flags: vec![],
+        unanalyzable_flags: vec![],
+        skip_env_assignments: false,
+        has_terminator: false,
+        skip_positionals: 0,
+    }];
+
+    let config = merged_config(&extra);
+    assert_eq!(
+        config.wrappers.iter().filter(|w| w.name == "sudo").count(),
+        1,
+        "sudo should appear exactly once in merged config, not be duplicated"
+    );
+
+    match resolve_command_with(&words("sudo -u root git commit"), &config) {
+        ResolvedCommand::Resolved(p) => assert_eq!(p.command, "git"),
+        other => panic!("expected Resolved(git), got {:?}", other),
+    }
+}
+
+#[test]
+fn empty_extra_wrappers_same_as_resolve_command() {
+    let ws = words("env FOO=bar git status");
+    let config = merged_config(&[]);
+    let with_merged = resolve_command_with(&ws, &config);
+    let plain = resolve_command(&ws);
+    match (with_merged, plain) {
+        (ResolvedCommand::Resolved(a), ResolvedCommand::Resolved(b)) => {
+            assert_eq!(a.command, b.command);
+        }
+        (a, b) => panic!("expected both Resolved, got {:?} vs {:?}", a, b),
+    }
+}
+
 /// After fix: `sudo -- git commit -s` should resolve to `git commit -s`,
 /// not Unanalyzable. The `-s` belongs to `git commit` (signoff), not sudo.
 #[test]

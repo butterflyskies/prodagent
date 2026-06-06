@@ -27,7 +27,7 @@ mod tests {
     use super::*;
     use crate::lookup::classify;
     use crate::types::Effect;
-    use agent_shell_parser::parse::types::Word;
+    use agent_types::Word;
 
     fn words(args: &[&str]) -> Vec<Word> {
         args.iter().map(|s| Word::from(*s)).collect()

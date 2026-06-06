@@ -4,9 +4,10 @@ version = 4
 
 [[package]]
 name = "agent-command-knowledge"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "agent-shell-parser",
+ "agent-types",
  "proptest",
  "serde",
  "toml",
@@ -14,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "agent-jj"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "agent-shell-parser",
  "anyhow",
@@ -23,10 +24,11 @@ dependencies = [
 
 [[package]]
 name = "agent-policy"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "agent-command-knowledge",
  "agent-shell-parser",
+ "agent-types",
  "proptest",
  "serde",
  "toml",
@@ -34,8 +36,9 @@ dependencies = [
 
 [[package]]
 name = "agent-shell-parser"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "agent-types",
  "proptest",
  "serde",
  "serde_json",
@@ -43,6 +46,15 @@ dependencies = [
  "thiserror",
  "tree-sitter",
  "tree-sitter-bash",
+]
+
+[[package]]
+name = "agent-types"
+version = "0.8.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
