@@ -212,6 +212,23 @@ proptest! {
                     pattern, normalized.as_str(),
                     "deserialized key is not whitespace-normalized"
                 );
+
+                // Findability — the load-bearing promise of the refactor: a key
+                // that survives deserialization must remain locatable via
+                // `longest_match`. Because keys are normalized to single-space
+                // joins, splitting on ' ' reconstructs the exact `Word`s that
+                // `longest_match` joins back together, so feeding the key's own
+                // words must match at exactly the key's depth. This binds the
+                // deserialize path to lookup directly rather than relying on the
+                // normalization check to imply it.
+                let words: Vec<Word> = pattern.split(' ').map(Word::from).collect();
+                let refs: Vec<&Word> = words.iter().collect();
+                prop_assert_eq!(
+                    map.longest_match(&refs).map(|(_, d)| d),
+                    Some(depth),
+                    "deserialized key '{}' is not findable via longest_match at its own depth {}",
+                    pattern, depth
+                );
             }
         }
     }
