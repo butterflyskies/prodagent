@@ -974,19 +974,39 @@ fn sudo_selective_preserve_var_not_set_stays_unknown() {
 }
 
 #[test]
-fn sudo_selective_preserve_gate_fires_on_preserved_var() {
-    // FOO=hello sudo --preserve-env=FOO mycmd with an Allow gate.
-    // FOO is preserved, so the gate fires (Allow), but sudo escalation produces
-    // Ask. Allow.max(Ask) = Ask — the sudo escalation dominates.
-    // This proves the Allow gate fires (rather than being suppressed) and that
-    // Allow cannot lower a higher decision already in place.
-    let kb = kb_with_set_gate("FOO", EnvGateAction::Allow);
+fn sudo_selective_preserve_equals_gate_fires_on_preserved_var() {
+    // FOO=hello sudo --preserve-env=FOO mycmd with an Equals("hello")/Deny gate.
+    //
+    // This is distinct from `sudo_selective_preserve_single_var_visible` which uses
+    // a Set/Deny gate — here we test Equals, which requires the *value* to be
+    // visible, not just the variable's presence. If FOO's value weren't preserved
+    // (i.e. Unknown), the Equals condition would fail (fail-closed on Unknown) and
+    // the result would be Ask (sudo escalation only), not Deny. Getting Deny
+    // proves: (1) the variable is preserved, (2) its value is visible, and
+    // (3) the Equals gate fires correctly on the preserved value.
+    let gate = EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("hello".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    let cmd = agent_command_knowledge::CommandKnowledge {
+        name: "mycmd".to_string(),
+        effect: agent_command_knowledge::Effect::ReadOnly,
+        subcommands: Default::default(),
+        flags: Default::default(),
+        env_gates: vec![gate],
+        paths: Default::default(),
+        properties: Default::default(),
+    };
+    kb.commands.insert("mycmd".to_string(), cmd);
+
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "preserved FOO → Allow gate fires → Ask (sudo escalation dominates Allow): {result:?}"
+        PolicyDecision::Deny,
+        "FOO=hello preserved → Equals(\"hello\")/Deny gate must fire → Deny: {result:?}"
     );
 }
 
@@ -1174,5 +1194,39 @@ fn sudo_selective_preserve_empty_list_all_unknown() {
         inner.get_value("BAR"),
         Some(EnvValueOwned::Unknown),
         "--preserve-env= with empty list → BAR should be Unknown"
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_multiple_preserve_flags() {
+    // sudo --preserve-env=FOO --preserve-env=BAR cmd
+    // Multiple --preserve-env= flags should be merged — both FOO and BAR
+    // should be preserved as Known.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("--preserve-env=BAR"),
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "foo-val");
+    outer.set("BAR", "bar-val");
+    outer.set("SECRET", "hidden");
+
+    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("foo-val".to_string())),
+        "FOO from first --preserve-env= flag should be Known"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Known("bar-val".to_string())),
+        "BAR from second --preserve-env= flag should be Known"
+    );
+    assert_eq!(
+        inner.get_value("SECRET"),
+        Some(EnvValueOwned::Unknown),
+        "SECRET not in any --preserve-env= flag → Unknown"
     );
 }

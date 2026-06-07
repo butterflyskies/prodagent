@@ -637,7 +637,7 @@ struct VarEntry {
 }
 
 fn arb_var_name() -> impl Strategy<Value = String> {
-    "[A-Z]{1,4}".prop_map(|s| s.to_string())
+    "[A-Z_][A-Z0-9_]{0,7}".prop_map(|s| s.to_string())
 }
 
 fn arb_var_value() -> impl Strategy<Value = String> {
@@ -685,6 +685,14 @@ proptest! {
         entries in prop::collection::vec(arb_var_entry(), 0..8),
         preserve_names in prop::collection::vec(arb_var_name(), 0..5),
     ) {
+        // Deduplicate entries by name: if the generator produces the same name
+        // with different states, snapshot_from_entries keeps the last write, but
+        // iterating raw entries would compare an earlier entry's state against the
+        // snapshot's last-write-wins state, causing a spurious failure.
+        let names: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.name.as_str()).collect();
+        prop_assume!(names.len() == entries.len());
+
         let source = snapshot_from_entries(&entries);
         let preserve_refs: Vec<&str> = preserve_names.iter().map(|s| s.as_str()).collect();
         let result = EnvSnapshot::preserved_from(&source, &preserve_refs);
@@ -801,51 +809,51 @@ proptest! {
         }
     }
 
-    /// Property 4 — Trim invariance.
+    /// Property 4 — Trim matters: `preserved_from` does NOT trim internally.
     ///
-    /// `preserved_from(env, &["FOO"])` produces the same snapshot as
-    /// `preserved_from(env, &[trimmed])` where trimmed is " FOO ".trim() == "FOO".
+    /// `preserved_from(env, &[" FOO "])` treats `" FOO "` as a literal var name,
+    /// which won't match a var named `"FOO"` in the source snapshot. The caller
+    /// (`resolve_sudo_wrapper`) is responsible for trimming before calling
+    /// `preserved_from`.
     ///
-    /// The resolver (`resolve_sudo_wrapper`) trims each token before passing to
-    /// `preserved_from`, so this property validates that the trim-then-call
-    /// pipeline is stable: trimming a var name a second time is a no-op.
-    ///
-    /// Concretely: for any var name `v`, `preserved_from(env, &[v.trim()])` and
-    /// `preserved_from(env, &[v])` agree on all source vars when `v` is already
-    /// trimmed (i.e. `v == v.trim()`), which is always true for generator-produced
-    /// var names (`[A-Z]{1,4}`). This validates that the trim applied by the
-    /// caller is idempotent — applying it twice doesn't change the outcome.
-    ///
-    /// Would fail if trimming changed the var name (e.g. a future bug that strips
-    /// trailing underscores or lowercases after the trim).
+    /// This property generates var names with optional surrounding whitespace and
+    /// verifies: (a) with the padded name, `preserved_from` does NOT preserve the
+    /// var (treats it as Unknown); (b) with the trimmed name, it DOES preserve it
+    /// (Known with the correct value). This proves the caller must trim.
     #[test]
-    fn trim_invariance(
-        entries in prop::collection::vec(arb_var_entry(), 0..8),
-        preserve_names in prop::collection::vec(arb_var_name(), 0..5),
+    fn trim_matters_for_preserved_from(
+        entries in prop::collection::vec(arb_var_entry(), 1..8),
     ) {
+        // Pick the first entry that has a Known value — we need something to preserve.
         let source = snapshot_from_entries(&entries);
+        let known_entry = entries.iter().find(|e| matches!(&e.state, VarState::Known(_)));
+        if let Some(entry) = known_entry {
+            let trimmed_name = entry.name.as_str();
+            let padded_name = format!("  {}  ", trimmed_name);
 
-        // Original: vars as generated (already trimmed by the regex strategy)
-        let original_refs: Vec<&str> = preserve_names.iter().map(|s| s.as_str()).collect();
-
-        // Double-trimmed: trim again — must be identical for [A-Z]{1,4} names
-        let double_trimmed: Vec<String> =
-            preserve_names.iter().map(|s| s.trim().to_string()).collect();
-        let double_trimmed_refs: Vec<&str> =
-            double_trimmed.iter().map(|s| s.as_str()).collect();
-
-        let result_original = EnvSnapshot::preserved_from(&source, &original_refs);
-        let result_trimmed = EnvSnapshot::preserved_from(&source, &double_trimmed_refs);
-
-        for entry in &entries {
-            let name = entry.name.as_str();
+            // With the padded name: preserved_from won't find " FOO " in snapshot
+            // (snapshot has "FOO"), so the var stays Unknown.
+            let result_padded = EnvSnapshot::preserved_from(&source, &[&padded_name]);
             prop_assert_eq!(
-                result_original.get_value(name),
-                result_trimmed.get_value(name),
-                "trim invariance violated for var '{}': single-trim and double-trim disagree",
-                name
+                result_padded.get_value(trimmed_name),
+                Some(EnvValueOwned::Unknown),
+                "padded name '{}' should NOT match var '{}' — preserved_from doesn't trim",
+                padded_name, trimmed_name
             );
+
+            // With the trimmed name: preserved_from finds "FOO" and preserves it.
+            let result_trimmed = EnvSnapshot::preserved_from(&source, &[trimmed_name]);
+            if let VarState::Known(expected) = &entry.state {
+                prop_assert_eq!(
+                    result_trimmed.get_value(trimmed_name),
+                    Some(EnvValueOwned::Known(expected.clone())),
+                    "trimmed name '{}' should preserve Known value",
+                    trimmed_name
+                );
+            }
         }
+        // If no Known entry, the test is a no-op — that's fine, the generator
+        // will produce Known entries in most runs.
     }
 
     /// Property 5 — Idempotence of duplicate vars.
