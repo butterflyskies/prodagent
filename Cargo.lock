@@ -10,6 +10,7 @@ dependencies = [
  "prodagent-types",
  "proptest",
  "serde",
+ "serde_json",
  "toml",
 ]
 

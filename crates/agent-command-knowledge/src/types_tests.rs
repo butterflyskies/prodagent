@@ -45,6 +45,28 @@ fn subcommand_map_no_match() {
     assert!(map.longest_match(&refs).is_none());
 }
 
+// `insert` constructs its key via `SubcommandPattern::new_unchecked`, whose
+// depth/non-empty guards are `debug_assert!`s — live only in debug builds. An
+// over-depth key inserted in release would become permanently unreachable
+// (`longest_match` caps at `MAX_SUBCOMMAND_DEPTH`), so the debug guard is the
+// only protection. Gate the test on `debug_assertions` so it is not compiled
+// under `--release`, where it would fail by not panicking.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "MAX_SUBCOMMAND_DEPTH")]
+fn insert_panics_on_over_depth_pattern() {
+    let mut map = SubcommandMap::new();
+    map.insert("a b c d e", SubcommandEntry::with_effect(Effect::ReadOnly));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty pattern")]
+fn insert_panics_on_empty_pattern() {
+    let mut map = SubcommandMap::new();
+    map.insert("", SubcommandEntry::with_effect(Effect::ReadOnly));
+}
+
 #[test]
 fn subcommand_map_fallback_to_shorter() {
     let mut map = SubcommandMap::new();

@@ -233,6 +233,30 @@ proptest! {
         }
     }
 
+    /// Serialize/Deserialize agreement for `SubcommandMap`. The derived
+    /// `Serialize` emits each key via `SubcommandPattern`'s `into = "String"`,
+    /// while the hand-written `Deserialize` routes every raw key back through
+    /// `SubcommandPattern::try_from`. Those two impls are exercised
+    /// individually elsewhere but never checked for mutual agreement — the
+    /// existing deserialize test only goes one direction. This locks the pair
+    /// together: serializing a map and reading it back must preserve the exact
+    /// set of (key, effect) entries, so any future drift in key encoding (or in
+    /// either impl) fails here rather than silently.
+    #[test]
+    fn subcommand_map_serde_round_trips(map in arb_subcommand_map()) {
+        let json = serde_json::to_string(&map).expect("SubcommandMap should serialize");
+        let back: SubcommandMap =
+            serde_json::from_str(&json).expect("serialized SubcommandMap should deserialize");
+
+        let mut before: Vec<(String, Effect)> =
+            map.iter().map(|(k, v)| (k.to_string(), v.effect)).collect();
+        let mut after: Vec<(String, Effect)> =
+            back.iter().map(|(k, v)| (k.to_string(), v.effect)).collect();
+        before.sort();
+        after.sort();
+        prop_assert_eq!(before, after, "round-trip changed the (key, effect) entry set");
+    }
+
     #[test]
     fn empty_input_never_matches(map in arb_subcommand_map()) {
         let empty: Vec<&Word> = vec![];
