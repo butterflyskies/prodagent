@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-06-07
+
+### Added
+
+- Recursive policy evaluation for command substitutions in env assignments (`FOO=$(cmd)`)
+- Env snapshot propagation across `&&`/`;` compound command segments
+- `AssignmentValue` type-driven classification (Static/CommandSubstitution/VariableExpansion)
+- `$((arithmetic))` correctly distinguished from `$(command)` substitutions
+- All declaration keywords (`export`/`declare`/`readonly`/`local`/`typeset`) propagate env mutations
+- Metamorphic proptest sampling from all transparent KB wrappers
+- ADRs and spec documentation for env gate semantics
+
 ## [0.8.1] - 2026-06-07
 
 ### Changed

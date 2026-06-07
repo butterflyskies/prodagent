@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-command-knowledge"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "agent-shell-parser",
  "camino",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "agent-jj"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "agent-shell-parser",
  "anyhow",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "agent-policy"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "agent-command-knowledge",
  "agent-shell-parser",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "agent-shell-parser"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "prodagent-types",
  "proptest",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "prodagent-types"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "proptest",
  "serde",
