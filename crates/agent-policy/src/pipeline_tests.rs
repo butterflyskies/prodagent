@@ -527,8 +527,8 @@ fn derive_wrapper_specs_does_not_duplicate_defaults() {
 // ── Env gate integration tests ────────────────────────────────────────────
 
 use agent_command_knowledge::{
-    CommandKnowledge, CommandProperties, EnvCondition, EnvGate, EnvGateAction, FlagSchema,
-    PathSpec, SubcommandMap,
+    CommandKnowledge, CommandOverlay, CommandProperties, EnvCondition, EnvGate, EnvGateAction,
+    FlagSchema, KnowledgeOverlay, PathSpec, SubcommandEntry, SubcommandMap,
 };
 
 fn simple_command(name: &str, effect: agent_command_knowledge::Effect) -> CommandKnowledge {
@@ -756,5 +756,245 @@ fn sudo_with_e_preserves_env() {
         result.decision,
         PolicyDecision::Deny,
         "sudo -E should produce Deny (gate fired because env preserved): {result:?}"
+    );
+}
+
+// ── Env gate integration with real KB commands ───────────────────────────────
+//
+// These tests exercise the full env gate pipeline end-to-end against the real
+// default_knowledge_base(), adding env gates via KnowledgeOverlay::merge. They
+// use real KB commands (git push, pip install) rather than synthetic "mycmd"
+// entries, proving that gates compose correctly with subcommand resolution,
+// wrapper stripping, and the base classification pipeline.
+
+/// Helper: clone the default KB and merge an overlay that adds env_gates to
+/// the `git` command (command-level gates, inherited by all subcommands).
+fn real_kb_with_git_gate(gates: Vec<EnvGate>) -> KnowledgeBase {
+    let mut kb = default_kb().clone();
+    let overlay = KnowledgeOverlay {
+        commands: [(
+            "git".into(),
+            CommandOverlay {
+                env_gates: gates,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    kb.merge(overlay);
+    kb
+}
+
+/// Helper: clone the default KB and add `pip` as a new Mutating command with
+/// an `install` subcommand and the given env gates on the command.
+fn real_kb_with_pip_gate(gate: EnvGate) -> KnowledgeBase {
+    real_kb_with_pip_gate_multi(vec![gate])
+}
+
+fn real_kb_with_pip_gate_multi(gates: Vec<EnvGate>) -> KnowledgeBase {
+    let mut kb = default_kb().clone();
+    let mut subs = SubcommandMap::new();
+    subs.insert(
+        "install",
+        SubcommandEntry {
+            effect: agent_command_knowledge::Effect::Mutating,
+            flags: FlagSchema::default(),
+            env_gates: vec![],
+            paths: PathSpec::default(),
+            subcommands: SubcommandMap::new(),
+        },
+    );
+    let overlay = KnowledgeOverlay {
+        commands: [(
+            "pip".into(),
+            CommandOverlay {
+                effect: Some(agent_command_knowledge::Effect::Mutating),
+                subcommands: subs,
+                env_gates: gates,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    kb.merge(overlay);
+    kb
+}
+
+// Negative test: Allow gate with WRONG value does not fire — base is unaffected.
+// Uses git status (ReadOnly → Allow base) + a companion Deny gate on a different
+// var that always fires. If the mismatched Allow gate incorrectly suppressed the
+// Deny gate the result would be Allow; the correct result is Deny.
+#[test]
+fn real_kb_equals_gate_allow_does_not_lower_base() {
+    let allow_gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Equals("AI-Agent".into()),
+        decision: EnvGateAction::Allow,
+    };
+    // Deny gate on a var that IS set via inline assignment, so it always fires.
+    let deny_gate = EnvGate {
+        var: "GIT_SENTINEL".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    // Wrong value for the Equals condition: Allow gate does NOT fire.
+    // Deny gate fires: result must be Deny, not Allow.
+    let kb = real_kb_with_git_gate(vec![allow_gate, deny_gate]);
+    let engine = default_engine();
+    let result =
+        engine.evaluate_command("GIT_SENTINEL=1 GIT_AUTHOR_NAME=wrong-value git status", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "mismatched Allow gate must not suppress the Deny gate: {result:?}"
+    );
+}
+
+// Equals gate Deny when the condition matches escalates base Ask → Deny.
+#[test]
+fn real_kb_equals_gate_deny_on_match() {
+    let gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Equals("wrong-identity".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let kb = real_kb_with_git_gate(vec![gate]);
+    let engine = default_engine();
+
+    // Inline value matches the Deny gate's expected value → Deny fires →
+    // max(Ask, Deny) = Deny.
+    let result = engine.evaluate_command("GIT_AUTHOR_NAME=wrong-identity git push", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "Equals gate with Deny should escalate to Deny when value matches: {result:?}"
+    );
+}
+
+// Unset gate denies when variable is absent.
+#[test]
+fn real_kb_unset_gate_denies_when_var_absent() {
+    let gate = EnvGate {
+        var: "PRODAGENT_DEFINITELY_UNSET_12345".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Deny,
+    };
+    let kb = real_kb_with_pip_gate(gate);
+    let engine = default_engine();
+
+    // PRODAGENT_DEFINITELY_UNSET_12345 is guaranteed absent in any process env.
+    // Unset condition matches → Deny fires.
+    let result = engine.evaluate_command("pip install requests", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "Unset gate should Deny when var is absent: {result:?}"
+    );
+}
+
+// Negative test: Set/Allow gate fires but a companion Deny gate on a different
+// var also fires — the Allow gate must not suppress the Deny gate.
+// Uses pip install (Mutating → Ask base) with VIRTUAL_ENV set via inline
+// assignment so the Allow gate fires, plus a Deny gate that always fires.
+// If Allow incorrectly suppressed Deny the result would be Ask (not Deny).
+#[test]
+fn real_kb_set_gate_allow_does_not_lower_base() {
+    let allow_gate = EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    };
+    // Deny gate on a var that IS always set via inline assignment.
+    let deny_gate = EnvGate {
+        var: "PIP_SENTINEL".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    // Both gates fire: Allow for VIRTUAL_ENV, Deny for PIP_SENTINEL.
+    // Strictest must win → Deny, proving Allow did not suppress it.
+    let kb = real_kb_with_pip_gate_multi(vec![allow_gate, deny_gate]);
+    let engine = default_engine();
+    let result = engine.evaluate_command(
+        "VIRTUAL_ENV=/home/user/.venv PIP_SENTINEL=1 pip install requests",
+        &kb,
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "Set/Allow gate must not suppress a Deny gate that also fires: {result:?}"
+    );
+}
+
+// env wrapper passes assignments through to inner command's gate.
+#[test]
+fn real_kb_env_wrapper_passes_assignments_to_inner_gate() {
+    let gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Equals("AI-Agent".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let kb = real_kb_with_git_gate(vec![gate]);
+    let engine = default_engine();
+
+    // env GIT_AUTHOR_NAME=AI-Agent git push → env wrapper passes the
+    // assignment to the inner command. The Equals gate matches → Deny.
+    let result = engine.evaluate_command("env GIT_AUTHOR_NAME=AI-Agent git push", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "env wrapper assignment must be visible to inner command's gate: {result:?}"
+    );
+}
+
+// sudo strips env for inner gate — Equals gate cannot confirm.
+#[test]
+fn real_kb_sudo_strips_env_for_inner_gate() {
+    // Use PATH (always set in process env) with its actual value.
+    // Without sudo, the Equals gate would match and Deny.
+    // With sudo, env is marked unknown → gate suppressed → Ask.
+    let path_value = std::env::var("PATH").unwrap_or_default();
+    let gate = EnvGate {
+        var: "PATH".into(),
+        condition: EnvCondition::Equals(path_value),
+        decision: EnvGateAction::Deny,
+    };
+    let kb = real_kb_with_git_gate(vec![gate]);
+    let engine = default_engine();
+
+    let result = engine.evaluate_command("sudo git push", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "sudo should strip env, suppressing the Equals/Deny gate: {result:?}"
+    );
+}
+
+// Multiple gates: strictest wins (Deny > Allow).
+#[test]
+fn real_kb_multiple_gates_strictest_wins() {
+    let allow_gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    };
+    let deny_gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Equals("forbidden".into()),
+        decision: EnvGateAction::Deny,
+    };
+
+    // GIT_AUTHOR_NAME=forbidden → Set/Allow fires AND Equals/Deny fires.
+    // Strictest wins: Deny.
+    let kb = real_kb_with_git_gate(vec![allow_gate, deny_gate]);
+    let engine = default_engine();
+    let result = engine.evaluate_command("GIT_AUTHOR_NAME=forbidden git push", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "when multiple gates fire, strictest (Deny) must win: {result:?}"
     );
 }
