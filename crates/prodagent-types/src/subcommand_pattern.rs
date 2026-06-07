@@ -207,6 +207,26 @@ mod proptests {
             prop_assert_eq!(p, parsed);
         }
 
+        /// serde round-trip is idempotent on the normalized form even when the
+        /// source has irregular whitespace. Construction normalizes (collapsing
+        /// internal runs and trimming), `Serialize` emits that normalized string
+        /// via `into = "String"`, and `Deserialize` re-validates via `try_from`,
+        /// which normalizes again — a no-op on already-normalized input. This
+        /// verifies serialize-then-reparse stability on messy inputs, which the
+        /// single-space-only property above cannot.
+        #[test]
+        fn serde_round_trip_idempotent_on_irregular_whitespace(
+            words in prop::collection::vec(arb_word(), 1..=MAX_SUBCOMMAND_DEPTH),
+        ) {
+            let messy = format!("  {}  ", words.join("   "));
+            let p = SubcommandPattern::new(messy).unwrap();
+            let json = serde_json::to_string(&p).unwrap();
+            let parsed: SubcommandPattern = serde_json::from_str(&json).unwrap();
+            let expected = words.join(" ");
+            prop_assert_eq!(&p, &parsed);
+            prop_assert_eq!(parsed.as_str(), expected.as_str());
+        }
+
         /// Whitespace normalization: leading/trailing/extra internal whitespace
         /// is collapsed so that depth matches logical word count.
         #[test]
@@ -287,5 +307,34 @@ mod tests {
     fn serde_rejects_invalid() {
         let result: Result<SubcommandPattern, _> = serde_json::from_str("\"a b c d e\"");
         assert!(result.is_err());
+    }
+
+    // --- new_unchecked debug-assert guards ---
+    //
+    // `new_unchecked` is the only programmatic-misuse guard, relied on by
+    // `SubcommandMap::insert`. These guards are `debug_assert!`s, so they are
+    // live only in debug builds; gate the tests on `debug_assertions` so they
+    // are not compiled (and spuriously fail by not panicking) under
+    // `--release`.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty pattern")]
+    fn new_unchecked_panics_on_empty() {
+        let _ = SubcommandPattern::new_unchecked("");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "empty pattern")]
+    fn new_unchecked_panics_on_whitespace_only() {
+        let _ = SubcommandPattern::new_unchecked("   ");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "MAX_SUBCOMMAND_DEPTH")]
+    fn new_unchecked_panics_on_over_depth() {
+        let _ = SubcommandPattern::new_unchecked("a b c d e");
     }
 }
