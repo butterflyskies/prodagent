@@ -16,6 +16,30 @@ pub enum WrapperEnvPolicy {
     Explicit,
 }
 
+/// The resolved environment policy after parsing wrapper flags.
+///
+/// Where [`WrapperEnvPolicy`] describes the *category* of a wrapper's env
+/// behavior (from config/spec), `ResolvedEnvPolicy` captures the *result* of
+/// parsing the wrapper's actual flags. This moves flag-level string parsing
+/// out of the engine layer and into structured data.
+///
+/// For example, a `sudo` wrapper has `WrapperEnvPolicy::Unknown`, but after
+/// parsing its flags we know one of:
+/// - No env flags → `Unknown`
+/// - `-E` / `--preserve-env` → `FullPreserve`
+/// - `--preserve-env=FOO,BAR` → `Selective(["FOO", "BAR"])`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedEnvPolicy {
+    /// Environment is unknown (e.g., bare sudo without -E).
+    Unknown,
+    /// Full environment preservation (-E / --preserve-env).
+    FullPreserve,
+    /// Selective preservation (--preserve-env=VAR,VAR).
+    Selective(Vec<String>),
+    /// Environment passes through unchanged.
+    Inherit,
+}
+
 /// Describes how to strip a transparent wrapper command to find the inner command.
 ///
 /// Each wrapper has different flag semantics. This struct captures just enough

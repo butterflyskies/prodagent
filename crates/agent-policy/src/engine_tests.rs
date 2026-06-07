@@ -965,7 +965,7 @@ fn sudo_selective_preserve_var_not_set_stays_unknown() {
     ];
     // Build an outer env where FOO is NOT set
     let outer = EnvSnapshot::clean();
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Unknown),
@@ -1025,6 +1025,122 @@ fn sudo_selective_preserve_gate_suppressed_on_non_preserved_var() {
     );
 }
 
+// ── parse_sudo_env_policy unit tests ──────────────────────────────────
+
+use agent_shell_parser::parse::ResolvedEnvPolicy;
+
+#[test]
+fn parse_sudo_env_policy_bare_sudo_is_unknown() {
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("cmd")];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Unknown,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_dash_e_is_full_preserve() {
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("-E"), Word::from("cmd")];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_long_flag_is_full_preserve() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_single_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_multi_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO,BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_trims_whitespace() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO, BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_empty_list_is_unknown() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env="),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Unknown,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_multiple_flags_merged() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("--preserve-env=BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_full_preserve_takes_priority() {
+    // -E alongside --preserve-env=FOO → FullPreserve wins
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("-E"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
 // ── resolve_sudo_wrapper unit tests ────────────────────────────────────
 
 #[test]
@@ -1038,7 +1154,7 @@ fn resolve_sudo_wrapper_selective_preserves_known_var() {
     outer.set("FOO", "bar");
     outer.set("SECRET", "hidden");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
 
     // FOO should be preserved
     assert_eq!(
@@ -1066,7 +1182,7 @@ fn resolve_sudo_wrapper_selective_multi_var() {
     outer.set("BAR", "b");
     outer.set("BAZ", "z");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
 
     assert_eq!(
         inner.get_value("FOO"),
@@ -1092,7 +1208,7 @@ fn resolve_sudo_wrapper_selective_unknown_outer_stays_unknown() {
     ];
     let outer = EnvSnapshot::clean(); // MISSING not set
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     // MISSING is not in outer env at all → get_value returns None from outer,
     // and mark_all_unknown makes it Unknown in inner
     assert_eq!(
@@ -1110,7 +1226,7 @@ fn resolve_sudo_wrapper_full_preserve_unchanged() {
     outer.set("FOO", "bar");
     outer.set("SECRET", "yes");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Known("bar".to_string())),
@@ -1128,7 +1244,7 @@ fn resolve_sudo_wrapper_no_flag_all_unknown() {
     let mut outer = EnvSnapshot::clean();
     outer.set("FOO", "bar");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Unknown),
@@ -1150,7 +1266,7 @@ fn sudo_selective_preserve_whitespace_trimmed() {
     outer.set("BAR", "bar-val");
     outer.set("OTHER", "hidden");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Known("foo-val".to_string())),
@@ -1184,7 +1300,7 @@ fn sudo_selective_preserve_empty_list_all_unknown() {
     outer.set("FOO", "bar");
     outer.set("BAR", "baz");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Unknown),
@@ -1213,7 +1329,7 @@ fn resolve_sudo_wrapper_multiple_preserve_flags() {
     outer.set("BAR", "bar-val");
     outer.set("SECRET", "hidden");
 
-    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
     assert_eq!(
         inner.get_value("FOO"),
         Some(EnvValueOwned::Known("foo-val".to_string())),
