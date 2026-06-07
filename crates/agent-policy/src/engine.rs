@@ -9,6 +9,7 @@ use agent_shell_parser::parse::{
 use crate::config::{CommandPolicy, PolicyConfig};
 use crate::decision::PolicyDecision;
 use crate::env_snapshot::{EnvSnapshot, EnvValueOwned};
+use crate::paths::AffectedPaths;
 
 /// Per-segment breakdown within a compound command evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +17,9 @@ pub struct SegmentResult {
     pub label: String,
     pub decision: PolicyDecision,
     pub reason: String,
+    /// Filesystem paths this segment is expected to affect, as extracted by
+    /// the knowledge layer. Empty when the command touches no known paths.
+    pub affected_paths: AffectedPaths,
 }
 
 /// The result of evaluating a raw command string through the full pipeline.
@@ -26,6 +30,11 @@ pub struct PolicyResult {
     pub reason: String,
     /// Per-segment breakdown for compound commands. Empty for simple commands.
     pub segments: Vec<SegmentResult>,
+    /// Filesystem paths the decision pertains to. For a single command this is
+    /// the knowledge layer's extracted paths verbatim; for a compound command
+    /// it is the de-duplicated union across all segments. This is the input a
+    /// path-scoped authorization check would consume.
+    pub affected_paths: AffectedPaths,
 }
 
 impl PolicyResult {
@@ -34,7 +43,14 @@ impl PolicyResult {
             decision,
             reason: reason.into(),
             segments: Vec::new(),
+            affected_paths: AffectedPaths::empty(),
         }
+    }
+
+    /// Attach the set of paths this decision pertains to.
+    fn with_paths(mut self, paths: AffectedPaths) -> Self {
+        self.affected_paths = paths;
+        self
     }
 }
 
@@ -85,11 +101,13 @@ impl PolicyEngine {
                         label: segment.command.trim().to_string(),
                         decision: result.decision,
                         reason: result.reason.clone(),
+                        affected_paths: result.affected_paths.clone(),
                     };
                     PolicyResult {
                         decision: result.decision,
                         reason: result.reason,
                         segments: vec![seg],
+                        affected_paths: result.affected_paths,
                     }
                 }
                 None => PolicyResult::simple(PolicyDecision::Allow, "empty"),
@@ -109,10 +127,18 @@ impl PolicyEngine {
             .map(|s| format!("  [{}] -> {:?}: {}", s.label, s.decision, s.reason))
             .collect();
 
+        // Aggregate the paths the decision pertains to as the de-duplicated
+        // union of every segment's affected paths.
+        let mut affected_paths = AffectedPaths::empty();
+        for seg in &segments {
+            affected_paths.union_with(&seg.affected_paths);
+        }
+
         PolicyResult {
             decision: strictest,
             reason: format!("{header}:\n{}", reason_lines.join("\n")),
             segments,
+            affected_paths,
         }
     }
 
@@ -157,7 +183,10 @@ impl PolicyEngine {
                     .map(|w| self.effect_default(w.floor_effect))
                     .unwrap_or(PolicyDecision::Allow);
 
-                let inner_decision = if inner_info.wrapper.is_some() {
+                // The wrapped command's affected paths are the paths the
+                // overall decision pertains to — the wrapper itself touches no
+                // paths, it just adjusts the floor/privilege.
+                let (inner_decision, inner_paths) = if inner_info.wrapper.is_some() {
                     let inner_result = self.resolve_wrapper_core(
                         parsed.command.as_str(),
                         &inner_words,
@@ -166,7 +195,7 @@ impl PolicyEngine {
                         depth + 1,
                         &inner_env,
                     );
-                    inner_result.decision
+                    (inner_result.decision, inner_result.affected_paths)
                 } else {
                     let mut d = self.evaluate(parsed.command.as_str(), &inner_info);
 
@@ -179,7 +208,7 @@ impl PolicyEngine {
                     if inner_info.has_escalation_flags && d < PolicyDecision::Ask {
                         d = PolicyDecision::Ask;
                     }
-                    d
+                    (d, AffectedPaths::new(inner_info.affected_paths.clone()))
                 };
 
                 let mut decision = floor.max(inner_decision);
@@ -197,7 +226,7 @@ impl PolicyEngine {
                     }
                 }
 
-                PolicyResult::simple(decision, reason)
+                PolicyResult::simple(decision, reason).with_paths(inner_paths)
             }
             ResolvedCommand::Unanalyzable(_) => PolicyResult::simple(
                 PolicyDecision::Ask,
@@ -239,10 +268,14 @@ impl PolicyEngine {
         for sub in &pipeline.structural_substitutions {
             let sub_decision = self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
             let label = pipeline_label(&sub.pipeline, "structural-subst");
+            // The nested pipeline's own leaf segments (with their paths) were
+            // already pushed by the recursive call; this synthetic marker
+            // segment carries no paths of its own.
             segments.push(SegmentResult {
                 label,
                 decision: sub_decision,
                 reason: "(nested)".into(),
+                affected_paths: AffectedPaths::empty(),
             });
             if sub_decision > strictest {
                 strictest = sub_decision;
@@ -258,6 +291,7 @@ impl PolicyEngine {
                     label,
                     decision: sub_decision,
                     reason: "(nested)".into(),
+                    affected_paths: AffectedPaths::empty(),
                 });
                 if sub_decision > strictest {
                     strictest = sub_decision;
@@ -270,6 +304,7 @@ impl PolicyEngine {
                 label,
                 decision: result.decision,
                 reason: result.reason,
+                affected_paths: result.affected_paths,
             });
             if result.decision > strictest {
                 strictest = result.decision;
@@ -324,7 +359,8 @@ impl PolicyEngine {
         let mut result = PolicyResult::simple(
             decision,
             format!("{base_command}: effect={:?}", info.effect),
-        );
+        )
+        .with_paths(AffectedPaths::new(info.affected_paths.clone()));
 
         if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
             result.decision = PolicyDecision::Ask;

@@ -16,8 +16,10 @@ pub mod config;
 pub mod decision;
 pub mod engine;
 pub mod env_snapshot;
+pub mod paths;
 
 pub use config::{PolicyConfig, PolicyConfigBuilder};
 pub use decision::PolicyDecision;
 pub use engine::{PolicyEngine, PolicyResult, SegmentResult};
 pub use env_snapshot::{EnvSnapshot, EnvValueOwned};
+pub use paths::AffectedPaths;

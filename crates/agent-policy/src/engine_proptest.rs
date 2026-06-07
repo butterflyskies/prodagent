@@ -891,3 +891,117 @@ proptest! {
         }
     }
 }
+
+// ── path-scoped decision input properties ────────────────────────────────────
+//
+// Discipline: the *generator* is the oracle. We build commands from a known
+// command whose path spec is `positionals = "all"` (rm/touch/mkdir/rmdir in
+// the real KB), so every generated argument is, by definition, an affected
+// path — in order. The property then pins that the policy engine surfaces
+// exactly those paths on its result. This is the decision-input plumbing
+// invariant: the engine neither drops nor invents paths relative to what the
+// knowledge layer is contracted to extract. It never re-runs the engine to
+// validate the engine.
+
+/// A shell word that is unambiguously a positional path argument: no leading
+/// dash (so never a flag), no `=` (so never an assignment), no whitespace or
+/// shell metacharacters (so it parses to exactly one word).
+fn arb_path_token() -> impl Strategy<Value = String> {
+    "[a-zA-Z0-9_./]{1,12}".prop_map(|s| s.to_string())
+}
+
+/// A command name whose KB path spec is `positionals = "all"`, so that every
+/// argument maps 1:1 to an affected path. All four exist in the default KB.
+fn arb_all_positional_cmd() -> impl Strategy<Value = &'static str> {
+    prop_oneof![Just("rm"), Just("touch"), Just("mkdir"), Just("rmdir"),]
+}
+
+/// First-seen-order de-duplication, matching `AffectedPaths::union_with`.
+fn dedup_first_seen(items: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for it in items {
+        if !out.contains(it) {
+            out.push(it.clone());
+        }
+    }
+    out
+}
+
+proptest! {
+    /// For a single `positionals = "all"` command, the engine surfaces exactly
+    /// the generated path arguments, in order. Oracle: the generated args.
+    /// Catches a regression anywhere in the plumbing (classify → evaluate_segment
+    /// → with_paths → fast-path result) that drops or reorders paths.
+    #[test]
+    fn engine_surfaces_all_positional_paths(
+        cmd in arb_all_positional_cmd(),
+        args in prop::collection::vec(arb_path_token(), 1..5),
+    ) {
+        let kb = default_knowledge_base();
+        let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+        let line = format!("{cmd} {}", args.join(" "));
+
+        let result = engine.evaluate_command(&line, kb);
+        let surfaced: Vec<String> = result
+            .affected_paths
+            .iter()
+            .map(|w| w.as_str().to_string())
+            .collect();
+
+        prop_assert_eq!(
+            surfaced, args,
+            "engine must surface exactly the positional paths for `{}`: {:?}",
+            line, result
+        );
+    }
+
+    /// For a compound `c1 && c2` of two `positionals = "all"` commands, the
+    /// aggregate affected paths equal the first-seen-order de-duplicated union
+    /// of both commands' arguments. Oracle: the generated args combined by the
+    /// independently-defined `dedup_first_seen`. Also pins that each leaf
+    /// segment carries its own (raw) paths.
+    #[test]
+    fn compound_aggregate_is_union_of_segment_paths(
+        cmd1 in arb_all_positional_cmd(),
+        args1 in prop::collection::vec(arb_path_token(), 1..4),
+        cmd2 in arb_all_positional_cmd(),
+        args2 in prop::collection::vec(arb_path_token(), 1..4),
+    ) {
+        let kb = default_knowledge_base();
+        let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+        let line = format!("{cmd1} {} && {cmd2} {}", args1.join(" "), args2.join(" "));
+
+        let result = engine.evaluate_command(&line, kb);
+
+        let mut combined = args1.clone();
+        combined.extend(args2.clone());
+        let expected = dedup_first_seen(&combined);
+
+        let surfaced: Vec<String> = result
+            .affected_paths
+            .iter()
+            .map(|w| w.as_str().to_string())
+            .collect();
+
+        prop_assert_eq!(
+            surfaced.clone(), expected,
+            "compound aggregate must be the first-seen union of segment paths for `{}`: {:?}",
+            line, result
+        );
+
+        // Every surfaced aggregate path came from some leaf segment, and every
+        // leaf-segment path appears in the aggregate (set-level union).
+        let leaf_paths: std::collections::BTreeSet<String> = result
+            .segments
+            .iter()
+            .flat_map(|s| s.affected_paths.iter().map(|w| w.as_str().to_string()))
+            .collect();
+        let surfaced_set: std::collections::BTreeSet<String> =
+            surfaced.into_iter().collect();
+        prop_assert_eq!(
+            leaf_paths, surfaced_set,
+            "aggregate path set must equal the union of segment path sets: {:?}",
+            result
+        );
+    }
+}
