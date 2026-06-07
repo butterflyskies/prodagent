@@ -134,3 +134,88 @@ effect = "mutating"
         "map with any invalid pattern should fail"
     );
 }
+
+// ── EnvGate TOML serde ─────────────────────────────────────────────────────
+
+#[test]
+fn env_gate_toml_equals_round_trip() {
+    let gate = EnvGate {
+        var: "GIT_AUTHOR_NAME".into(),
+        condition: EnvCondition::Equals("AI Agent".into()),
+        decision: EnvGateAction::Allow,
+    };
+    let serialized = toml::to_string(&gate).expect("serialize");
+    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
+    assert_eq!(gate, deserialized);
+}
+
+#[test]
+fn env_gate_toml_not_equals_round_trip() {
+    let gate = EnvGate {
+        var: "NODE_ENV".into(),
+        condition: EnvCondition::NotEquals("production".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let serialized = toml::to_string(&gate).expect("serialize");
+    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
+    assert_eq!(gate, deserialized);
+}
+
+#[test]
+fn env_gate_toml_set_round_trip() {
+    let gate = EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    };
+    let serialized = toml::to_string(&gate).expect("serialize");
+    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
+    assert_eq!(gate, deserialized);
+}
+
+#[test]
+fn env_gate_toml_unset_round_trip() {
+    let gate = EnvGate {
+        var: "CI".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let serialized = toml::to_string(&gate).expect("serialize");
+    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
+    assert_eq!(gate, deserialized);
+}
+
+#[test]
+fn env_gate_toml_in_command_knowledge() {
+    let toml_str = r#"
+name = "git"
+effect = "unknown"
+
+[[env_gates]]
+var = "GIT_AUTHOR_NAME"
+condition = { equals = "AI Agent" }
+decision = "allow"
+
+[[env_gates]]
+var = "VIRTUAL_ENV"
+condition = "set"
+decision = "deny"
+"#;
+    let ck: CommandKnowledge = toml::from_str(toml_str).expect("parse");
+    assert_eq!(ck.env_gates.len(), 2);
+    assert_eq!(ck.env_gates[0].var, "GIT_AUTHOR_NAME");
+    assert_eq!(
+        ck.env_gates[0].condition,
+        EnvCondition::Equals("AI Agent".into())
+    );
+    assert_eq!(ck.env_gates[0].decision, EnvGateAction::Allow);
+    assert_eq!(ck.env_gates[1].var, "VIRTUAL_ENV");
+    assert_eq!(ck.env_gates[1].condition, EnvCondition::Set);
+    assert_eq!(ck.env_gates[1].decision, EnvGateAction::Deny);
+}
+
+#[test]
+fn env_gate_decision_ordering() {
+    assert!(EnvGateAction::Allow < EnvGateAction::Ask);
+    assert!(EnvGateAction::Ask < EnvGateAction::Deny);
+}

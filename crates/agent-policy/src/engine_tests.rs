@@ -421,3 +421,475 @@ fn default_config_is_fail_closed() {
         "ReadOnly effect should default to Allow"
     );
 }
+
+// ── EnvGate unit tests ───────────────────────────────────────────────────
+
+use crate::env_snapshot::{EnvSnapshot, EnvValueOwned};
+use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
+
+// ── apply_env_gates: condition × decision matrix ─────────────────────────
+
+#[test]
+fn env_gate_equals_matching_allows() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Allow,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "bar");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Allow)
+    );
+}
+
+#[test]
+fn env_gate_equals_nonmatching_has_no_effect() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "baz");
+    assert_eq!(super::apply_env_gates(&gates, &env), None);
+}
+
+#[test]
+fn env_gate_not_equals_matching() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "baz"); // baz != bar → matches
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny)
+    );
+}
+
+#[test]
+fn env_gate_not_equals_same_value_no_effect() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "bar"); // bar == bar → doesn't match
+    assert_eq!(super::apply_env_gates(&gates, &env), None);
+}
+
+#[test]
+fn env_gate_not_equals_unset_var_matches() {
+    // NotEquals with unset var: var not set != any value → matches
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Ask,
+    }];
+    let env = EnvSnapshot::clean();
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask)
+    );
+}
+
+#[test]
+fn env_gate_set_matching() {
+    let gates = vec![EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("VIRTUAL_ENV", "/venv");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Allow)
+    );
+}
+
+#[test]
+fn env_gate_set_not_set_no_effect() {
+    let gates = vec![EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    }];
+    let env = EnvSnapshot::clean();
+    assert_eq!(super::apply_env_gates(&gates, &env), None);
+}
+
+#[test]
+fn env_gate_unset_matching() {
+    let gates = vec![EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Deny,
+    }];
+    let env = EnvSnapshot::clean();
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny)
+    );
+}
+
+#[test]
+fn env_gate_unset_when_set_no_effect() {
+    let gates = vec![EnvGate {
+        var: "VIRTUAL_ENV".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("VIRTUAL_ENV", "/venv");
+    assert_eq!(super::apply_env_gates(&gates, &env), None);
+}
+
+#[test]
+fn env_gate_no_gates_returns_none() {
+    let env = EnvSnapshot::from_process_env();
+    assert_eq!(super::apply_env_gates(&[], &env), None);
+}
+
+// ── Multiple gates: strictest wins ───────────────────────────────────────
+
+#[test]
+fn env_gate_multiple_strictest_wins() {
+    let gates = vec![
+        EnvGate {
+            var: "A".into(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Allow,
+        },
+        EnvGate {
+            var: "B".into(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Ask,
+        },
+    ];
+    let mut env = EnvSnapshot::clean();
+    env.set("A", "1");
+    env.set("B", "2");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask),
+        "strictest (Ask) should win over Allow"
+    );
+}
+
+#[test]
+fn env_gate_deny_short_circuits() {
+    let gates = vec![
+        EnvGate {
+            var: "A".into(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Deny,
+        },
+        EnvGate {
+            var: "B".into(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Allow,
+        },
+    ];
+    let mut env = EnvSnapshot::clean();
+    env.set("A", "1");
+    env.set("B", "2");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny),
+        "Deny should short-circuit"
+    );
+}
+
+// ── Unknown env var handling (conservative) ──────────────────────────────
+
+#[test]
+fn env_gate_equals_unknown_no_effect() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Allow,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        None,
+        "Equals with unknown value should have no effect"
+    );
+}
+
+#[test]
+fn env_gate_not_equals_unknown_no_effect() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        None,
+        "NotEquals with unknown value should have no effect"
+    );
+}
+
+#[test]
+fn env_gate_set_unknown_no_match() {
+    // Unknown means we can't confirm the var is set — conservative fail-closed
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        None,
+        "Set with unknown value should not match (fail-closed)"
+    );
+}
+
+#[test]
+fn env_gate_unset_unknown_no_match() {
+    // Unknown means *something* was assigned — Unset should NOT match
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        None,
+        "Unset with unknown value should not match (conservative: assume set)"
+    );
+}
+
+// ── Condition × action matrix (exhaustive) ──────────────────────────────
+
+#[test]
+fn env_gate_equals_matching_asks() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Ask,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "bar");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask)
+    );
+}
+
+#[test]
+fn env_gate_equals_matching_denies() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "bar");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny)
+    );
+}
+
+#[test]
+fn env_gate_not_equals_allows() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Allow,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "baz"); // baz != bar → matches
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Allow)
+    );
+}
+
+#[test]
+fn env_gate_set_asks() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Ask,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "anything");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask)
+    );
+}
+
+#[test]
+fn env_gate_set_denies() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "anything");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny)
+    );
+}
+
+#[test]
+fn env_gate_unset_allows() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Allow,
+    }];
+    let env = EnvSnapshot::clean();
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Allow)
+    );
+}
+
+#[test]
+fn env_gate_unset_asks() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    }];
+    let env = EnvSnapshot::clean();
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask)
+    );
+}
+
+// ── evaluate_condition direct tests ──────────────────────────────────────
+
+#[test]
+fn evaluate_condition_equals_known_match() {
+    let val = Some(EnvValueOwned::Known("bar".to_string()));
+    assert!(super::evaluate_condition(
+        &EnvCondition::Equals("bar".to_string()),
+        val.as_ref()
+    ));
+}
+
+#[test]
+fn evaluate_condition_equals_known_mismatch() {
+    let val = Some(EnvValueOwned::Known("baz".to_string()));
+    assert!(!super::evaluate_condition(
+        &EnvCondition::Equals("bar".to_string()),
+        val.as_ref()
+    ));
+}
+
+#[test]
+fn evaluate_condition_equals_none() {
+    assert!(!super::evaluate_condition(
+        &EnvCondition::Equals("bar".to_string()),
+        None
+    ));
+}
+
+#[test]
+fn evaluate_condition_set_with_known() {
+    let val = Some(EnvValueOwned::Known("anything".to_string()));
+    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
+}
+
+#[test]
+fn evaluate_condition_set_with_unknown() {
+    // Unknown value: can't confirm the var is set — fail-closed → false
+    let val = Some(EnvValueOwned::Unknown);
+    assert!(!super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
+}
+
+#[test]
+fn evaluate_condition_set_with_none() {
+    assert!(!super::evaluate_condition(&EnvCondition::Set, None));
+}
+
+#[test]
+fn evaluate_condition_unset_with_none() {
+    assert!(super::evaluate_condition(&EnvCondition::Unset, None));
+}
+
+#[test]
+fn evaluate_condition_unset_with_known() {
+    let val = Some(EnvValueOwned::Known("anything".to_string()));
+    assert!(!super::evaluate_condition(
+        &EnvCondition::Unset,
+        val.as_ref()
+    ));
+}
+
+// ── Sentinel rework tests (round-2 review P1) ──────────────────────────
+
+#[test]
+fn set_condition_with_unknown_value_does_not_match() {
+    // Set gate on an unknown var → gate should NOT fire (fail-closed)
+    let val = Some(EnvValueOwned::Unknown);
+    assert!(
+        !super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
+        "Set with Unknown value should not match (conservative fail-closed)"
+    );
+}
+
+#[test]
+fn unset_condition_with_unknown_value_does_not_match() {
+    // Unset gate on an unknown var → gate should NOT fire (fail-closed)
+    let val = Some(EnvValueOwned::Unknown);
+    assert!(
+        !super::evaluate_condition(&EnvCondition::Unset, val.as_ref()),
+        "Unset with Unknown value should not match (conservative fail-closed)"
+    );
+}
+
+#[test]
+fn sudo_with_set_deny_gate_does_not_over_deny() {
+    // Bare sudo with a Set/Deny gate → the gate should NOT fire because the
+    // env is fully unknown (Set on unknown = false). The result should be Ask
+    // (from sudo escalation), not Deny.
+    let gate = EnvGate {
+        var: "PATH".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+
+    // Build a command knowledge entry with the gate
+    let cmd = agent_command_knowledge::CommandKnowledge {
+        name: "mycmd".to_string(),
+        effect: agent_command_knowledge::Effect::ReadOnly,
+        subcommands: Default::default(),
+        flags: Default::default(),
+        env_gates: vec![gate],
+        paths: Default::default(),
+        properties: Default::default(),
+    };
+    kb.commands.insert("mycmd".to_string(), cmd);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("sudo mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "sudo with Set/Deny gate should be Ask (gate suppressed by unknown env), not Deny: {result:?}"
+    );
+}

@@ -401,9 +401,220 @@ proptest! {
     }
 }
 
-// Out of scope for this PR: env_gates. `CommandInfo.env_gates` is populated by
-// `classify` and never read by `evaluate`, so `EnvGate::Require` does not deny
-// and `EnvGate::Grant` does not unlock. When that path is implemented, the
-// natural properties are: a Require gate with a non-matching env forces Deny;
-// a Grant gate with a matching env caps the decision at the unlocked effect's
-// default. Left unwritten deliberately rather than as an ignored stub.
+// ── env gate properties ─────────────────────────────────────────────────────
+
+use crate::env_snapshot::{EnvSnapshot, EnvValueOwned};
+use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
+
+fn arb_env_gate_decision() -> impl Strategy<Value = EnvGateAction> {
+    prop_oneof![
+        Just(EnvGateAction::Allow),
+        Just(EnvGateAction::Ask),
+        Just(EnvGateAction::Deny),
+    ]
+}
+
+fn arb_env_condition() -> impl Strategy<Value = EnvCondition> {
+    prop_oneof![
+        "[a-z]{1,6}".prop_map(EnvCondition::Equals),
+        "[a-z]{1,6}".prop_map(EnvCondition::NotEquals),
+        Just(EnvCondition::Set),
+        Just(EnvCondition::Unset),
+    ]
+}
+
+fn arb_env_gate() -> impl Strategy<Value = EnvGate> {
+    ("[A-Z]{1,4}", arb_env_condition(), arb_env_gate_decision()).prop_map(
+        |(var, condition, decision)| EnvGate {
+            var,
+            condition,
+            decision,
+        },
+    )
+}
+
+proptest! {
+    /// Strictest-wins monotonicity: adding a gate can only maintain or increase
+    /// strictness. Never relaxes below the strictest gate.
+    ///
+    /// Limitation: when two gates target the same variable with conflicting
+    /// conditions (e.g. Set and Unset on "FOO"), the env snapshot can only
+    /// satisfy one at a time. The property still holds because the env is built
+    /// from the last condition seen per variable, so one gate fires and the
+    /// other doesn't — but this means same-var conflicts don't exercise the
+    /// "both gates fire" path. A richer generator that avoids same-var
+    /// conflicts would strengthen coverage.
+    #[test]
+    fn env_gate_strictest_wins_monotonicity(
+        gates in prop::collection::vec(arb_env_gate(), 0..6),
+        extra_gate in arb_env_gate(),
+    ) {
+        // Build env from gate conditions so each gate actually fires.
+        // Equals conditions need the matching value; Set needs any value;
+        // Unset needs the var absent (skip it). NotEquals needs a different value.
+        let mut env = EnvSnapshot::clean();
+        for gate in gates.iter().chain(std::iter::once(&extra_gate)) {
+            match &gate.condition {
+                EnvCondition::Equals(v) => { env.set(&gate.var, v); }
+                EnvCondition::NotEquals(_) => { env.set(&gate.var, "__ne_trigger__"); }
+                EnvCondition::Set => { env.set(&gate.var, "present"); }
+                EnvCondition::Unset => { /* leave absent so it matches */ }
+            }
+        }
+
+        let result_without = super::apply_env_gates(&gates, &env);
+        let mut extended = gates.clone();
+        extended.push(extra_gate);
+        let result_with = super::apply_env_gates(&extended, &env);
+
+        match (result_without, result_with) {
+            (None, _) => {} // adding a gate from nothing is always fine
+            (Some(d1), Some(d2)) => {
+                prop_assert!(d2 >= d1,
+                    "adding a gate should not relax: {:?} -> {:?}", d1, d2);
+            }
+            (Some(_), None) => {
+                prop_assert!(false, "adding a gate should not remove a decision");
+            }
+        }
+    }
+
+    /// Empty gates = no effect: command with no env_gates produces None
+    /// regardless of env state.
+    #[test]
+    fn empty_gates_no_effect(
+        var in "[A-Z]{1,4}",
+        value in "[a-z]{1,6}",
+    ) {
+        let mut env = EnvSnapshot::clean();
+        env.set(&var, &value);
+        let result = super::apply_env_gates(&[], &env);
+        prop_assert!(result.is_none(), "empty gates should produce None");
+    }
+
+    /// Deny short-circuit: any gate evaluating to Deny produces Deny regardless
+    /// of other gates.
+    #[test]
+    fn deny_short_circuit(
+        gates in prop::collection::vec(arb_env_gate(), 0..5),
+        var in "[A-Z]{1,4}",
+        value in "[a-z]{1,6}",
+    ) {
+        // Use a unique var name for the deny gate to avoid collision with
+        // generated gates that might overwrite the value
+        let deny_var = format!("DENY_{var}");
+        let deny_gate = EnvGate {
+            var: deny_var.clone(),
+            condition: EnvCondition::Equals(value.clone()),
+            decision: EnvGateAction::Deny,
+        };
+
+        let mut env = EnvSnapshot::clean();
+        // Set all other gate vars
+        for gate in &gates {
+            env.set(&gate.var, "testvalue");
+        }
+        // Set the deny gate's var LAST to ensure it matches
+        env.set(&deny_var, &value);
+
+        let mut all_gates = gates;
+        all_gates.push(deny_gate);
+        let result = super::apply_env_gates(&all_gates, &env);
+        prop_assert_eq!(result, Some(PolicyDecision::Deny),
+            "a matching Deny gate should always produce Deny");
+    }
+
+    /// Gate order independence: permuting the gates list produces the same
+    /// final decision.
+    #[test]
+    fn gate_order_independence(
+        gates in prop::collection::vec(arb_env_gate(), 1..6),
+    ) {
+        // Build env from gate conditions so each condition type fires.
+        let mut env = EnvSnapshot::clean();
+        for gate in &gates {
+            match &gate.condition {
+                EnvCondition::Equals(v) => { env.set(&gate.var, v); }
+                EnvCondition::NotEquals(_) => { env.set(&gate.var, "__ne_trigger__"); }
+                EnvCondition::Set => { env.set(&gate.var, "present"); }
+                EnvCondition::Unset => { /* leave absent so it matches */ }
+            }
+        }
+
+        let result1 = super::apply_env_gates(&gates, &env);
+
+        let mut reversed = gates.clone();
+        reversed.reverse();
+        let result2 = super::apply_env_gates(&reversed, &env);
+
+        prop_assert_eq!(result1, result2,
+            "gate order should not affect the result");
+    }
+
+    /// Condition match symmetry: for Equals/NotEquals with a known value,
+    /// exactly one of (matches, doesn't match) is true.
+    #[test]
+    fn condition_match_symmetry(
+        _var in "[A-Z]{1,4}",
+        gate_value in "[a-z]{1,6}",
+        env_value in "[a-z]{1,6}",
+    ) {
+        let equals = EnvCondition::Equals(gate_value.clone());
+        let not_equals = EnvCondition::NotEquals(gate_value.clone());
+        let env_val = Some(EnvValueOwned::Known(env_value.clone()));
+
+        let eq_matches = super::evaluate_condition(&equals, env_val.as_ref());
+        let neq_matches = super::evaluate_condition(&not_equals, env_val.as_ref());
+
+        // Exactly one should match (they're complementary on known values)
+        prop_assert!(eq_matches != neq_matches,
+            "Equals and NotEquals should be complementary for known values: \
+             gate_value={}, env_value={}, eq={}, neq={}",
+            gate_value, env_value, eq_matches, neq_matches);
+    }
+
+    /// Set and Unset are complementary for known and absent values.
+    #[test]
+    fn set_unset_complementary(
+        has_value in any::<bool>(),
+        value in "[a-z]{1,6}",
+    ) {
+        let env_val = if has_value {
+            Some(EnvValueOwned::Known(value))
+        } else {
+            None
+        };
+
+        let set_matches = super::evaluate_condition(&EnvCondition::Set, env_val.as_ref());
+        let unset_matches = super::evaluate_condition(&EnvCondition::Unset, env_val.as_ref());
+
+        prop_assert!(set_matches != unset_matches,
+            "Set and Unset should be complementary: set={}, unset={}",
+            set_matches, unset_matches);
+    }
+
+    /// Snapshot layering: unsets > overrides > base. A var in unsets is always
+    /// None even if in overrides.
+    #[test]
+    fn snapshot_unset_wins_over_override(
+        var in "[A-Z]{1,4}",
+        value in "[a-z]{1,6}",
+    ) {
+        let mut snap = EnvSnapshot::from_process_env();
+        snap.set(&var, &value);
+        snap.unset(&var);
+        prop_assert!(snap.get_value(&var).is_none(),
+            "unset should win over override");
+    }
+
+    /// env -i isolation: clean-env base makes process env invisible.
+    #[test]
+    fn clean_env_isolation(
+        var in "[A-Z]{1,4}",
+    ) {
+        let snap = EnvSnapshot::clean();
+        // Unless the var is explicitly overridden, it should be None
+        prop_assert!(snap.get_value(&var).is_none(),
+            "clean env should not resolve vars");
+    }
+}
