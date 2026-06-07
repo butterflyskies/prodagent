@@ -1,9 +1,10 @@
 # Publish workspace crates to crates.io using Trusted Publishing (OIDC).
 # Called by the release workflow after the draft release is created.
 #
-# Publish order: agent-shell-parser (lib) first, then agent-command-knowledge
-# (lib, depends on parser), then agent-jj (binary). Each lib must be indexed
-# by crates.io before its dependents can resolve.
+# Publish order: prodagent-types (lib, no deps) first, then agent-shell-parser
+# (lib, depends on types), then agent-command-knowledge (lib, depends on
+# parser + types), then agent-jj (binary). Each lib must be indexed by
+# crates.io before its dependents can resolve.
 name: Publish Crate
 
 on:
@@ -33,6 +34,23 @@ jobs:
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
         id: auth
 
+      - name: Publish prodagent-types
+        run: cargo publish -p prodagent-types --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for prodagent-types on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for prodagent-types@${version} to appear on crates.io..."
+          for i in $(seq 1 15); do
+            if cargo search prodagent-types 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Publish agent-shell-parser
         run: cargo publish -p agent-shell-parser --no-verify
         env:
@@ -42,12 +60,12 @@ jobs:
         run: |
           version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Waiting for agent-shell-parser@${version} to appear on crates.io..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 15); do
             if cargo search agent-shell-parser 2>/dev/null | grep -q "\"${version}\""; then
               echo "Found after ${i} attempts"
               break
             fi
-            sleep 5
+            sleep 2
           done
 
       - name: Publish agent-command-knowledge
@@ -59,12 +77,12 @@ jobs:
         run: |
           version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Waiting for agent-command-knowledge@${version} to appear on crates.io..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 15); do
             if cargo search agent-command-knowledge 2>/dev/null | grep -q "\"${version}\""; then
               echo "Found after ${i} attempts"
               break
             fi
-            sleep 5
+            sleep 2
           done
 
       - name: Publish agent-jj

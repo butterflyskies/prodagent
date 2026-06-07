@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use agent_types::word::is_env_assignment;
+use prodagent_types::word::is_env_assignment;
 
 use super::tokenize::find_base_command;
 use super::types::{
@@ -8,7 +8,7 @@ use super::types::{
     WrapperSpec,
 };
 
-static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(agent_types::default_command_config);
+static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(prodagent_types::default_command_config);
 
 /// Return the embedded default command configuration.
 pub fn default_command_config() -> &'static CommandConfig {

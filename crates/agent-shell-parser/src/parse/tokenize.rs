@@ -76,7 +76,7 @@ pub fn tokenize(command: &str) -> Vec<Word> {
 }
 
 // Re-export from agent-types for use within the parser crate.
-pub(crate) use agent_types::word::{is_env_assignment, is_valid_env_key};
+pub(crate) use prodagent_types::word::{is_env_assignment, is_valid_env_key};
 
 /// Parse a command string into structured components with arguments in source order.
 ///

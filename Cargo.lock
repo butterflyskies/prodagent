@@ -7,7 +7,7 @@ name = "agent-command-knowledge"
 version = "0.8.0"
 dependencies = [
  "agent-shell-parser",
- "agent-types",
+ "prodagent-types",
  "proptest",
  "serde",
  "toml",
@@ -28,7 +28,7 @@ version = "0.8.0"
 dependencies = [
  "agent-command-knowledge",
  "agent-shell-parser",
- "agent-types",
+ "prodagent-types",
  "proptest",
  "serde",
  "toml",
@@ -38,7 +38,7 @@ dependencies = [
 name = "agent-shell-parser"
 version = "0.8.0"
 dependencies = [
- "agent-types",
+ "prodagent-types",
  "proptest",
  "serde",
  "serde_json",
@@ -46,15 +46,6 @@ dependencies = [
  "thiserror",
  "tree-sitter",
  "tree-sitter-bash",
-]
-
-[[package]]
-name = "agent-types"
-version = "0.8.0"
-dependencies = [
- "proptest",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -404,6 +395,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prodagent-types"
+version = "0.8.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::lookup::classify;
 use crate::types::{Effect, KnowledgeBase};
-use agent_types::Word;
+use prodagent_types::Word;
 
 fn words(args: &[&str]) -> Vec<Word> {
     args.iter().map(|s| Word::from(*s)).collect()

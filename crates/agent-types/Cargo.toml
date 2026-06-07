@@ -1,5 +1,5 @@
 [package]
-name = "agent-types"
+name = "prodagent-types"
 version.workspace = true
 description = "Shared types for agent crates — Word, WrapperSpec, SubcommandPattern, default wrapper configs"
 readme = "../../README.md"
@@ -7,7 +7,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 
 [dependencies]
 serde = { workspace = true }

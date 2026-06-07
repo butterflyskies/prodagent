@@ -1,4 +1,4 @@
-use agent_types::Word;
+use prodagent_types::Word;
 
 use crate::types::{
     CommandInfo, Effect, FlagSchema, KnowledgeBase, PathPositionals, PathSpec, SubcommandEntry,
