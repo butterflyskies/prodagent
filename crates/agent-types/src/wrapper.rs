@@ -110,7 +110,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
                 "--prompt".into(),
                 "--command-timeout".into(),
             ],
-            unanalyzable_flags: vec!["-i".into(), "-s".into()],
+            unanalyzable_flags: vec!["-i".into(), "--login".into(), "-s".into(), "--shell".into()],
             skip_env_assignments: false,
             has_terminator: true,
             skip_positionals: 0,

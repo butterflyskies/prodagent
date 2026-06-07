@@ -824,6 +824,8 @@ proptest! {
     fn trim_matters_for_preserved_from(
         entries in prop::collection::vec(arb_var_entry(), 1..8),
     ) {
+        let names: std::collections::HashSet<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        prop_assume!(names.len() == entries.len());
         // Pick the first entry that has a Known value — we need something to preserve.
         let source = snapshot_from_entries(&entries);
         let known_entry = entries.iter().find(|e| matches!(&e.state, VarState::Known(_)));

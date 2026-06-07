@@ -492,6 +492,16 @@ fn sudo_s_is_unanalyzable() {
     assert!(resolved_command_name("sudo -s git commit").starts_with("UNANALYZABLE"));
 }
 
+#[test]
+fn sudo_login_long_is_unanalyzable() {
+    assert!(resolved_command_name("sudo --login git commit").starts_with("UNANALYZABLE"));
+}
+
+#[test]
+fn sudo_shell_long_is_unanalyzable() {
+    assert!(resolved_command_name("sudo --shell git commit").starts_with("UNANALYZABLE"));
+}
+
 // --- terminator scopes unanalyzable-flag check ---
 
 #[test]
