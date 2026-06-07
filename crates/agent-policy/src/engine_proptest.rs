@@ -1198,16 +1198,21 @@ fn arb_meta_gate_action() -> impl Strategy<Value = EnvGateAction> {
 
 proptest! {
     /// Metamorphic property: for any env gate on variable X with value V,
-    /// these three command forms must produce the same policy decision:
+    /// these four command forms must produce the same policy decision:
     ///
     /// 1. `X=V cmd`             (inline assignment)
     /// 2. `env X=V cmd`         (env wrapper)
     /// 3. `export X=V && cmd`   (export + sequenced)
+    /// 4. `nice X=V cmd`        (transparent wrapper from KB)
     ///
     /// The generator produces (var_name, value, gate_type, action) and
-    /// renders all three forms. The assertion is that all three decisions
+    /// renders all four forms. The assertion is that all four decisions
     /// agree — any difference means env propagation or env-wrapper handling
     /// is inconsistent.
+    ///
+    /// Form 4 samples from known transparent wrappers in the KB (currently
+    /// `nice`) to verify that non-`env` wrappers with `Inherit` env policy
+    /// also pass assignments through correctly.
     #[test]
     fn env_assignment_forms_are_equivalent(
         var_name in "[A-Z]{2,6}",
@@ -1259,15 +1264,24 @@ proptest! {
         let form3 = format!("export {var_name}={value} && {cmd_name}");
         let result3 = engine.evaluate_command(&form3, &kb);
 
-        // All three must agree on the gate's effect. For forms 2 and 3, the
+        // Form 4: inline assignment before a transparent KB wrapper (nice).
+        // Shell semantics: `FOO=bar nice cmd` scopes the assignment to the
+        // entire command; nice inherits and passes it to the inner command.
+        let form4 = format!("{var_name}={value} nice {cmd_name}");
+        let result4 = engine.evaluate_command(&form4, &kb);
+
+        // All four must agree on the gate's effect. For forms 2-4, the
         // overall decision may be *higher* than form 1 due to wrapper floors
         // or compound-command overhead, but the gate must fire identically.
         // Since the test command is ReadOnly (Allow base) and the gate action
         // is Ask or Deny (always ≥ Allow), the gate decision IS the overall
         // decision for form 1 and form 3. For form 2, env is a transparent
         // wrapper with no escalation, so the gate also determines the result.
+        // For form 4, nice has ReadOnly floor, no privilege escalation, and
+        // Inherit env policy — the inline assignment is visible to the inner
+        // command, so the gate determines the result.
         //
-        // Specifically: all three should produce the gate's action as the
+        // Specifically: all four should produce the gate's action as the
         // decision (since ReadOnly base = Allow and gate action ≥ Allow).
         let expected = super::gate_action_to_decision(action);
 
@@ -1285,6 +1299,11 @@ proptest! {
             result3.decision, expected,
             "form 3 ({}): expected {:?}, got {:?}: {:?}",
             form3, expected, result3.decision, result3
+        );
+        prop_assert_eq!(
+            result4.decision, expected,
+            "form 4 ({}): expected {:?}, got {:?}: {:?}",
+            form4, expected, result4.decision, result4
         );
     }
 }

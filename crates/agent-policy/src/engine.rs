@@ -884,6 +884,7 @@ fn base_command_from_words(words: &[Word]) -> String {
 ///   inner command to evaluate.
 fn build_env_with_substitution_results(
     words: &[Word],
+    // Decisions for the current segment's substitutions only, in evaluation order.
     sub_decisions: &[PolicyDecision],
     base_env: &EnvSnapshot,
 ) -> EnvSnapshot {
@@ -965,7 +966,10 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
             Some((key, AssignmentValue::Static(val))) => env.set(key, val),
             Some((key, AssignmentValue::CommandSubstitution))
             | Some((key, AssignmentValue::VariableExpansion)) => env.set_unknown(key),
-            None => {} // not an assignment, skip
+            None => debug_assert!(
+                false,
+                "word passed is_assignment but not as_classified_assignment"
+            ),
         }
     }
 }

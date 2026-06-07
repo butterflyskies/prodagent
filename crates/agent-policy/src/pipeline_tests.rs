@@ -1382,6 +1382,62 @@ fn readonly_propagates_across_and_and() {
 }
 
 #[test]
+fn local_propagates_across_and_and() {
+    // local FOO=bar && cmd
+    // local is a declaration keyword; its assignment should propagate via &&.
+    let gate = EnvGate {
+        var: "TESTPROP_LOCAL".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("local TESTPROP_LOCAL=bar && echo hello", &kb);
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Deny,
+        "local should propagate env across &&: {result:?}"
+    );
+}
+
+#[test]
+fn typeset_propagates_across_and_and() {
+    // typeset FOO=bar && cmd
+    // typeset is a declaration keyword; its assignment should propagate via &&.
+    let gate = EnvGate {
+        var: "TESTPROP_TYPESET".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("typeset TESTPROP_TYPESET=bar && echo hello", &kb);
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Deny,
+        "typeset should propagate env across &&: {result:?}"
+    );
+}
+
+#[test]
 fn multiple_exports_accumulate() {
     // export A=1 && export B=2 && cmd
     // Both exports should propagate, so gates on both A and B should fire.
@@ -1418,6 +1474,34 @@ fn multiple_exports_accumulate() {
 }
 
 #[test]
+fn first_export_propagates_independently() {
+    // Companion to `multiple_exports_accumulate`: verify that the Ask-level
+    // gate (TESTPROP_MULTI_A) fires independently when it's the only gate.
+    let gate_a = EnvGate {
+        var: "TESTPROP_MULTI_A".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_a];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTPROP_MULTI_A=1 && echo hello", &kb);
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Ask,
+        "single export should propagate and Ask gate should fire: {result:?}"
+    );
+}
+
+#[test]
 fn allowed_substitution_with_prefix_fires_set_gate() {
     // FOO=prefix-$(git status) mycmd
     // The command substitution $(git status) is read-only (allowed).
@@ -1437,9 +1521,14 @@ fn allowed_substitution_with_prefix_fires_set_gate() {
     // The compound command includes the substitution $(git status) which is
     // allowed (read-only). Since all subs are allowed, the assignment should
     // be set (not unknown), and the Set gate should fire.
+    let mycmd_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("mycmd"))
+        .expect("should have a mycmd segment");
     assert_eq!(
-        result.decision,
+        mycmd_segment.decision,
         PolicyDecision::Deny,
-        "allowed substitution in assignment should fire Set gate: {result:?}"
+        "mycmd segment should be Deny (Set gate fired via allowed substitution): {result:?}"
     );
 }
