@@ -613,18 +613,36 @@ fn resolve_env_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
 /// we can't observe from userspace. The conservative approach:
 /// - No flag → mark all env as unknown
 /// - `-E` / `--preserve-env` (without `=`) → env passes through
-/// - `--preserve-env=VAR,VAR` → treated as unknown (same as no flag); partial
-///   preservation is too fine-grained to model safely without sudoers knowledge
+/// - `--preserve-env=VAR,VAR` → parse the comma-separated list; preserve
+///   listed vars from outer env, mark everything else unknown
 fn resolve_sudo_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
     let has_full_preserve = words.iter().any(|w| w == "-E" || w == "--preserve-env");
 
     if has_full_preserve {
-        outer_env.clone()
-    } else {
-        let mut env = outer_env.clone();
-        env.mark_all_unknown();
-        env
+        return outer_env.clone();
     }
+
+    // Check for selective --preserve-env=VAR,VAR
+    let selective_vars: Vec<&str> = words
+        .iter()
+        .filter_map(|w| w.as_str().strip_prefix("--preserve-env="))
+        .flat_map(|val| val.split(','))
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    let mut env = outer_env.clone();
+    env.mark_all_unknown();
+
+    if !selective_vars.is_empty() {
+        for var in &selective_vars {
+            if let Some(EnvValueOwned::Known(val)) = outer_env.get_value(var) {
+                env.set(*var, val);
+            }
+            // If outer is Unknown or None, leave as unknown (mark_all_unknown already did that)
+        }
+    }
+
+    env
 }
 
 /// Evaluate env gates against an environment snapshot.
