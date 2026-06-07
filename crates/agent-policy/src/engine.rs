@@ -623,26 +623,19 @@ fn resolve_sudo_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot 
     }
 
     // Check for selective --preserve-env=VAR,VAR
+    // Trim each token so that `--preserve-env=FOO, BAR` (with spaces) is treated
+    // the same as `--preserve-env=FOO,BAR`.
     let selective_vars: Vec<&str> = words
         .iter()
         .filter_map(|w| w.as_str().strip_prefix("--preserve-env="))
         .flat_map(|val| val.split(','))
+        .map(|v| v.trim())
         .filter(|v| !v.is_empty())
         .collect();
 
-    let mut env = outer_env.clone();
-    env.mark_all_unknown();
-
-    if !selective_vars.is_empty() {
-        for var in &selective_vars {
-            if let Some(EnvValueOwned::Known(val)) = outer_env.get_value(var) {
-                env.set(*var, val);
-            }
-            // If outer is Unknown or None, leave as unknown (mark_all_unknown already did that)
-        }
-    }
-
-    env
+    // Use EnvSnapshot::preserved_from: starts fully unknown, then restores
+    // only the listed vars that have known values in the outer env.
+    EnvSnapshot::preserved_from(outer_env, &selective_vars)
 }
 
 /// Evaluate env gates against an environment snapshot.

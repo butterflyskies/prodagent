@@ -238,3 +238,72 @@ fn set_after_mark_all_unknown_is_visible() {
         "unset vars should still be Unknown in fully-unknown env"
     );
 }
+
+// ── EnvSnapshot::preserved_from ──────────────────────────────────────────
+
+#[test]
+fn preserved_from_copies_known_vars() {
+    let mut source = EnvSnapshot::clean();
+    source.set("FOO", "foo-val");
+    source.set("BAR", "bar-val");
+    source.set("OTHER", "should-not-appear");
+
+    let result = EnvSnapshot::preserved_from(&source, &["FOO", "BAR"]);
+
+    assert_eq!(
+        result.get_value("FOO"),
+        Some(EnvValueOwned::Known("foo-val".to_string())),
+        "FOO listed in vars should be Known"
+    );
+    assert_eq!(
+        result.get_value("BAR"),
+        Some(EnvValueOwned::Known("bar-val".to_string())),
+        "BAR listed in vars should be Known"
+    );
+    assert_eq!(
+        result.get_value("OTHER"),
+        Some(EnvValueOwned::Unknown),
+        "OTHER not in vars list should be Unknown"
+    );
+}
+
+#[test]
+fn preserved_from_unknown_source_stays_unknown() {
+    let mut source = EnvSnapshot::clean();
+    source.set_unknown("FOO"); // FOO has unknown value in source
+
+    let result = EnvSnapshot::preserved_from(&source, &["FOO"]);
+
+    assert_eq!(
+        result.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "Unknown value in source cannot be preserved → stays Unknown"
+    );
+}
+
+#[test]
+fn preserved_from_absent_var_stays_unknown() {
+    let source = EnvSnapshot::clean(); // FOO not set at all
+
+    let result = EnvSnapshot::preserved_from(&source, &["FOO"]);
+
+    assert_eq!(
+        result.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "Absent var in source cannot be preserved → stays Unknown"
+    );
+}
+
+#[test]
+fn preserved_from_empty_vars_all_unknown() {
+    let mut source = EnvSnapshot::clean();
+    source.set("FOO", "val");
+
+    let result = EnvSnapshot::preserved_from(&source, &[]);
+
+    assert_eq!(
+        result.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "Empty vars list → everything Unknown"
+    );
+}

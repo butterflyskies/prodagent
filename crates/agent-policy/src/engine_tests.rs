@@ -975,17 +975,18 @@ fn sudo_selective_preserve_var_not_set_stays_unknown() {
 
 #[test]
 fn sudo_selective_preserve_gate_fires_on_preserved_var() {
-    // FOO=hello sudo --preserve-env=FOO mycmd
-    // Gate on FOO should fire because FOO is preserved.
-    // We already tested this above with Deny; here use Allow action and
-    // verify it doesn't suppress the sudo escalation (Allow.max(Ask) = Ask).
-    let kb = kb_with_set_gate("FOO", EnvGateAction::Deny);
+    // FOO=hello sudo --preserve-env=FOO mycmd with an Allow gate.
+    // FOO is preserved, so the gate fires (Allow), but sudo escalation produces
+    // Ask. Allow.max(Ask) = Ask — the sudo escalation dominates.
+    // This proves the Allow gate fires (rather than being suppressed) and that
+    // Allow cannot lower a higher decision already in place.
+    let kb = kb_with_set_gate("FOO", EnvGateAction::Allow);
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Deny,
-        "preserved FOO → gate fires → Deny: {result:?}"
+        PolicyDecision::Ask,
+        "preserved FOO → Allow gate fires → Ask (sudo escalation dominates Allow): {result:?}"
     );
 }
 
@@ -1112,5 +1113,66 @@ fn resolve_sudo_wrapper_no_flag_all_unknown() {
         inner.get_value("FOO"),
         Some(EnvValueOwned::Unknown),
         "bare sudo → all unknown"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_whitespace_trimmed() {
+    // --preserve-env=FOO, BAR (space after comma) — each token is trimmed so
+    // both FOO and BAR should be preserved as Known.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO, BAR"), // space after comma
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "foo-val");
+    outer.set("BAR", "bar-val");
+    outer.set("OTHER", "hidden");
+
+    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("foo-val".to_string())),
+        "FOO should be preserved despite whitespace in token list"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Known("bar-val".to_string())),
+        "BAR should be preserved after trimming leading space"
+    );
+    assert_eq!(
+        inner.get_value("OTHER"),
+        Some(EnvValueOwned::Unknown),
+        "OTHER not in list → Unknown"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_empty_list_all_unknown() {
+    // sudo --preserve-env= (equals sign, no vars after it) is a valid flag form
+    // that requests preserving an *empty* set of variables. The behavior is the
+    // same as bare sudo: mark everything unknown, preserve nothing.
+    // This guards against accidentally treating the empty-string token as a
+    // variable name to look up.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env="), // empty list
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "bar");
+    outer.set("BAR", "baz");
+
+    let inner = super::resolve_sudo_wrapper(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "--preserve-env= with empty list → FOO should be Unknown"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Unknown),
+        "--preserve-env= with empty list → BAR should be Unknown"
     );
 }
