@@ -679,7 +679,7 @@ proptest! {
     /// satisfies a value-specific gate in a basic snapshot. Equals, NotEquals,
     /// and Set must not fire on Unknown values (fail-closed).
     #[test]
-    fn substitution_derived_value_never_satisfies_value_gate(
+    fn substitution_derived_value_without_policy_context_resolves_unknown(
         var in "[A-Z]{1,4}",
         dynamic in arb_dynamic_value(),
         other_expected in "[a-z]{1,6}",

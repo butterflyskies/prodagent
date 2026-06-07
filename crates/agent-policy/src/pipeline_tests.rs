@@ -1148,9 +1148,16 @@ fn export_propagates_across_and_and() {
     let kb = real_kb_with_git_gate(vec![gate]);
     let engine = default_engine();
     let result = engine.evaluate_command("export GIT_AUTHOR_NAME=AI-Agent && git push", &kb);
-    assert!(
-        result.decision >= PolicyDecision::Deny,
-        "export across && should propagate env to the next segment: {result:?}"
+    // Check the git push segment specifically for the gate firing
+    let git_push_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("git push"))
+        .expect("should have a git push segment");
+    assert_eq!(
+        git_push_segment.decision,
+        PolicyDecision::Deny,
+        "git push segment should be Deny (gate fired via env propagation): {result:?}"
     );
 }
 
@@ -1257,5 +1264,182 @@ fn export_propagates_across_semicolon() {
         result.decision,
         PolicyDecision::Deny,
         "export should propagate across semicolon: {result:?}"
+    );
+}
+
+#[test]
+fn export_does_not_propagate_across_or_or() {
+    // export FOO=bar || cmd
+    // || is conditional; env mutations do NOT propagate.
+    let gate = EnvGate {
+        var: "TESTPROP_OROR".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("cat", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("cat".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTPROP_OROR=bar || cat", &kb);
+    // cat's gate should NOT fire because || does not propagate env.
+    let cat_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("cat"))
+        .expect("should have a cat segment");
+    assert_eq!(
+        cat_segment.decision,
+        PolicyDecision::Allow,
+        "cat's gate should NOT fire across || (env not propagated): {result:?}"
+    );
+}
+
+#[test]
+fn export_does_not_propagate_across_background() {
+    // export FOO=bar & cmd
+    // & backgrounds the left side; env mutations do NOT propagate.
+    let gate = EnvGate {
+        var: "TESTPROP_BG".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("cat", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("cat".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTPROP_BG=bar & cat", &kb);
+    // cat's gate should NOT fire because & does not propagate env.
+    let cat_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("cat"))
+        .expect("should have a cat segment");
+    assert_eq!(
+        cat_segment.decision,
+        PolicyDecision::Allow,
+        "cat's gate should NOT fire across & (env not propagated): {result:?}"
+    );
+}
+
+#[test]
+fn declare_propagates_across_and_and() {
+    // declare FOO=bar && cmd
+    // declare is a declaration keyword; its assignment should propagate via &&.
+    let gate = EnvGate {
+        var: "TESTPROP_DECLARE".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("declare TESTPROP_DECLARE=bar && echo hello", &kb);
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Deny,
+        "declare should propagate env across &&: {result:?}"
+    );
+}
+
+#[test]
+fn readonly_propagates_across_and_and() {
+    // readonly FOO=bar && cmd
+    // readonly is a declaration keyword; its assignment should propagate via &&.
+    let gate = EnvGate {
+        var: "TESTPROP_READONLY".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("readonly TESTPROP_READONLY=bar && echo hello", &kb);
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Deny,
+        "readonly should propagate env across &&: {result:?}"
+    );
+}
+
+#[test]
+fn multiple_exports_accumulate() {
+    // export A=1 && export B=2 && cmd
+    // Both exports should propagate, so gates on both A and B should fire.
+    let gate_a = EnvGate {
+        var: "TESTPROP_MULTI_A".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Ask,
+    };
+    let gate_b = EnvGate {
+        var: "TESTPROP_MULTI_B".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_a, gate_b];
+    kb.commands.insert("echo".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command(
+        "export TESTPROP_MULTI_A=1 && export TESTPROP_MULTI_B=2 && echo hello",
+        &kb,
+    );
+    let echo_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("echo"))
+        .expect("should have an echo segment");
+    assert_eq!(
+        echo_segment.decision,
+        PolicyDecision::Deny,
+        "both exports should accumulate and both gates should fire: {result:?}"
+    );
+}
+
+#[test]
+fn allowed_substitution_with_prefix_fires_set_gate() {
+    // FOO=prefix-$(git status) mycmd
+    // The command substitution $(git status) is read-only (allowed).
+    // With all subs allowed, the Set gate on FOO should fire.
+    let gate = EnvGate {
+        var: "TESTPROP_SUBST".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("TESTPROP_SUBST=prefix-$(git status) mycmd", &kb);
+    // The compound command includes the substitution $(git status) which is
+    // allowed (read-only). Since all subs are allowed, the assignment should
+    // be set (not unknown), and the Set gate should fire.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "allowed substitution in assignment should fire Set gate: {result:?}"
     );
 }

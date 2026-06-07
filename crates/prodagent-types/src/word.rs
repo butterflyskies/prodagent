@@ -205,9 +205,31 @@ impl<'a> AssignmentValue<'a> {
     ///
     /// Everything else is `Static`.
     pub fn classify(value: &'a str) -> Self {
-        if value.contains("$(") || value.contains('`') {
-            AssignmentValue::CommandSubstitution
-        } else if value.contains('$') {
+        // Backtick-quoted commands are always command substitutions
+        if value.contains('`') {
+            return AssignmentValue::CommandSubstitution;
+        }
+        // Check if there's a $( that isn't $(( (arithmetic expansion).
+        // A value like FOO=$(cmd)-$((1+2)) has both — command substitution wins.
+        if value.contains("$(") {
+            let bytes = value.as_bytes();
+            let mut i = 0;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'$' && bytes[i + 1] == b'(' {
+                    if i + 2 >= bytes.len() || bytes[i + 2] != b'(' {
+                        // Found a bare $( — this is a command substitution
+                        return AssignmentValue::CommandSubstitution;
+                    }
+                    i += 3; // skip $((
+                } else {
+                    i += 1;
+                }
+            }
+            // All $( were $(( — arithmetic only, treat as variable expansion
+            // (conservative: value is unknowable but no command to evaluate)
+            return AssignmentValue::VariableExpansion;
+        }
+        if value.contains('$') {
             AssignmentValue::VariableExpansion
         } else {
             AssignmentValue::Static(value)
@@ -232,13 +254,6 @@ impl<'a> AssignmentValue<'a> {
     pub fn is_command_substitution(self) -> bool {
         matches!(self, AssignmentValue::CommandSubstitution)
     }
-}
-
-/// Returns `true` if a raw assignment value contains shell expansion or
-/// substitution syntax (`$` or a backtick), making its runtime value
-/// statically unknowable.
-pub fn value_is_dynamic(value: &str) -> bool {
-    value.contains('$') || value.contains('`')
 }
 
 // --- Env assignment helpers (used by Word and by the parser's tokenizer) ---
@@ -367,6 +382,30 @@ mod tests {
         // because the inner command can be evaluated through policy.
         assert_eq!(
             AssignmentValue::classify("$VAR-$(cmd)"),
+            AssignmentValue::CommandSubstitution
+        );
+    }
+
+    #[test]
+    fn arithmetic_expansion_classified_as_variable_expansion() {
+        // $((1+2)) is arithmetic expansion, not command substitution.
+        // No inner command to evaluate — treat as VariableExpansion.
+        assert_eq!(
+            AssignmentValue::classify("$((1+2))"),
+            AssignmentValue::VariableExpansion
+        );
+        assert_eq!(
+            AssignmentValue::classify("prefix-$((x+1))"),
+            AssignmentValue::VariableExpansion
+        );
+    }
+
+    #[test]
+    fn mixed_command_sub_and_arithmetic() {
+        // $(cmd)-$((1+2)) has both — command substitution wins because
+        // the inner command can be evaluated through policy.
+        assert_eq!(
+            AssignmentValue::classify("$(cmd)-$((1+2))"),
             AssignmentValue::CommandSubstitution
         );
     }

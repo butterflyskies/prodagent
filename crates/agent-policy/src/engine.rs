@@ -3,7 +3,7 @@ use agent_command_knowledge::{
 };
 use agent_shell_parser::parse::{
     self, AssignmentValue, CommandConfig, Operator, ParsedPipeline, Redirection, ResolvedCommand,
-    ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, Word, WrapperEnvPolicy, WrapperSpec,
+    ResolvedEnvPolicy, ShellSegment, Word, WrapperEnvPolicy, WrapperSpec,
 };
 
 use crate::config::{CommandPolicy, PolicyConfig};
@@ -396,13 +396,7 @@ impl PolicyEngine {
         // policy result: if the inner command was allowed, set the var
         // with the raw substitution text (opaque but present) rather than
         // marking it unknown.
-        let env = build_env_with_substitution_results(
-            words,
-            &segment.command,
-            &segment.substitutions,
-            sub_decisions,
-            base_env,
-        );
+        let env = build_env_with_substitution_results(words, sub_decisions, base_env);
 
         // Wrapper handling — use pre-built merged config
         if info.wrapper.is_some() {
@@ -879,56 +873,33 @@ fn base_command_from_words(words: &[Word]) -> String {
 ///
 /// For each leading assignment word:
 /// - **Static** (`FOO=bar`): set the variable to the literal value.
-/// - **CommandSubstitution** (`FOO=$(cmd)`): if any substitution whose byte
-///   span falls within this assignment's position in the command text was
-///   allowed by recursive policy evaluation, set the variable with the raw
-///   substitution text (opaque but present — `Set` gates fire, `Equals` gates
-///   won't match). If the inner command was not allowed (Ask/Deny), or no
-///   matching substitution span is found, mark the variable unknown.
+/// - **CommandSubstitution** (`FOO=$(cmd)`): if ALL substitution decisions in
+///   this segment were allowed, set the variable with the raw substitution text
+///   (opaque but present — `Set` gates fire, `Equals` gates won't match).
+///   If any decision was not Allow, or there are no substitutions, mark unknown.
+///   This is slightly conservative (a denied substitution in an argument
+///   position causes assignment-position substitutions to also be marked
+///   unknown) but is correct (never fail-open) without needing byte offsets.
 /// - **VariableExpansion** (`FOO=$VAR`): always mark unknown — there is no
 ///   inner command to evaluate.
 fn build_env_with_substitution_results(
     words: &[Word],
-    command_text: &str,
-    substitutions: &[SubstitutionSpan],
     sub_decisions: &[PolicyDecision],
     base_env: &EnvSnapshot,
 ) -> EnvSnapshot {
-    let mut env = base_env.clone();
+    let all_subs_allowed = sub_decisions.iter().all(|d| *d == PolicyDecision::Allow);
+    let has_subs = !sub_decisions.is_empty();
 
+    let mut env = base_env.clone();
     for word in words {
         match word.as_classified_assignment() {
             Some((key, AssignmentValue::Static(value))) => {
                 env.set(key, value);
             }
             Some((key, AssignmentValue::CommandSubstitution)) => {
-                // Check if the inner command substitution was allowed.
-                // Find this word's byte range in the command text, then check
-                // if any substitution span falls within it and was allowed.
-                let word_str = word.as_str();
-                if let Some(word_start) = command_text.find(word_str) {
-                    let word_end = word_start + word_str.len();
-                    let all_allowed = substitutions
-                        .iter()
-                        .zip(sub_decisions.iter())
-                        .filter(|(sub, _)| sub.start >= word_start && sub.end <= word_end)
-                        .map(|(_, decision)| *decision)
-                        .all(|d| d == PolicyDecision::Allow);
-
-                    // Only set if we actually found matching substitutions
-                    // and they were all allowed.
-                    let has_matching_subs = substitutions
-                        .iter()
-                        .any(|sub| sub.start >= word_start && sub.end <= word_end);
-
-                    if has_matching_subs && all_allowed {
-                        // Set with the raw value text — `Set` gates fire,
-                        // `Equals` gates won't match the substitution text.
-                        let (_, raw_value) = word.as_assignment().unwrap();
-                        env.set(key, raw_value);
-                    } else {
-                        env.set_unknown(key);
-                    }
+                if has_subs && all_subs_allowed {
+                    let (_, raw_value) = word.as_assignment().unwrap();
+                    env.set(key, raw_value);
                 } else {
                     env.set_unknown(key);
                 }
@@ -965,11 +936,13 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
     // Two forms:
     //   1. `["FOO=bar"]` or `["FOO=bar", "BAR=baz"]` — all words are assignments
     //   2. `["export", "FOO=bar", ...]` — export keyword followed by assignments
-    let (start_idx, is_export) = if words.first().map(|w| w.as_str()) == Some("export") {
-        (1, true)
-    } else {
-        (0, false)
-    };
+    let is_declaration = words.first().map_or(false, |w| {
+        matches!(
+            w.as_str(),
+            "export" | "declare" | "readonly" | "local" | "typeset"
+        )
+    });
+    let start_idx = if is_declaration { 1 } else { 0 };
 
     // Check that all remaining words are assignments (no command after them).
     let all_assignments = words[start_idx..].iter().all(|w| w.is_assignment());
@@ -987,28 +960,12 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
         return;
     }
 
-    // If is_export or bare assignment with no command, both persist.
-    // (In shell semantics, `FOO=bar` on its own is equivalent to `export FOO=bar`
-    // for subsequent commands in the same shell — both persist.)
-    let _ = is_export; // both paths handled identically
-
     for word in &words[start_idx..] {
-        if let Some((key, value)) = word.as_assignment() {
-            // Use as_classified_assignment for proper static/dynamic handling
-            match word.as_classified_assignment() {
-                Some((key, AssignmentValue::Static(val))) => {
-                    env.set(key, val);
-                }
-                Some((key, AssignmentValue::CommandSubstitution))
-                | Some((key, AssignmentValue::VariableExpansion)) => {
-                    env.set_unknown(key);
-                }
-                None => {
-                    // Fallback: raw assignment parse succeeded but classification
-                    // didn't — set the raw value.
-                    env.set(key, value);
-                }
-            }
+        match word.as_classified_assignment() {
+            Some((key, AssignmentValue::Static(val))) => env.set(key, val),
+            Some((key, AssignmentValue::CommandSubstitution))
+            | Some((key, AssignmentValue::VariableExpansion)) => env.set_unknown(key),
+            None => {} // not an assignment, skip
         }
     }
 }
