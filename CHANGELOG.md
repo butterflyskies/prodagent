@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-07
+
+### Changed
+
+- Renamed `agent-types` crate to `prodagent-types` for crates.io publishing
+- Added `prodagent-types` to publish workflow
+- Reduced crates.io indexing wait times in publish workflow
+
 ## [0.8.0] - 2026-06-06
 
 ### Added

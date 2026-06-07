@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use agent_types::Word;
+use prodagent_types::Word;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-// Re-export from agent-types — single source of truth.
-pub use agent_types::MAX_SUBCOMMAND_DEPTH;
+// Re-export from prodagent-types — single source of truth.
+pub use prodagent_types::MAX_SUBCOMMAND_DEPTH;
 
 /// The effect level of a command or subcommand.
 ///

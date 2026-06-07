@@ -1,4 +1,4 @@
-use agent_types::Word;
+use prodagent_types::Word;
 use proptest::prelude::*;
 
 use crate::lookup::classify;

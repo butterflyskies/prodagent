@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-agent-types = { workspace = true }
+prodagent-types = { workspace = true }
 agent-command-knowledge = { workspace = true }
 agent-shell-parser = { workspace = true }
 serde = { workspace = true }
