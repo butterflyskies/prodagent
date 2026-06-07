@@ -2,7 +2,7 @@ use agent_command_knowledge::{
     classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, KnowledgeBase,
 };
 use agent_shell_parser::parse::{
-    self, AssignmentValue, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand,
+    self, AssignmentValue, CommandConfig, Operator, ParsedPipeline, Redirection, ResolvedCommand,
     ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, Word, WrapperEnvPolicy, WrapperSpec,
 };
 
@@ -93,10 +93,12 @@ impl PolicyEngine {
         let merged_config = parse::merged_config(&kb_wrapper_specs);
 
         // Single segment, no compound structure → evaluate directly
+        let initial_env = EnvSnapshot::from_process_env();
         if pipeline.segments.len() <= 1 && !has_substitutions && !has_parse_errors {
             return match pipeline.segments.first() {
                 Some(segment) => {
-                    let result = self.evaluate_segment(segment, kb, &merged_config, &[]);
+                    let result =
+                        self.evaluate_segment(segment, kb, &merged_config, &[], &initial_env);
                     let seg = SegmentResult {
                         label: segment.command.trim().to_string(),
                         decision: result.decision,
@@ -116,7 +118,8 @@ impl PolicyEngine {
 
         // Compound or error case: evaluate full pipeline, strictest wins
         let mut segments = Vec::new();
-        let mut strictest = self.evaluate_pipeline(&pipeline, kb, &merged_config, &mut segments);
+        let mut strictest =
+            self.evaluate_pipeline(&pipeline, kb, &merged_config, &mut segments, &initial_env);
         if has_parse_errors {
             strictest = strictest.max(PolicyDecision::Ask);
         }
@@ -256,17 +259,31 @@ impl PolicyEngine {
     }
 
     /// Recursively evaluate a pipeline tree, collecting per-segment results.
+    ///
+    /// `env` is the accumulated environment snapshot. For the top-level call
+    /// this is seeded from the process environment; for recursive substitution
+    /// calls it carries the enclosing segment's env so inner commands see the
+    /// right variables.
+    ///
+    /// Env propagation across segments follows shell semantics:
+    /// - `&&` / `;` — standalone assignments (`export FOO=bar`, `FOO=bar`)
+    ///   propagate to subsequent segments (same shell, no subshell).
+    /// - `|` / `|&` — pipe creates a subshell on the left; do NOT propagate.
+    /// - `||` — conditional; conservatively do NOT propagate.
+    /// - `&` — background subshell; do NOT propagate.
     fn evaluate_pipeline(
         &self,
         pipeline: &ParsedPipeline,
         kb: &KnowledgeBase,
         merged_config: &CommandConfig,
         segments: &mut Vec<SegmentResult>,
+        env: &EnvSnapshot,
     ) -> PolicyDecision {
         let mut strictest = PolicyDecision::Allow;
 
         for sub in &pipeline.structural_substitutions {
-            let sub_decision = self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
+            let sub_decision =
+                self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments, env);
             let label = pipeline_label(&sub.pipeline, "structural-subst");
             // The nested pipeline's own leaf segments (with their paths) were
             // already pushed by the recursive call; this synthetic marker
@@ -282,11 +299,18 @@ impl PolicyEngine {
             }
         }
 
-        for segment in &pipeline.segments {
+        let mut current_env = env.clone();
+
+        for (i, segment) in pipeline.segments.iter().enumerate() {
             let mut sub_decisions = Vec::new();
             for sub in &segment.substitutions {
-                let sub_decision =
-                    self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
+                let sub_decision = self.evaluate_pipeline(
+                    &sub.pipeline,
+                    kb,
+                    merged_config,
+                    segments,
+                    &current_env,
+                );
                 let label = pipeline_label(&sub.pipeline, "subst");
                 segments.push(SegmentResult {
                     label,
@@ -300,7 +324,8 @@ impl PolicyEngine {
                 }
             }
 
-            let result = self.evaluate_segment(segment, kb, merged_config, &sub_decisions);
+            let result =
+                self.evaluate_segment(segment, kb, merged_config, &sub_decisions, &current_env);
             let label = segment.command.trim().to_string();
             segments.push(SegmentResult {
                 label,
@@ -310,6 +335,20 @@ impl PolicyEngine {
             });
             if result.decision > strictest {
                 strictest = result.decision;
+            }
+
+            // Propagate env mutations to the next segment if the operator
+            // between this segment and the next is && or ;.
+            if i < pipeline.operators.len() {
+                let op = &pipeline.operators[i];
+                if matches!(op, Operator::And | Operator::Semi) {
+                    // Extract standalone assignments from this segment and
+                    // fold them into the accumulating snapshot.
+                    extract_env_mutations(segment, &mut current_env);
+                }
+                // For Pipe, PipeErr, Or, Background: do not propagate —
+                // current_env stays as-is for the next segment (which will
+                // see the env as it was before this segment's mutations).
             }
         }
 
@@ -323,12 +362,16 @@ impl PolicyEngine {
     /// substitution appears inside an inline env assignment (`FOO=$(cmd)`) and
     /// the inner command was allowed, the variable is set (with an opaque value)
     /// rather than marked unknown — `Set` gates fire, `Equals` gates don't.
+    ///
+    /// `base_env` is the accumulated environment from prior segments in the
+    /// pipeline. Inline assignments in this segment are layered on top.
     fn evaluate_segment(
         &self,
         segment: &ShellSegment,
         kb: &KnowledgeBase,
         merged_config: &CommandConfig,
         sub_decisions: &[PolicyDecision],
+        base_env: &EnvSnapshot,
     ) -> PolicyResult {
         let words = &segment.words;
         let base_command = base_command_from_words(words);
@@ -348,7 +391,7 @@ impl PolicyEngine {
         let base_word = Word::from(base_command.as_str());
         let info = classify(&base_word, words, kb);
 
-        // Build env snapshot: process env + inline assignments.
+        // Build env snapshot: base env + inline assignments.
         // For command substitutions in assignments, bridge the recursive
         // policy result: if the inner command was allowed, set the var
         // with the raw substitution text (opaque but present) rather than
@@ -358,6 +401,7 @@ impl PolicyEngine {
             &segment.command,
             &segment.substitutions,
             sub_decisions,
+            base_env,
         );
 
         // Wrapper handling — use pre-built merged config
@@ -830,6 +874,9 @@ fn base_command_from_words(words: &[Word]) -> String {
 /// Build an environment snapshot from inline assignments, bridging recursive
 /// substitution policy results into the snapshot.
 ///
+/// Starts from `base_env` (which may carry state accumulated from earlier
+/// segments in a compound command) and layers inline assignments on top.
+///
 /// For each leading assignment word:
 /// - **Static** (`FOO=bar`): set the variable to the literal value.
 /// - **CommandSubstitution** (`FOO=$(cmd)`): if any substitution whose byte
@@ -845,8 +892,9 @@ fn build_env_with_substitution_results(
     command_text: &str,
     substitutions: &[SubstitutionSpan],
     sub_decisions: &[PolicyDecision],
+    base_env: &EnvSnapshot,
 ) -> EnvSnapshot {
-    let mut env = EnvSnapshot::from_process_env();
+    let mut env = base_env.clone();
 
     for word in words {
         match word.as_classified_assignment() {
@@ -893,6 +941,76 @@ fn build_env_with_substitution_results(
     }
 
     env
+}
+
+/// Extract env mutations from a standalone assignment segment and fold them
+/// into the accumulating snapshot.
+///
+/// A segment contributes persistent env mutations only when it is a
+/// **standalone assignment** — no command after the assignment(s):
+/// - `export FOO=bar` → `["export", "FOO=bar"]` — the `export` keyword is
+///   consumed and `FOO=bar` is extracted.
+/// - `FOO=bar` → `["FOO=bar"]` — bare assignment, also persistent.
+/// - `FOO=bar cmd` → `["FOO=bar", "cmd"]` — scoped to `cmd`, NOT persistent.
+///
+/// Only `&&` and `;` operators cause this to be called; pipe/background
+/// operators are handled by the caller (which skips this function).
+fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
+    let words = &segment.words;
+    if words.is_empty() {
+        return;
+    }
+
+    // Determine if this is a standalone assignment (no command follows).
+    // Two forms:
+    //   1. `["FOO=bar"]` or `["FOO=bar", "BAR=baz"]` — all words are assignments
+    //   2. `["export", "FOO=bar", ...]` — export keyword followed by assignments
+    let (start_idx, is_export) = if words.first().map(|w| w.as_str()) == Some("export") {
+        (1, true)
+    } else {
+        (0, false)
+    };
+
+    // Check that all remaining words are assignments (no command after them).
+    let all_assignments = words[start_idx..].iter().all(|w| w.is_assignment());
+    if !all_assignments {
+        // There's a command after the assignment(s) — scoped to that command,
+        // not persistent. Do not propagate.
+        //
+        // Exception: if start_idx > 0 (export keyword) and the words after
+        // export are not all assignments, this is something like
+        // `export FOO=bar cmd` which is unusual but means the assignment
+        // IS persistent (export makes it so) and cmd runs separately.
+        // In practice the parser handles this differently, but we take
+        // the conservative path: only propagate when the segment is purely
+        // assignments.
+        return;
+    }
+
+    // If is_export or bare assignment with no command, both persist.
+    // (In shell semantics, `FOO=bar` on its own is equivalent to `export FOO=bar`
+    // for subsequent commands in the same shell — both persist.)
+    let _ = is_export; // both paths handled identically
+
+    for word in &words[start_idx..] {
+        if let Some((key, value)) = word.as_assignment() {
+            // Use as_classified_assignment for proper static/dynamic handling
+            match word.as_classified_assignment() {
+                Some((key, AssignmentValue::Static(val))) => {
+                    env.set(key, val);
+                }
+                Some((key, AssignmentValue::CommandSubstitution))
+                | Some((key, AssignmentValue::VariableExpansion)) => {
+                    env.set_unknown(key);
+                }
+                None => {
+                    // Fallback: raw assignment parse succeeded but classification
+                    // didn't — set the raw value.
+                    env.set(key, value);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
