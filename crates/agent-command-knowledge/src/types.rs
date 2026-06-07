@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use prodagent_types::Word;
+use prodagent_types::{SubcommandPattern, Word};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -43,17 +43,20 @@ pub struct CommandKnowledge {
     pub properties: CommandProperties,
 }
 
-/// Map of subcommand patterns to their entries. Patterns are space-separated
-/// strings (e.g. `"pr create"`) matched via [`longest_match`](SubcommandMap::longest_match).
+/// Map of subcommand patterns to their entries. Keys are validated
+/// [`SubcommandPattern`]s — space-separated strings (e.g. `"pr create"`)
+/// matched via [`longest_match`](SubcommandMap::longest_match).
 ///
-/// Deserialization validates that every pattern key respects
-/// [`MAX_SUBCOMMAND_DEPTH`] — patterns with more words are rejected at parse
-/// time with a clear error naming the offending key. Nested `SubcommandEntry`
-/// maps are validated recursively because `SubcommandEntry::subcommands` is
-/// itself a `SubcommandMap`.
+/// Validation lives in the [`SubcommandPattern`] key type itself: constructing
+/// a key enforces non-emptiness and [`MAX_SUBCOMMAND_DEPTH`]. Deserialization
+/// routes each key through `SubcommandPattern::try_from`, so patterns with too
+/// many words (or empty patterns) are rejected at parse time with a clear error
+/// naming the offending key. Nested `SubcommandEntry` maps are validated
+/// recursively because `SubcommandEntry::subcommands` is itself a
+/// `SubcommandMap`.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SubcommandMap {
-    entries: HashMap<String, SubcommandEntry>,
+    entries: HashMap<SubcommandPattern, SubcommandEntry>,
 }
 
 impl<'de> Deserialize<'de> for SubcommandMap {
@@ -62,8 +65,8 @@ impl<'de> Deserialize<'de> for SubcommandMap {
         D: Deserializer<'de>,
     {
         /// Wrapper struct to leverage the derived `Deserialize` for the outer
-        /// `{ entries: { ... } }` shape while giving us access to the inner map
-        /// for validation.
+        /// `{ entries: { ... } }` shape. Keys are read as raw `String`s so we
+        /// can route each one through `SubcommandPattern` validation below.
         #[derive(Deserialize)]
         struct SubcommandMapRepr {
             #[serde(default)]
@@ -71,17 +74,15 @@ impl<'de> Deserialize<'de> for SubcommandMap {
         }
 
         let repr = SubcommandMapRepr::deserialize(deserializer)?;
-        for key in repr.entries.keys() {
-            if key.split_whitespace().count() > MAX_SUBCOMMAND_DEPTH {
-                return Err(serde::de::Error::custom(format!(
-                    "subcommand pattern '{}' exceeds MAX_SUBCOMMAND_DEPTH ({})",
-                    key, MAX_SUBCOMMAND_DEPTH
-                )));
-            }
+        let mut entries = HashMap::with_capacity(repr.entries.len());
+        for (key, entry) in repr.entries {
+            // The key type carries the validation: non-empty + depth limit.
+            // Map its error into a deserialize error so violations still
+            // surface as a clear, equivalent parse failure.
+            let pattern = SubcommandPattern::try_from(key).map_err(serde::de::Error::custom)?;
+            entries.insert(pattern, entry);
         }
-        Ok(SubcommandMap {
-            entries: repr.entries,
-        })
+        Ok(SubcommandMap { entries })
     }
 }
 
@@ -295,19 +296,15 @@ impl SubcommandMap {
     ///
     /// # Panics (debug builds)
     ///
-    /// Debug-asserts that the pattern does not exceed [`MAX_SUBCOMMAND_DEPTH`].
-    /// The deserialization path validates this invariant at parse time, so
-    /// patterns from TOML config are always safe. This assert catches mistakes
-    /// in programmatic construction during development.
+    /// The key is constructed via [`SubcommandPattern::new_unchecked`], which
+    /// debug-asserts that the pattern is non-empty and does not exceed
+    /// [`MAX_SUBCOMMAND_DEPTH`]. The deserialization path validates this
+    /// invariant at parse time, so patterns from TOML config are always safe.
+    /// This assert catches mistakes in programmatic construction during
+    /// development.
     pub fn insert(&mut self, pattern: impl Into<String>, entry: SubcommandEntry) {
-        let pattern = pattern.into();
-        debug_assert!(
-            pattern.split_whitespace().count() <= MAX_SUBCOMMAND_DEPTH,
-            "subcommand pattern '{}' exceeds MAX_SUBCOMMAND_DEPTH ({})",
-            pattern,
-            MAX_SUBCOMMAND_DEPTH,
-        );
-        self.entries.insert(pattern, entry);
+        self.entries
+            .insert(SubcommandPattern::new_unchecked(pattern), entry);
     }
 
     #[must_use = "returns the entry if found"]
@@ -325,9 +322,8 @@ impl SubcommandMap {
     }
 
     pub fn extend(&mut self, other: SubcommandMap) {
-        for (pattern, entry) in other.entries {
-            self.insert(pattern, entry);
-        }
+        // Keys are already validated `SubcommandPattern`s — insert directly.
+        self.entries.extend(other.entries);
     }
 
     pub fn remove(&mut self, pattern: &str) {
@@ -348,7 +344,7 @@ impl SubcommandMap {
                 .map(|w| w.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            if let Some(entry) = self.entries.get(&pattern) {
+            if let Some(entry) = self.entries.get(pattern.as_str()) {
                 return Some((entry, depth));
             }
         }
@@ -359,8 +355,8 @@ impl SubcommandMap {
 impl<'a> IntoIterator for &'a SubcommandMap {
     type Item = (&'a str, &'a SubcommandEntry);
     type IntoIter = std::iter::Map<
-        std::collections::hash_map::Iter<'a, String, SubcommandEntry>,
-        fn((&'a String, &'a SubcommandEntry)) -> (&'a str, &'a SubcommandEntry),
+        std::collections::hash_map::Iter<'a, SubcommandPattern, SubcommandEntry>,
+        fn((&'a SubcommandPattern, &'a SubcommandEntry)) -> (&'a str, &'a SubcommandEntry),
     >;
 
     fn into_iter(self) -> Self::IntoIter {

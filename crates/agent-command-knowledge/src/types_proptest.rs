@@ -19,12 +19,12 @@ fn arb_word() -> impl Strategy<Value = String> {
     "[a-z]{1,8}"
 }
 
+/// Generate a valid subcommand pattern: 1..=MAX_SUBCOMMAND_DEPTH whitespace-free
+/// words joined by single spaces. Every value is a legal `SubcommandPattern`
+/// key (non-empty, within the depth limit), so `SubcommandMap::insert` never
+/// trips the newtype's debug-assert.
 fn arb_pattern() -> impl Strategy<Value = String> {
-    prop_oneof![
-        arb_word(),
-        (arb_word(), arb_word()).prop_map(|(a, b)| format!("{a} {b}")),
-        (arb_word(), arb_word(), arb_word()).prop_map(|(a, b, c)| format!("{a} {b} {c}")),
-    ]
+    prop::collection::vec(arb_word(), 1..=MAX_SUBCOMMAND_DEPTH).prop_map(|words| words.join(" "))
 }
 
 fn arb_subcommand_map() -> impl Strategy<Value = SubcommandMap> {

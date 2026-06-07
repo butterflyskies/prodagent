@@ -135,6 +135,22 @@ effect = "mutating"
     );
 }
 
+#[test]
+fn deserialize_rejects_empty_pattern() {
+    // Validation now lives in the `SubcommandPattern` key type, which also
+    // rejects empty patterns — so an empty key fails to deserialize.
+    let toml_str = r#"
+[entries.""]
+effect = "read-only"
+"#;
+    let err = toml::from_str::<SubcommandMap>(toml_str).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("empty"),
+        "error should mention the empty pattern, got: {msg}"
+    );
+}
+
 // ── EnvGate TOML serde ─────────────────────────────────────────────────────
 
 #[test]
