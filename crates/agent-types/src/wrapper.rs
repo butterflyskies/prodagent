@@ -103,6 +103,7 @@ pub static DEFAULT_WRAPPER_SPECS: LazyLock<Vec<WrapperSpec>> = LazyLock::new(|| 
                 "--group".into(),
                 "--close-from".into(),
                 "--chdir".into(),
+                "--chroot".into(),
                 "--role".into(),
                 "--type".into(),
                 "--host".into(),

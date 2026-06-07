@@ -502,6 +502,24 @@ fn sudo_shell_long_is_unanalyzable() {
     assert!(resolved_command_name("sudo --shell git commit").starts_with("UNANALYZABLE"));
 }
 
+// --- long-form value flags ---
+
+#[test]
+fn sudo_chroot_long_consumes_value() {
+    assert_eq!(
+        resolved_command_name("sudo --chroot /var/jail git commit"),
+        "git"
+    );
+}
+
+#[test]
+fn sudo_chroot_equals_consumes_value() {
+    assert_eq!(
+        resolved_command_name("sudo --chroot=/var/jail git commit"),
+        "git"
+    );
+}
+
 // --- terminator scopes unanalyzable-flag check ---
 
 #[test]
