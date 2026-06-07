@@ -412,14 +412,9 @@ mod tests {
 
     #[test]
     fn adversarial_double_paren_cmd_and_evil() {
-        // Adversarial input: $((cmd) && evil)
-        // This looks like it could be arithmetic expansion $((…)) but is
-        // actually a command substitution $( (cmd) && evil ). Tree-sitter is
-        // the primary defense — it correctly parses this as a
-        // command_substitution, not arithmetic. The classifier's conservative
-        // misclassification as VariableExpansion is defense-in-depth: it
-        // fails closed (marks the value as unknowable) rather than treating
-        // it as a safe static value.
+        // This pins the current conservative behavior of classify() —
+        // VariableExpansion is fail-closed. If classify() is later improved
+        // to detect this as CommandSubstitution, update this test accordingly.
         assert_eq!(
             AssignmentValue::classify("$((cmd) && evil)"),
             AssignmentValue::VariableExpansion,

@@ -1210,18 +1210,47 @@ proptest! {
     /// agree — any difference means env propagation or env-wrapper handling
     /// is inconsistent.
     ///
-    /// Form 4 samples from known transparent wrappers in the KB (currently
-    /// `nice`) to verify that non-`env` wrappers with `Inherit` env policy
-    /// also pass assignments through correctly.
+    /// Form 4 samples from all transparent wrappers in the KB (ReadOnly
+    /// floor, no env clearing, no privilege escalation) to verify that
+    /// inline assignments pass through every transparent wrapper correctly.
+    /// The KB itself is the oracle — no hardcoded wrapper names.
     #[test]
     fn env_assignment_forms_are_equivalent(
         var_name in "[A-Z]{2,6}",
         value in "[a-z0-9_]{1,8}",
         gate_type in arb_meta_gate_type(),
         action in arb_meta_gate_action(),
+        wrapper_idx in 0..100usize,
     ) {
         // Use a synthetic command name that won't collide with real KB entries.
         let cmd_name = "metamorphic_test_cmd";
+
+        // Collect transparent wrappers from the KB: ReadOnly floor, no
+        // env clearing, no privilege escalation. Filter to those whose
+        // parser spec has skip_positionals == 0, so `wrapper cmd` works
+        // without needing dummy positional args.
+        let kb_ref = default_knowledge_base();
+        let default_config = agent_shell_parser::parse::default_command_config();
+        let transparent_wrappers: Vec<&str> = kb_ref
+            .wrappers
+            .iter()
+            .filter(|(name, w)| {
+                w.floor_effect == Effect::ReadOnly
+                    && !w.clears_env
+                    && !w.escalates_privilege
+                    && default_config
+                        .wrappers
+                        .iter()
+                        .find(|s| s.name == **name)
+                        .map_or(true, |s| s.skip_positionals == 0)
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        prop_assert!(
+            !transparent_wrappers.is_empty(),
+            "KB must have at least one transparent wrapper"
+        );
+        let wrapper = transparent_wrappers[wrapper_idx % transparent_wrappers.len()];
 
         // Build the gate
         let gate = match &gate_type {
@@ -1264,22 +1293,16 @@ proptest! {
         let form3 = format!("export {var_name}={value} && {cmd_name}");
         let result3 = engine.evaluate_command(&form3, &kb);
 
-        // Form 4: inline assignment before a transparent KB wrapper (nice).
-        // Shell semantics: `FOO=bar nice cmd` scopes the assignment to the
-        // entire command; nice inherits and passes it to the inner command.
-        let form4 = format!("{var_name}={value} nice {cmd_name}");
+        // Form 4: inline assignment before a transparent KB wrapper (sampled).
+        // Shell semantics: `FOO=bar wrapper cmd` scopes the assignment to the
+        // entire command; a transparent wrapper inherits and passes it through.
+        let form4 = format!("{var_name}={value} {wrapper} {cmd_name}");
         let result4 = engine.evaluate_command(&form4, &kb);
 
-        // All four must agree on the gate's effect. For forms 2-4, the
-        // overall decision may be *higher* than form 1 due to wrapper floors
-        // or compound-command overhead, but the gate must fire identically.
-        // Since the test command is ReadOnly (Allow base) and the gate action
-        // is Ask or Deny (always ≥ Allow), the gate decision IS the overall
-        // decision for form 1 and form 3. For form 2, env is a transparent
-        // wrapper with no escalation, so the gate also determines the result.
-        // For form 4, nice has ReadOnly floor, no privilege escalation, and
-        // Inherit env policy — the inline assignment is visible to the inner
-        // command, so the gate determines the result.
+        // All four must agree on the gate's effect. The sampled wrapper is
+        // transparent (ReadOnly floor, no clear, no escalate), so the inline
+        // assignment is visible to the inner command and the gate determines
+        // the result — same as forms 1-3.
         //
         // Specifically: all four should produce the gate's action as the
         // decision (since ReadOnly base = Allow and gate action ≥ Allow).

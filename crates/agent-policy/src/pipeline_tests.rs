@@ -1148,6 +1148,10 @@ fn export_propagates_across_and_and() {
     let kb = real_kb_with_git_gate(vec![gate]);
     let engine = default_engine();
     let result = engine.evaluate_command("export GIT_AUTHOR_NAME=AI-Agent && git push", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     // Check the git push segment specifically for the gate firing
     let git_push_segment = result
         .segments
@@ -1230,6 +1234,10 @@ fn export_does_not_propagate_across_pipe() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTPROP_PIPE=bar | cat", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     // cat's gate should NOT fire because pipe does not propagate.
     // The cat segment should be Allow (its Set/Deny gate did not fire).
     let cat_segment = result
@@ -1260,6 +1268,10 @@ fn export_propagates_across_semicolon() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTPROP_SEMI=semicolon-val ; echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     assert_eq!(
         result.decision,
         PolicyDecision::Deny,
@@ -1283,6 +1295,10 @@ fn export_does_not_propagate_across_or_or() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTPROP_OROR=bar || cat", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     // cat's gate should NOT fire because || does not propagate env.
     let cat_segment = result
         .segments
@@ -1312,6 +1328,10 @@ fn export_does_not_propagate_across_background() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTPROP_BG=bar & cat", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     // cat's gate should NOT fire because & does not propagate env.
     let cat_segment = result
         .segments
@@ -1341,6 +1361,10 @@ fn declare_propagates_across_and_and() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("declare TESTPROP_DECLARE=bar && echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1369,6 +1393,10 @@ fn readonly_propagates_across_and_and() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("readonly TESTPROP_READONLY=bar && echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1381,6 +1409,11 @@ fn readonly_propagates_across_and_and() {
     );
 }
 
+// For policy purposes, all declaration keywords (export, declare, readonly,
+// local, typeset) are treated as propagating env mutations. `local` is
+// function-scoped in bash, but the policy engine evaluates potential states,
+// not runtime scoping — firing a gate eagerly (fail-closed) is safer than
+// missing it. See ADR-001 for the operator propagation semantics.
 #[test]
 fn local_propagates_across_and_and() {
     // local FOO=bar && cmd
@@ -1397,6 +1430,10 @@ fn local_propagates_across_and_and() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("local TESTPROP_LOCAL=bar && echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1409,6 +1446,11 @@ fn local_propagates_across_and_and() {
     );
 }
 
+// For policy purposes, all declaration keywords (export, declare, readonly,
+// local, typeset) are treated as propagating env mutations. `typeset` is
+// function-scoped in bash, but the policy engine evaluates potential states,
+// not runtime scoping — firing a gate eagerly (fail-closed) is safer than
+// missing it. See ADR-001 for the operator propagation semantics.
 #[test]
 fn typeset_propagates_across_and_and() {
     // typeset FOO=bar && cmd
@@ -1425,6 +1467,10 @@ fn typeset_propagates_across_and_and() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("typeset TESTPROP_TYPESET=bar && echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1461,6 +1507,10 @@ fn multiple_exports_accumulate() {
         "export TESTPROP_MULTI_A=1 && export TESTPROP_MULTI_B=2 && echo hello",
         &kb,
     );
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1476,19 +1526,33 @@ fn multiple_exports_accumulate() {
 #[test]
 fn first_export_propagates_independently() {
     // Companion to `multiple_exports_accumulate`: verify that the Ask-level
-    // gate (TESTPROP_MULTI_A) fires independently when it's the only gate.
+    // gate (TESTPROP_MULTI_A) fires independently without a competing gate
+    // masking the result. A second gate on TESTPROP_MULTI_COMPETITOR with
+    // Deny action is present but its variable is never exported — it must
+    // NOT fire, proving gate A fires in isolation.
     let gate_a = EnvGate {
         var: "TESTPROP_MULTI_A".into(),
         condition: EnvCondition::Set,
         decision: EnvGateAction::Ask,
     };
+    let gate_competitor = EnvGate {
+        var: "TESTPROP_MULTI_COMPETITOR".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
     let mut kb = default_kb().clone();
     let mut command = simple_command("echo", agent_command_knowledge::Effect::ReadOnly);
-    command.env_gates = vec![gate_a];
+    command.env_gates = vec![gate_a, gate_competitor];
     kb.commands.insert("echo".to_string(), command);
 
     let engine = default_engine();
-    let result = engine.evaluate_command("export TESTPROP_MULTI_A=1 && echo hello", &kb);
+    // Only TESTPROP_MULTI_A is exported — gate A (Ask) should fire,
+    // gate B (Deny on TESTPROP_MULTI_COMPETITOR) should NOT fire.
+    let result = engine.evaluate_command("export TESTPROP_MULTI_A=val && echo hello", &kb);
+    assert!(
+        result.segments.len() >= 2,
+        "expected at least 2 segments: {result:?}"
+    );
     let echo_segment = result
         .segments
         .iter()
@@ -1497,7 +1561,7 @@ fn first_export_propagates_independently() {
     assert_eq!(
         echo_segment.decision,
         PolicyDecision::Ask,
-        "single export should propagate and Ask gate should fire: {result:?}"
+        "gate A (Ask) should fire independently without gate B (Deny) masking it: {result:?}"
     );
 }
 
@@ -1518,6 +1582,10 @@ fn allowed_substitution_with_prefix_fires_set_gate() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("TESTPROP_SUBST=prefix-$(git status) mycmd", &kb);
+    assert!(
+        result.segments.len() >= 1,
+        "expected at least 1 segment: {result:?}"
+    );
     // The compound command includes the substitution $(git status) which is
     // allowed (read-only). Since all subs are allowed, the assignment should
     // be set (not unknown), and the Set gate should fire.
