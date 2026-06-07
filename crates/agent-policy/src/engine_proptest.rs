@@ -618,3 +618,276 @@ proptest! {
             "clean env should not resolve vars");
     }
 }
+
+// ── preserved_from (selective --preserve-env) properties ─────────────────────
+
+/// Classify a var name's state in a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VarState {
+    Known(String),
+    Unknown,
+    Absent,
+}
+
+/// A description of one var and the state we want it in.
+#[derive(Debug, Clone)]
+struct VarEntry {
+    name: String,
+    state: VarState,
+}
+
+fn arb_var_name() -> impl Strategy<Value = String> {
+    "[A-Z_][A-Z0-9_]{0,7}".prop_map(|s| s.to_string())
+}
+
+fn arb_var_value() -> impl Strategy<Value = String> {
+    "[a-z]{1,8}".prop_map(|s| s.to_string())
+}
+
+fn arb_var_state() -> impl Strategy<Value = VarState> {
+    prop_oneof![
+        arb_var_value().prop_map(VarState::Known),
+        Just(VarState::Unknown),
+        Just(VarState::Absent),
+    ]
+}
+
+fn arb_var_entry() -> impl Strategy<Value = VarEntry> {
+    (arb_var_name(), arb_var_state()).prop_map(|(name, state)| VarEntry { name, state })
+}
+
+/// Build an `EnvSnapshot` from a list of `VarEntry`s. Uses a clean base so
+/// the process env does not bleed in and make assertions non-deterministic.
+fn snapshot_from_entries(entries: &[VarEntry]) -> EnvSnapshot {
+    let mut snap = EnvSnapshot::clean();
+    for entry in entries {
+        match &entry.state {
+            VarState::Known(v) => snap.set(&entry.name, v),
+            VarState::Unknown => snap.set_unknown(&entry.name),
+            VarState::Absent => { /* leave absent */ }
+        }
+    }
+    snap
+}
+
+proptest! {
+    /// Property 1 — Preserve is selective.
+    ///
+    /// For random env snapshots and random preserve var lists:
+    /// - Every preserved var that was Known in the source is Known with the
+    ///   same value in the result.
+    /// - Every non-preserved var is Unknown (the `fully_unknown` floor).
+    ///
+    /// Would fail if `preserved_from` accidentally copies non-listed vars, or
+    /// if it fails to copy a listed Known var.
+    #[test]
+    fn preserve_is_selective(
+        entries in prop::collection::vec(arb_var_entry(), 0..8),
+        preserve_names in prop::collection::vec(arb_var_name(), 0..5),
+    ) {
+        // Deduplicate entries by name: if the generator produces the same name
+        // with different states, snapshot_from_entries keeps the last write, but
+        // iterating raw entries would compare an earlier entry's state against the
+        // snapshot's last-write-wins state, causing a spurious failure.
+        let names: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.name.as_str()).collect();
+        prop_assume!(names.len() == entries.len());
+
+        let source = snapshot_from_entries(&entries);
+        let preserve_refs: Vec<&str> = preserve_names.iter().map(|s| s.as_str()).collect();
+        let result = EnvSnapshot::preserved_from(&source, &preserve_refs);
+
+        let preserve_set: std::collections::HashSet<&str> =
+            preserve_refs.iter().copied().collect();
+
+        // Check each entry in the source
+        for entry in &entries {
+            let name = entry.name.as_str();
+            if preserve_set.contains(name) {
+                // Listed in preserve: if source has Known, result must have same Known.
+                if let VarState::Known(expected) = &entry.state {
+                    prop_assert_eq!(
+                        result.get_value(name),
+                        Some(EnvValueOwned::Known(expected.clone())),
+                        "preserved var '{}' with known source value must be Known in result",
+                        name
+                    );
+                }
+                // If Unknown or Absent in source, result stays Unknown — no assertion
+                // needed (it can't be Known, so any Known result would be wrong, but
+                // the var wasn't Known to begin with).
+            } else {
+                // Not listed: must be Unknown (fully_unknown floor).
+                prop_assert_eq!(
+                    result.get_value(name),
+                    Some(EnvValueOwned::Unknown),
+                    "non-preserved var '{}' must be Unknown in result",
+                    name
+                );
+            }
+        }
+    }
+
+    /// Property 2 — Empty preserve == fully unknown.
+    ///
+    /// `EnvSnapshot::preserved_from(env, &[])` produces a snapshot where
+    /// `is_fully_unknown()` is true and no overrides exist (every var is Unknown).
+    ///
+    /// Also asserts equivalence with `mark_all_unknown` — both paths must agree.
+    ///
+    /// Would fail if `preserved_from(&[])` forgets to call `mark_all_unknown`,
+    /// or if it accidentally copies some var.
+    #[test]
+    fn empty_preserve_is_fully_unknown(
+        entries in prop::collection::vec(arb_var_entry(), 0..8),
+    ) {
+        let source = snapshot_from_entries(&entries);
+        let result = EnvSnapshot::preserved_from(&source, &[]);
+
+        prop_assert!(
+            result.is_fully_unknown(),
+            "preserved_from with empty list must be fully_unknown"
+        );
+
+        // Every var that existed in source must now be Unknown (not Known, not None).
+        for entry in &entries {
+            let name = entry.name.as_str();
+            prop_assert_eq!(
+                result.get_value(name),
+                Some(EnvValueOwned::Unknown),
+                "var '{}' must be Unknown when preserve list is empty",
+                name
+            );
+        }
+
+        // Equivalent to mark_all_unknown: a clean source with the same entries
+        // after mark_all_unknown must also be fully_unknown and agree on all vars.
+        let mut all_unknown = snapshot_from_entries(&entries);
+        all_unknown.mark_all_unknown();
+        prop_assert!(all_unknown.is_fully_unknown());
+        for entry in &entries {
+            let name = entry.name.as_str();
+            prop_assert_eq!(
+                result.get_value(name),
+                all_unknown.get_value(name),
+                "empty preserve and mark_all_unknown must agree on var '{}'",
+                name
+            );
+        }
+    }
+
+    /// Property 3 — Full -E subsumes selective.
+    ///
+    /// For any preserve list and env snapshot, every var that is Known in the
+    /// selective result is also Known (with the same value) in the full -E
+    /// result (which is a clone of outer).
+    ///
+    /// Would fail if `preserved_from` produces a Known value that doesn't
+    /// exist in the original outer env, i.e. invents data.
+    #[test]
+    fn full_preserve_subsumes_selective(
+        entries in prop::collection::vec(arb_var_entry(), 0..8),
+        preserve_names in prop::collection::vec(arb_var_name(), 0..5),
+    ) {
+        let source = snapshot_from_entries(&entries);
+        let preserve_refs: Vec<&str> = preserve_names.iter().map(|s| s.as_str()).collect();
+
+        let full_result = source.clone(); // full -E: just a clone of outer
+        let selective_result = EnvSnapshot::preserved_from(&source, &preserve_refs);
+
+        for entry in &entries {
+            let name = entry.name.as_str();
+            // If selective says Known(v), full must also say Known(v).
+            if let Some(EnvValueOwned::Known(selective_val)) = selective_result.get_value(name) {
+                prop_assert_eq!(
+                    full_result.get_value(name),
+                    Some(EnvValueOwned::Known(selective_val.clone())),
+                    "full -E must agree with selective on Known var '{}'",
+                    name
+                );
+            }
+        }
+    }
+
+    /// Property 4 — Trim matters: `preserved_from` does NOT trim internally.
+    ///
+    /// `preserved_from(env, &[" FOO "])` treats `" FOO "` as a literal var name,
+    /// which won't match a var named `"FOO"` in the source snapshot. The caller
+    /// (`resolve_sudo_wrapper`) is responsible for trimming before calling
+    /// `preserved_from`.
+    ///
+    /// This property generates var names with optional surrounding whitespace and
+    /// verifies: (a) with the padded name, `preserved_from` does NOT preserve the
+    /// var (treats it as Unknown); (b) with the trimmed name, it DOES preserve it
+    /// (Known with the correct value). This proves the caller must trim.
+    #[test]
+    fn trim_matters_for_preserved_from(
+        entries in prop::collection::vec(arb_var_entry(), 1..8),
+    ) {
+        let names: std::collections::HashSet<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        prop_assume!(names.len() == entries.len());
+        let known_entry = entries.iter().find(|e| matches!(&e.state, VarState::Known(_)));
+        prop_assume!(known_entry.is_some());
+        let entry = known_entry.unwrap();
+        let source = snapshot_from_entries(&entries);
+        let trimmed_name = entry.name.as_str();
+        let padded_name = format!("  {}  ", trimmed_name);
+
+        let result_padded = EnvSnapshot::preserved_from(&source, &[&padded_name]);
+        prop_assert_eq!(
+            result_padded.get_value(trimmed_name),
+            Some(EnvValueOwned::Unknown),
+            "padded name '{}' should NOT match var '{}' — preserved_from doesn't trim",
+            padded_name, trimmed_name
+        );
+
+        let result_trimmed = EnvSnapshot::preserved_from(&source, &[trimmed_name]);
+        if let VarState::Known(expected) = &entry.state {
+            prop_assert_eq!(
+                result_trimmed.get_value(trimmed_name),
+                Some(EnvValueOwned::Known(expected.clone())),
+                "trimmed name '{}' should preserve Known value",
+                trimmed_name
+            );
+        }
+    }
+
+    /// Property 5 — Idempotence of duplicate vars.
+    ///
+    /// `preserved_from(env, &["FOO", "FOO"])` == `preserved_from(env, &["FOO"])`.
+    ///
+    /// Duplicate entries in the preserve list must not change the result.
+    ///
+    /// Would fail if `preserved_from` had a stateful bug where processing the
+    /// same var twice cleared or clobbered it (e.g. if a second pass set_unknown
+    /// after a successful set).
+    #[test]
+    fn duplicate_preserve_vars_idempotent(
+        entries in prop::collection::vec(arb_var_entry(), 0..8),
+        preserve_names in prop::collection::vec(arb_var_name(), 1..5),
+    ) {
+        let source = snapshot_from_entries(&entries);
+
+        let deduped_refs: Vec<&str> = preserve_names.iter().map(|s| s.as_str()).collect();
+
+        // Build a doubled list: [FOO, BAR, FOO, BAR] for each name in preserve_names
+        let doubled: Vec<&str> = preserve_names
+            .iter()
+            .map(|s| s.as_str())
+            .chain(preserve_names.iter().map(|s| s.as_str()))
+            .collect();
+
+        let result_deduped = EnvSnapshot::preserved_from(&source, &deduped_refs);
+        let result_doubled = EnvSnapshot::preserved_from(&source, &doubled);
+
+        for entry in &entries {
+            let name = entry.name.as_str();
+            prop_assert_eq!(
+                result_deduped.get_value(name),
+                result_doubled.get_value(name),
+                "duplicate vars must not change the result for var '{}'",
+                name
+            );
+        }
+    }
+}

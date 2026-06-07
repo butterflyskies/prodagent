@@ -134,6 +134,27 @@ impl EnvSnapshot {
         self.fully_unknown
     }
 
+    /// Build a new snapshot that starts fully unknown, then selectively restores
+    /// the listed variables from `source` if they have known values there.
+    ///
+    /// Used by `resolve_sudo_wrapper` for the `--preserve-env=VAR,VAR` case:
+    /// the base environment is wiped (everything unknown), then only the
+    /// explicitly listed vars are copied through from the outer env.
+    ///
+    /// Variables not found in `source` (or whose value in `source` is Unknown)
+    /// remain Unknown in the returned snapshot.
+    pub(crate) fn preserved_from(source: &EnvSnapshot, vars: &[&str]) -> Self {
+        let mut env = source.clone();
+        env.mark_all_unknown();
+        for var in vars {
+            if let Some(EnvValueOwned::Known(val)) = source.get_value(var) {
+                env.set(*var, val);
+            }
+            // If outer is Unknown or None, leave as unknown (mark_all_unknown already did that)
+        }
+        env
+    }
+
     /// Resolve a variable's value, returning an owned string.
     ///
     /// This is the primary resolution method — it handles process env lookup

@@ -2,8 +2,8 @@ use agent_command_knowledge::{
     classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, KnowledgeBase,
 };
 use agent_shell_parser::parse::{
-    self, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand, ShellSegment, Word,
-    WrapperEnvPolicy, WrapperSpec,
+    self, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand, ResolvedEnvPolicy,
+    ShellSegment, Word, WrapperEnvPolicy, WrapperSpec,
 };
 
 use crate::config::{CommandPolicy, PolicyConfig};
@@ -498,7 +498,8 @@ fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
 ///
 /// Dispatches on [`WrapperEnvPolicy`] from the wrapper's spec:
 /// - `Explicit` (e.g. `env`): captures assignments, `-u` (unset), `-i` (clean).
-/// - `Unknown` (e.g. `sudo`, `su`): marks env as unknown unless `-E`/`--preserve-env`.
+/// - `Unknown` (e.g. `sudo`, `su`): parses flags into [`ResolvedEnvPolicy`],
+///   then applies the structured policy.
 /// - `Inherit` (e.g. `nice`, `timeout`): env passes through unchanged.
 fn resolve_wrapper_env(
     wrapper_name: &str,
@@ -515,7 +516,10 @@ fn resolve_wrapper_env(
 
     match policy {
         WrapperEnvPolicy::Explicit => resolve_env_wrapper(words, outer_env),
-        WrapperEnvPolicy::Unknown => resolve_sudo_wrapper(words, outer_env),
+        WrapperEnvPolicy::Unknown => {
+            let resolved = parse_sudo_env_policy(words);
+            resolve_sudo_wrapper(&resolved, outer_env)
+        }
         WrapperEnvPolicy::Inherit => outer_env.clone(),
     }
 }
@@ -607,24 +611,77 @@ fn resolve_env_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
     env
 }
 
-/// Resolve env for a `sudo`-like wrapper (any wrapper with `WrapperEnvPolicy::Unknown`).
+/// Parse `--preserve-env` flags from a sudo-like wrapper's word list into a
+/// [`ResolvedEnvPolicy`].
 ///
-/// Default sudo behavior resets the environment (sudoers `env_reset`), which
-/// we can't observe from userspace. The conservative approach:
-/// - No flag → mark all env as unknown
-/// - `-E` / `--preserve-env` (without `=`) → env passes through
-/// - `--preserve-env=VAR,VAR` → treated as unknown (same as no flag); partial
-///   preservation is too fine-grained to model safely without sudoers knowledge
-fn resolve_sudo_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
-    let has_full_preserve = words.iter().any(|w| w == "-E" || w == "--preserve-env");
-
-    if has_full_preserve {
-        outer_env.clone()
-    } else {
-        let mut env = outer_env.clone();
-        env.mark_all_unknown();
-        env
+/// This is the bridge between raw `&[Word]` and the type-level
+/// `ResolvedEnvPolicy` — all string-level flag scanning lives here, not in
+/// the env-resolution logic.
+///
+/// Parsing rules:
+/// - `-E` or `--preserve-env` (no `=`) → `FullPreserve`
+/// - `--preserve-env=VAR,VAR` → `Selective(vars)` (whitespace trimmed,
+///   empties filtered, multiple flags merged)
+/// - Neither → `Unknown`
+fn parse_sudo_env_policy(words: &[Word]) -> ResolvedEnvPolicy {
+    // Full preserve takes priority: `-E` or bare `--preserve-env`
+    if words.iter().any(|w| w == "-E" || w == "--preserve-env") {
+        return ResolvedEnvPolicy::FullPreserve;
     }
+
+    // Selective --preserve-env=VAR,VAR — trim each token so that
+    // `--preserve-env=FOO, BAR` (with spaces) is treated the same as
+    // `--preserve-env=FOO,BAR`.
+    let selective_vars: Vec<String> = words
+        .iter()
+        .filter_map(|w| w.as_str().strip_prefix("--preserve-env="))
+        .flat_map(|val| val.split(','))
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect();
+
+    if selective_vars.is_empty() {
+        ResolvedEnvPolicy::Unknown
+    } else {
+        ResolvedEnvPolicy::Selective(selective_vars)
+    }
+}
+
+/// Apply a [`ResolvedEnvPolicy`] to produce the inner command's environment
+/// snapshot for a `sudo`-like wrapper.
+///
+/// This function operates on structured data — it never scans raw flag
+/// strings. The caller is responsible for parsing words into a
+/// `ResolvedEnvPolicy` first via [`parse_sudo_env_policy`].
+///
+/// Policy semantics:
+/// - `Unknown` → mark all env as unknown (conservative: sudoers `env_reset`)
+/// - `FullPreserve` → env passes through unchanged (`-E` / `--preserve-env`)
+/// - `Selective(vars)` → preserve only listed vars, everything else unknown
+/// - `Inherit` → env passes through unchanged (no-op for this wrapper type,
+///   but handled for completeness)
+fn resolve_sudo_wrapper(policy: &ResolvedEnvPolicy, outer_env: &EnvSnapshot) -> EnvSnapshot {
+    match policy {
+        ResolvedEnvPolicy::FullPreserve | ResolvedEnvPolicy::Inherit => outer_env.clone(),
+        ResolvedEnvPolicy::Selective(vars) => {
+            let var_refs: Vec<&str> = vars.iter().map(|s| s.as_str()).collect();
+            EnvSnapshot::preserved_from(outer_env, &var_refs)
+        }
+        ResolvedEnvPolicy::Unknown => {
+            // No preserve flags → selective with empty list → fully unknown
+            EnvSnapshot::preserved_from(outer_env, &[])
+        }
+    }
+}
+
+/// Convenience wrapper: parse words into a [`ResolvedEnvPolicy`] and then
+/// resolve the env snapshot. Used by tests that call `resolve_sudo_wrapper`
+/// with raw words.
+#[cfg(test)]
+fn resolve_sudo_wrapper_from_words(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
+    let policy = parse_sudo_env_policy(words);
+    resolve_sudo_wrapper(&policy, outer_env)
 }
 
 /// Evaluate env gates against an environment snapshot.

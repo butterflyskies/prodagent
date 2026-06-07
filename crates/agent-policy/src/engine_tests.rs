@@ -893,3 +893,456 @@ fn sudo_with_set_deny_gate_does_not_over_deny() {
         "sudo with Set/Deny gate should be Ask (gate suppressed by unknown env), not Deny: {result:?}"
     );
 }
+
+// ── sudo --preserve-env=VAR,VAR selective parsing ──────────────────────
+
+/// Helper: build a KB with a command that has a Set gate on `var_name`.
+/// The gate action is Ask so it's distinguishable from the sudo escalation Ask.
+fn kb_with_set_gate(var_name: &str, action: EnvGateAction) -> KnowledgeBase {
+    let gate = EnvGate {
+        var: var_name.into(),
+        condition: EnvCondition::Set,
+        decision: action,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    let cmd = agent_command_knowledge::CommandKnowledge {
+        name: "mycmd".to_string(),
+        effect: agent_command_knowledge::Effect::ReadOnly,
+        subcommands: Default::default(),
+        flags: Default::default(),
+        env_gates: vec![gate],
+        paths: Default::default(),
+        properties: Default::default(),
+    };
+    kb.commands.insert("mycmd".to_string(), cmd);
+    kb
+}
+
+#[test]
+fn sudo_selective_preserve_single_var_visible() {
+    // FOO=hello sudo --preserve-env=FOO mycmd
+    // FOO is set inline and preserved → inner env has FOO=hello → Set gate fires.
+    // The gate action is Deny, so if FOO is visible the result must be Deny.
+    // If the property is violated (FOO not preserved), the gate won't fire and
+    // the result would be Ask (sudo escalation only).
+    let kb = kb_with_set_gate("FOO", EnvGateAction::Deny);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "FOO is set inline and preserved selectively → Set/Deny gate must fire: {result:?}"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_multi_var_both_visible() {
+    // FOO=hello BAR=world sudo --preserve-env=FOO,BAR mycmd
+    // Both vars set inline and preserved → both visible.
+    // Use Deny gate on BAR to prove BAR is visible.
+    let kb = kb_with_set_gate("BAR", EnvGateAction::Deny);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result =
+        engine.evaluate_command("FOO=hello BAR=world sudo --preserve-env=FOO,BAR mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "BAR is set inline and preserved → Set/Deny gate must fire: {result:?}"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_var_not_set_stays_unknown() {
+    // sudo --preserve-env=FOO mycmd  (FOO not set anywhere)
+    // Can't preserve what doesn't exist → FOO stays unknown.
+    // Set gate should NOT fire (Unknown → fail-closed).
+    // With a clean env snapshot, we test via the unit function directly
+    // because process env might have FOO set.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("mycmd"),
+    ];
+    // Build an outer env where FOO is NOT set
+    let outer = EnvSnapshot::clean();
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "FOO not in outer env → should remain Unknown after selective preserve"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_equals_gate_fires_on_preserved_var() {
+    // FOO=hello sudo --preserve-env=FOO mycmd with an Equals("hello")/Deny gate.
+    //
+    // This is distinct from `sudo_selective_preserve_single_var_visible` which uses
+    // a Set/Deny gate — here we test Equals, which requires the *value* to be
+    // visible, not just the variable's presence. If FOO's value weren't preserved
+    // (i.e. Unknown), the Equals condition would fail (fail-closed on Unknown) and
+    // the result would be Ask (sudo escalation only), not Deny. Getting Deny
+    // proves: (1) the variable is preserved, (2) its value is visible, and
+    // (3) the Equals gate fires correctly on the preserved value.
+    let gate = EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("hello".into()),
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    let cmd = agent_command_knowledge::CommandKnowledge {
+        name: "mycmd".to_string(),
+        effect: agent_command_knowledge::Effect::ReadOnly,
+        subcommands: Default::default(),
+        flags: Default::default(),
+        env_gates: vec![gate],
+        paths: Default::default(),
+        properties: Default::default(),
+    };
+    kb.commands.insert("mycmd".to_string(), cmd);
+
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "FOO=hello preserved → Equals(\"hello\")/Deny gate must fire → Deny: {result:?}"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_gate_suppressed_on_non_preserved_var() {
+    // FOO=hello sudo --preserve-env=FOO mycmd  with gate on OTHER_VAR
+    // OTHER_VAR is NOT in the preserve list → it's unknown → gate doesn't fire.
+    // Result should be Ask (from sudo escalation), not Deny.
+    let kb = kb_with_set_gate("OTHER_VAR", EnvGateAction::Deny);
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "OTHER_VAR not preserved → gate suppressed → should be Ask (sudo escalation only): {result:?}"
+    );
+}
+
+// ── parse_sudo_env_policy unit tests ──────────────────────────────────
+
+use agent_shell_parser::parse::ResolvedEnvPolicy;
+
+#[test]
+fn parse_sudo_env_policy_bare_sudo_is_unknown() {
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("cmd")];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Unknown,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_dash_e_is_full_preserve() {
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("-E"), Word::from("cmd")];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_long_flag_is_full_preserve() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_single_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_multi_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO,BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_trims_whitespace() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO, BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_selective_empty_list_is_unknown() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env="),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Unknown,
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_multiple_flags_merged() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("--preserve-env=BAR"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
+    );
+}
+
+#[test]
+fn parse_sudo_env_policy_full_preserve_takes_priority() {
+    // -E alongside --preserve-env=FOO → FullPreserve wins
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("-E"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("cmd"),
+    ];
+    assert_eq!(
+        super::parse_sudo_env_policy(&words),
+        ResolvedEnvPolicy::FullPreserve,
+    );
+}
+
+// ── resolve_sudo_wrapper unit tests ────────────────────────────────────
+
+#[test]
+fn resolve_sudo_wrapper_selective_preserves_known_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "bar");
+    outer.set("SECRET", "hidden");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+
+    // FOO should be preserved
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("bar".to_string())),
+        "FOO listed in --preserve-env should be Known"
+    );
+    // SECRET should be unknown (not in preserve list)
+    assert_eq!(
+        inner.get_value("SECRET"),
+        Some(EnvValueOwned::Unknown),
+        "SECRET not in --preserve-env should be Unknown"
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_selective_multi_var() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO,BAR"),
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "f");
+    outer.set("BAR", "b");
+    outer.set("BAZ", "z");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("f".to_string())),
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Known("b".to_string())),
+    );
+    assert_eq!(
+        inner.get_value("BAZ"),
+        Some(EnvValueOwned::Unknown),
+        "BAZ not in preserve list → Unknown"
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_selective_unknown_outer_stays_unknown() {
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=MISSING"),
+        Word::from("cmd"),
+    ];
+    let outer = EnvSnapshot::clean(); // MISSING not set
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    // MISSING is not in outer env at all → get_value returns None from outer,
+    // and mark_all_unknown makes it Unknown in inner
+    assert_eq!(
+        inner.get_value("MISSING"),
+        Some(EnvValueOwned::Unknown),
+        "var not in outer env can't be preserved → stays Unknown"
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_full_preserve_unchanged() {
+    // -E should still give full preserve (regression guard)
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("-E"), Word::from("cmd")];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "bar");
+    outer.set("SECRET", "yes");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("bar".to_string())),
+    );
+    assert_eq!(
+        inner.get_value("SECRET"),
+        Some(EnvValueOwned::Known("yes".to_string())),
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_no_flag_all_unknown() {
+    // No -E, no --preserve-env → all unknown (regression guard)
+    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("cmd")];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "bar");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "bare sudo → all unknown"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_whitespace_trimmed() {
+    // --preserve-env=FOO, BAR (space after comma) — each token is trimmed so
+    // both FOO and BAR should be preserved as Known.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO, BAR"), // space after comma
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "foo-val");
+    outer.set("BAR", "bar-val");
+    outer.set("OTHER", "hidden");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("foo-val".to_string())),
+        "FOO should be preserved despite whitespace in token list"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Known("bar-val".to_string())),
+        "BAR should be preserved after trimming leading space"
+    );
+    assert_eq!(
+        inner.get_value("OTHER"),
+        Some(EnvValueOwned::Unknown),
+        "OTHER not in list → Unknown"
+    );
+}
+
+#[test]
+fn sudo_selective_preserve_empty_list_all_unknown() {
+    // sudo --preserve-env= (equals sign, no vars after it) is a valid flag form
+    // that requests preserving an *empty* set of variables. The behavior is the
+    // same as bare sudo: mark everything unknown, preserve nothing.
+    // This guards against accidentally treating the empty-string token as a
+    // variable name to look up.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env="), // empty list
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "bar");
+    outer.set("BAR", "baz");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Unknown),
+        "--preserve-env= with empty list → FOO should be Unknown"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Unknown),
+        "--preserve-env= with empty list → BAR should be Unknown"
+    );
+}
+
+#[test]
+fn resolve_sudo_wrapper_multiple_preserve_flags() {
+    // sudo --preserve-env=FOO --preserve-env=BAR cmd
+    // Multiple --preserve-env= flags should be merged — both FOO and BAR
+    // should be preserved as Known.
+    let words: Vec<Word> = vec![
+        Word::from("sudo"),
+        Word::from("--preserve-env=FOO"),
+        Word::from("--preserve-env=BAR"),
+        Word::from("cmd"),
+    ];
+    let mut outer = EnvSnapshot::clean();
+    outer.set("FOO", "foo-val");
+    outer.set("BAR", "bar-val");
+    outer.set("SECRET", "hidden");
+
+    let inner = super::resolve_sudo_wrapper_from_words(&words, &outer);
+    assert_eq!(
+        inner.get_value("FOO"),
+        Some(EnvValueOwned::Known("foo-val".to_string())),
+        "FOO from first --preserve-env= flag should be Known"
+    );
+    assert_eq!(
+        inner.get_value("BAR"),
+        Some(EnvValueOwned::Known("bar-val".to_string())),
+        "BAR from second --preserve-env= flag should be Known"
+    );
+    assert_eq!(
+        inner.get_value("SECRET"),
+        Some(EnvValueOwned::Unknown),
+        "SECRET not in any --preserve-env= flag → Unknown"
+    );
+}
