@@ -826,36 +826,30 @@ proptest! {
     ) {
         let names: std::collections::HashSet<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         prop_assume!(names.len() == entries.len());
-        // Pick the first entry that has a Known value — we need something to preserve.
-        let source = snapshot_from_entries(&entries);
         let known_entry = entries.iter().find(|e| matches!(&e.state, VarState::Known(_)));
-        if let Some(entry) = known_entry {
-            let trimmed_name = entry.name.as_str();
-            let padded_name = format!("  {}  ", trimmed_name);
+        prop_assume!(known_entry.is_some());
+        let entry = known_entry.unwrap();
+        let source = snapshot_from_entries(&entries);
+        let trimmed_name = entry.name.as_str();
+        let padded_name = format!("  {}  ", trimmed_name);
 
-            // With the padded name: preserved_from won't find " FOO " in snapshot
-            // (snapshot has "FOO"), so the var stays Unknown.
-            let result_padded = EnvSnapshot::preserved_from(&source, &[&padded_name]);
+        let result_padded = EnvSnapshot::preserved_from(&source, &[&padded_name]);
+        prop_assert_eq!(
+            result_padded.get_value(trimmed_name),
+            Some(EnvValueOwned::Unknown),
+            "padded name '{}' should NOT match var '{}' — preserved_from doesn't trim",
+            padded_name, trimmed_name
+        );
+
+        let result_trimmed = EnvSnapshot::preserved_from(&source, &[trimmed_name]);
+        if let VarState::Known(expected) = &entry.state {
             prop_assert_eq!(
-                result_padded.get_value(trimmed_name),
-                Some(EnvValueOwned::Unknown),
-                "padded name '{}' should NOT match var '{}' — preserved_from doesn't trim",
-                padded_name, trimmed_name
+                result_trimmed.get_value(trimmed_name),
+                Some(EnvValueOwned::Known(expected.clone())),
+                "trimmed name '{}' should preserve Known value",
+                trimmed_name
             );
-
-            // With the trimmed name: preserved_from finds "FOO" and preserves it.
-            let result_trimmed = EnvSnapshot::preserved_from(&source, &[trimmed_name]);
-            if let VarState::Known(expected) = &entry.state {
-                prop_assert_eq!(
-                    result_trimmed.get_value(trimmed_name),
-                    Some(EnvValueOwned::Known(expected.clone())),
-                    "trimmed name '{}' should preserve Known value",
-                    trimmed_name
-                );
-            }
         }
-        // If no Known entry, the test is a no-op — that's fine, the generator
-        // will produce Known entries in most runs.
     }
 
     /// Property 5 — Idempotence of duplicate vars.

@@ -143,7 +143,7 @@ impl EnvSnapshot {
     ///
     /// Variables not found in `source` (or whose value in `source` is Unknown)
     /// remain Unknown in the returned snapshot.
-    pub fn preserved_from(source: &EnvSnapshot, vars: &[&str]) -> Self {
+    pub(crate) fn preserved_from(source: &EnvSnapshot, vars: &[&str]) -> Self {
         let mut env = source.clone();
         env.mark_all_unknown();
         for var in vars {
