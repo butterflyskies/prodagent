@@ -8,7 +8,8 @@ use super::types::{
     WrapperSpec,
 };
 
-static DEFAULT_CONFIG: LazyLock<CommandConfig> = LazyLock::new(prodagent_types::default_command_config);
+static DEFAULT_CONFIG: LazyLock<CommandConfig> =
+    LazyLock::new(prodagent_types::default_command_config);
 
 /// Return the embedded default command configuration.
 pub fn default_command_config() -> &'static CommandConfig {
