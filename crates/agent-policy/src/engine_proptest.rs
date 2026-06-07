@@ -619,6 +619,175 @@ proptest! {
     }
 }
 
+// ── Substitution-derived env values ──────────────────────────────────────────
+
+/// An assignment value derived from a command substitution (`$(cmd)` or backticks).
+fn arb_command_substitution_value() -> impl Strategy<Value = String> {
+    "[a-z]{1,6}".prop_flat_map(|inner| {
+        prop_oneof![
+            Just(format!("$({inner})")),
+            Just(format!("`{inner}`")),
+            Just(format!("prefix-$({inner})")),
+        ]
+    })
+}
+
+/// An assignment value derived from a variable expansion (`$VAR`, `${VAR}`).
+fn arb_variable_expansion_value() -> impl Strategy<Value = String> {
+    "[a-z]{1,6}".prop_flat_map(|inner| {
+        prop_oneof![
+            Just(format!("${}", inner.to_uppercase())),
+            Just(format!("${{{}}}", inner.to_uppercase())),
+        ]
+    })
+}
+
+/// Any dynamic (non-static) assignment value.
+fn arb_dynamic_value() -> impl Strategy<Value = String> {
+    prop_oneof![
+        arb_command_substitution_value(),
+        arb_variable_expansion_value(),
+    ]
+}
+
+/// A literal assignment value with no expansion or substitution syntax.
+fn arb_static_value() -> impl Strategy<Value = String> {
+    "[a-zA-Z0-9_/.:-]{0,8}".prop_filter("must not contain expansion syntax", |v| {
+        !v.contains('$') && !v.contains('`')
+    })
+}
+
+proptest! {
+    /// A substitution-derived inline assignment always resolves to `Unknown`
+    /// in a basic snapshot (without recursive policy evaluation context).
+    #[test]
+    fn substitution_derived_value_resolves_unknown(
+        var in "[A-Z]{1,4}",
+        dynamic in arb_dynamic_value(),
+    ) {
+        let words = [Word::from(format!("{var}={dynamic}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+        prop_assert_eq!(
+            snap.get_value(&var),
+            Some(EnvValueOwned::Unknown),
+            "dynamic value {:?} should resolve to Unknown",
+            dynamic
+        );
+    }
+
+    /// Core invariant: a substitution-derived env value never statically
+    /// satisfies a value-specific gate in a basic snapshot. Equals, NotEquals,
+    /// and Set must not fire on Unknown values (fail-closed).
+    #[test]
+    fn substitution_derived_value_never_satisfies_value_gate(
+        var in "[A-Z]{1,4}",
+        dynamic in arb_dynamic_value(),
+        other_expected in "[a-z]{1,6}",
+    ) {
+        let words = [Word::from(format!("{var}={dynamic}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+
+        // Equals against the exact substitution text — the adversarial case.
+        let equals_literal = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(dynamic.clone()),
+            decision: EnvGateAction::Allow,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&equals_literal, &snap),
+            None,
+            "Equals gate must not match the raw substitution text {:?}",
+            dynamic
+        );
+
+        // Equals against an arbitrary other literal.
+        let equals_other = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(other_expected),
+            decision: EnvGateAction::Allow,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&equals_other, &snap),
+            None,
+            "Equals gate must not match an unknowable value"
+        );
+
+        // Set must not fire — presence cannot be confirmed.
+        let set_gate = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Allow,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&set_gate, &snap),
+            None,
+            "Set gate must not fire on an unknowable value"
+        );
+    }
+
+    /// Oracle / non-vacuity: a static assignment IS classified Static, kept
+    /// as a known value, and DOES satisfy a matching Equals gate.
+    #[test]
+    fn static_value_satisfies_matching_equals(
+        var in "[A-Z]{1,4}",
+        value in arb_static_value(),
+    ) {
+        let words = [Word::from(format!("{var}={value}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+
+        prop_assert_eq!(
+            snap.get_value(&var),
+            Some(EnvValueOwned::Known(value.clone())),
+            "static value should resolve to its literal"
+        );
+
+        let gates = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(value.clone()),
+            decision: EnvGateAction::Deny,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&gates, &snap),
+            Some(PolicyDecision::Deny),
+            "a matching Equals gate on a static value must fire"
+        );
+    }
+
+    /// Variable expansion values are always classified as VariableExpansion.
+    #[test]
+    fn variable_expansion_classified_correctly(
+        var in "[A-Z]{1,4}",
+        value in arb_variable_expansion_value(),
+    ) {
+        use agent_shell_parser::parse::AssignmentValue;
+        let word = Word::from(format!("{var}={value}"));
+        let (_, classified) = word.as_classified_assignment().unwrap();
+        prop_assert_eq!(
+            classified,
+            AssignmentValue::VariableExpansion,
+            "variable expansion {:?} should classify as VariableExpansion",
+            value
+        );
+    }
+
+    /// Command substitution values are always classified as CommandSubstitution.
+    #[test]
+    fn command_substitution_classified_correctly(
+        var in "[A-Z]{1,4}",
+        value in arb_command_substitution_value(),
+    ) {
+        use agent_shell_parser::parse::AssignmentValue;
+        let word = Word::from(format!("{var}={value}"));
+        let (_, classified) = word.as_classified_assignment().unwrap();
+        prop_assert_eq!(
+            classified,
+            AssignmentValue::CommandSubstitution,
+            "command substitution {:?} should classify as CommandSubstitution",
+            value
+        );
+    }
+}
+
 // ── preserved_from (selective --preserve-env) properties ─────────────────────
 
 /// Classify a var name's state in a snapshot.

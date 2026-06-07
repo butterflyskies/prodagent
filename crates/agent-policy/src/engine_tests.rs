@@ -1341,3 +1341,169 @@ fn resolve_sudo_wrapper_multiple_preserve_flags() {
         "SECRET not in any --preserve-env= flag → Unknown"
     );
 }
+
+// ── Recursive policy evaluation for command substitutions in env ──────
+
+/// Build a KB with a single ReadOnly command `mycmd` carrying one env gate.
+fn kb_with_gate(gate: EnvGate) -> KnowledgeBase {
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    kb.commands.insert(
+        "mycmd".to_string(),
+        agent_command_knowledge::CommandKnowledge {
+            name: "mycmd".to_string(),
+            effect: Effect::ReadOnly,
+            subcommands: Default::default(),
+            flags: Default::default(),
+            env_gates: vec![gate],
+            paths: Default::default(),
+            properties: Default::default(),
+        },
+    );
+    kb
+}
+
+#[test]
+fn inline_literal_env_value_fires_value_gate() {
+    // Control: a literal value that matches the gate's expected value fires it.
+    let kb = kb_with_gate(EnvGate {
+        var: "DEPLOY".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("DEPLOY=danger mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "literal DEPLOY=danger should trigger the Equals/Deny gate: {result:?}"
+    );
+}
+
+#[test]
+fn inline_substitution_env_value_does_not_fire_value_gate() {
+    // A substitution-derived value cannot statically equal "danger", so the
+    // value-specific gate must not fire — the command falls back to its
+    // ReadOnly default (Allow). These variable-expansion forms (`$VAR`,
+    // `${VAR}`) are the gap the old `.contains("$(")` check missed.
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    for cmd in ["DEPLOY=$DEPLOY_ENV mycmd", "DEPLOY=${DEPLOY_ENV} mycmd"] {
+        let kb = kb_with_gate(EnvGate {
+            var: "DEPLOY".into(),
+            condition: EnvCondition::Equals("danger".into()),
+            decision: EnvGateAction::Deny,
+        });
+        let result = engine.evaluate_command(cmd, &kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Allow,
+            "{cmd}: dynamic value must not satisfy the value gate: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn inline_variable_expansion_does_not_satisfy_set_gate() {
+    // Under the old behavior `FOO=$VAR` was stored as a known literal, so a
+    // `Set` gate fired. Now it resolves to Unknown and the presence gate is
+    // suppressed — consistent with `FOO=$(cmd)`.
+    let kb = kb_with_gate(EnvGate {
+        var: "TOKEN".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+
+    let dynamic = engine.evaluate_command("TOKEN=$SECRET mycmd", &kb);
+    assert_eq!(
+        dynamic.decision,
+        PolicyDecision::Allow,
+        "TOKEN=$SECRET should not confirm presence (Unknown): {dynamic:?}"
+    );
+
+    let literal = engine.evaluate_command("TOKEN=abc mycmd", &kb);
+    assert_eq!(
+        literal.decision,
+        PolicyDecision::Deny,
+        "literal TOKEN=abc should fire the Set/Deny gate: {literal:?}"
+    );
+}
+
+#[test]
+fn allowed_command_substitution_fires_set_gate() {
+    // FOO=$(git status) mycmd — `git status` is ReadOnly (allowed by default).
+    // The recursive policy evaluation allows the inner command, so FOO should
+    // be set (opaque but present) and a Set gate should fire.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(git status) mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "FOO=$(allowed_cmd) should set FOO → Set/Deny gate fires: {result:?}"
+    );
+}
+
+#[test]
+fn denied_command_substitution_denies_whole_command() {
+    // FOO=$(rm -rf /) mycmd — `rm` is Mutating and has escalation flags.
+    // The recursive evaluation should escalate the inner command to at least
+    // Ask, and strictest-wins propagates that to the whole compound command.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(rm -rf /) mycmd", &kb);
+    // The inner `rm -rf /` is Mutating (Ask by default) and the compound
+    // strictest-wins applies.
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "inner denied/escalated command should escalate the whole command: {result:?}"
+    );
+}
+
+#[test]
+fn allowed_substitution_does_not_fire_equals_gate() {
+    // FOO=$(git status) mycmd with an Equals("danger") gate on FOO.
+    // Even though the inner command is allowed and FOO is "set", the value
+    // is opaque — an Equals gate checking for a specific literal should not
+    // match.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(git status) mycmd", &kb);
+    // The inner command is allowed, FOO is set to the raw text "$(git status)",
+    // and Equals("danger") should not match that raw text.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "Equals gate should not match opaque substitution value: {result:?}"
+    );
+}
+
+#[test]
+fn variable_expansion_does_not_fire_set_gate_even_with_allowed_context() {
+    // FOO=$VAR mycmd — variable expansion is truly unknowable regardless of
+    // any policy context. There is no inner command to evaluate, so FOO must
+    // remain unknown and the Set gate must not fire.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$VAR mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "FOO=$VAR should not fire Set gate (variable expansion is unknowable): {result:?}"
+    );
+}

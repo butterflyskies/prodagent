@@ -2,8 +2,8 @@ use agent_command_knowledge::{
     classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, KnowledgeBase,
 };
 use agent_shell_parser::parse::{
-    self, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand, ResolvedEnvPolicy,
-    ShellSegment, Word, WrapperEnvPolicy, WrapperSpec,
+    self, AssignmentValue, CommandConfig, ParsedPipeline, Redirection, ResolvedCommand,
+    ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, Word, WrapperEnvPolicy, WrapperSpec,
 };
 
 use crate::config::{CommandPolicy, PolicyConfig};
@@ -96,7 +96,7 @@ impl PolicyEngine {
         if pipeline.segments.len() <= 1 && !has_substitutions && !has_parse_errors {
             return match pipeline.segments.first() {
                 Some(segment) => {
-                    let result = self.evaluate_segment(segment, kb, &merged_config);
+                    let result = self.evaluate_segment(segment, kb, &merged_config, &[]);
                     let seg = SegmentResult {
                         label: segment.command.trim().to_string(),
                         decision: result.decision,
@@ -283,6 +283,7 @@ impl PolicyEngine {
         }
 
         for segment in &pipeline.segments {
+            let mut sub_decisions = Vec::new();
             for sub in &segment.substitutions {
                 let sub_decision =
                     self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments);
@@ -293,12 +294,13 @@ impl PolicyEngine {
                     reason: "(nested)".into(),
                     affected_paths: AffectedPaths::empty(),
                 });
+                sub_decisions.push(sub_decision);
                 if sub_decision > strictest {
                     strictest = sub_decision;
                 }
             }
 
-            let result = self.evaluate_segment(segment, kb, merged_config);
+            let result = self.evaluate_segment(segment, kb, merged_config, &sub_decisions);
             let label = segment.command.trim().to_string();
             segments.push(SegmentResult {
                 label,
@@ -315,11 +317,18 @@ impl PolicyEngine {
     }
 
     /// Evaluate a single shell segment from a parsed pipeline.
+    ///
+    /// `sub_decisions` contains the policy decisions for each of this segment's
+    /// substitutions (same order as `segment.substitutions`). When a command
+    /// substitution appears inside an inline env assignment (`FOO=$(cmd)`) and
+    /// the inner command was allowed, the variable is set (with an opaque value)
+    /// rather than marked unknown — `Set` gates fire, `Equals` gates don't.
     fn evaluate_segment(
         &self,
         segment: &ShellSegment,
         kb: &KnowledgeBase,
         merged_config: &CommandConfig,
+        sub_decisions: &[PolicyDecision],
     ) -> PolicyResult {
         let words = &segment.words;
         let base_command = base_command_from_words(words);
@@ -339,8 +348,17 @@ impl PolicyEngine {
         let base_word = Word::from(base_command.as_str());
         let info = classify(&base_word, words, kb);
 
-        // Build env snapshot: process env + inline assignments
-        let env = EnvSnapshot::from_process_env().with_assignments(words);
+        // Build env snapshot: process env + inline assignments.
+        // For command substitutions in assignments, bridge the recursive
+        // policy result: if the inner command was allowed, set the var
+        // with the raw substitution text (opaque but present) rather than
+        // marking it unknown.
+        let env = build_env_with_substitution_results(
+            words,
+            &segment.command,
+            &segment.substitutions,
+            sub_decisions,
+        );
 
         // Wrapper handling — use pre-built merged config
         if info.wrapper.is_some() {
@@ -629,12 +647,17 @@ fn resolve_env_wrapper(words: &[Word], outer_env: &EnvSnapshot) -> EnvSnapshot {
             continue;
         }
 
-        // KEY=VALUE assignment → set override
-        if let Some((key, value)) = w.as_assignment() {
-            if value.contains("$(") || value.contains('`') {
-                env.set_unknown(key);
-            } else {
-                env.set(key, value);
+        // KEY=VALUE assignment → set override. Substitution-derived values
+        // are unknowable without recursive policy evaluation context, so
+        // mark them unknown. (The `env` wrapper path doesn't have per-
+        // substitution decisions available — that bridge only exists in
+        // `evaluate_segment` / `build_env_with_substitution_results`.)
+        if let Some((key, value)) = w.as_classified_assignment() {
+            match value {
+                AssignmentValue::Static(v) => env.set(key, v),
+                AssignmentValue::CommandSubstitution | AssignmentValue::VariableExpansion => {
+                    env.set_unknown(key);
+                }
             }
             i += 1;
             continue;
@@ -802,6 +825,74 @@ fn base_command_from_words(words: &[Word]) -> String {
         return word.basename().to_string();
     }
     String::new()
+}
+
+/// Build an environment snapshot from inline assignments, bridging recursive
+/// substitution policy results into the snapshot.
+///
+/// For each leading assignment word:
+/// - **Static** (`FOO=bar`): set the variable to the literal value.
+/// - **CommandSubstitution** (`FOO=$(cmd)`): if any substitution whose byte
+///   span falls within this assignment's position in the command text was
+///   allowed by recursive policy evaluation, set the variable with the raw
+///   substitution text (opaque but present — `Set` gates fire, `Equals` gates
+///   won't match). If the inner command was not allowed (Ask/Deny), or no
+///   matching substitution span is found, mark the variable unknown.
+/// - **VariableExpansion** (`FOO=$VAR`): always mark unknown — there is no
+///   inner command to evaluate.
+fn build_env_with_substitution_results(
+    words: &[Word],
+    command_text: &str,
+    substitutions: &[SubstitutionSpan],
+    sub_decisions: &[PolicyDecision],
+) -> EnvSnapshot {
+    let mut env = EnvSnapshot::from_process_env();
+
+    for word in words {
+        match word.as_classified_assignment() {
+            Some((key, AssignmentValue::Static(value))) => {
+                env.set(key, value);
+            }
+            Some((key, AssignmentValue::CommandSubstitution)) => {
+                // Check if the inner command substitution was allowed.
+                // Find this word's byte range in the command text, then check
+                // if any substitution span falls within it and was allowed.
+                let word_str = word.as_str();
+                if let Some(word_start) = command_text.find(word_str) {
+                    let word_end = word_start + word_str.len();
+                    let all_allowed = substitutions
+                        .iter()
+                        .zip(sub_decisions.iter())
+                        .filter(|(sub, _)| sub.start >= word_start && sub.end <= word_end)
+                        .map(|(_, decision)| *decision)
+                        .all(|d| d == PolicyDecision::Allow);
+
+                    // Only set if we actually found matching substitutions
+                    // and they were all allowed.
+                    let has_matching_subs = substitutions
+                        .iter()
+                        .any(|sub| sub.start >= word_start && sub.end <= word_end);
+
+                    if has_matching_subs && all_allowed {
+                        // Set with the raw value text — `Set` gates fire,
+                        // `Equals` gates won't match the substitution text.
+                        let (_, raw_value) = word.as_assignment().unwrap();
+                        env.set(key, raw_value);
+                    } else {
+                        env.set_unknown(key);
+                    }
+                } else {
+                    env.set_unknown(key);
+                }
+            }
+            Some((key, AssignmentValue::VariableExpansion)) => {
+                env.set_unknown(key);
+            }
+            None => break,
+        }
+    }
+
+    env
 }
 
 #[cfg(test)]

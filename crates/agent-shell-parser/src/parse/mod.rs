@@ -41,7 +41,8 @@ pub use tokenize::{
     base_command, command_characteristics, env_vars, find_base_command, parse_command, tokenize,
 };
 pub use types::{
-    CommandArg, CommandCharacteristics, CommandConfig, IndirectExecution, Operator, ParseError,
-    ParsedCommand, ParsedFlag, ParsedPipeline, Redirection, ResolvedCommand, ResolvedEnvPolicy,
-    ShellSegment, SubstitutionSpan, UnanalyzableCommand, Word, WrapperEnvPolicy, WrapperSpec,
+    AssignmentValue, CommandArg, CommandCharacteristics, CommandConfig, IndirectExecution,
+    Operator, ParseError, ParsedCommand, ParsedFlag, ParsedPipeline, Redirection, ResolvedCommand,
+    ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, UnanalyzableCommand, Word, WrapperEnvPolicy,
+    WrapperSpec,
 };
