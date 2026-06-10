@@ -495,3 +495,40 @@ fn blocks_nohup_git() {
 fn allows_xargs_ls() {
     assert!(!is_blocked_segment("xargs ls -la"));
 }
+
+// --- Invocation forms that must still resolve to git ---
+//
+// These pin basename normalization and escape handling: invoking git by
+// path or with a backslash escape must hit the same block as plain `git`.
+// Asserting the specific blocked command (not just is_some) ensures these
+// resolve to `git commit` rather than tripping a generic unanalyzable block.
+
+fn blocked_as(cmd: &str) -> Option<&'static str> {
+    check_segment(&words(cmd)).map(|b| b.command)
+}
+
+#[test]
+fn blocks_git_by_absolute_path() {
+    assert_eq!(
+        blocked_as("/usr/bin/git commit -m test"),
+        Some("git commit")
+    );
+}
+
+#[test]
+fn blocks_git_by_relative_path() {
+    assert_eq!(blocked_as("./git commit -m test"), Some("git commit"));
+}
+
+#[test]
+fn blocks_backslash_escaped_git() {
+    // `\git` suppresses shell alias/function lookup but still runs git
+    assert_eq!(blocked_as(r"\git commit -m test"), Some("git commit"));
+}
+
+#[test]
+fn allows_permitted_subcommand_by_absolute_path() {
+    // Path resolution must not over-block: subcommands allowed for plain
+    // `git` stay allowed when git is invoked by path.
+    assert!(!is_blocked_segment("/usr/bin/git config user.name"));
+}
