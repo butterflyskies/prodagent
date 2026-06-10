@@ -50,9 +50,10 @@ fn gh_knowledge() -> KnowledgeBase {
     for pattern in &["pr create", "pr merge", "issue create", "issue close"] {
         gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Mutating));
     }
-    for pattern in &["repo delete"] {
-        gh_subs.insert(*pattern, SubcommandEntry::with_effect(Effect::Mutating));
-    }
+    gh_subs.insert(
+        "repo delete",
+        SubcommandEntry::with_effect(Effect::Mutating),
+    );
 
     let mut gh = CommandKnowledge::simple("gh", Effect::Unknown);
     gh.subcommands = gh_subs;
