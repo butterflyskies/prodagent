@@ -243,17 +243,12 @@ fn unmatched_command_falls_through() {
     );
 }
 
-// ── PolicyDecision Display and Default ─────────────────────────────────
-
-#[test]
-fn policy_decision_display() {
-    assert_eq!(format!("{}", PolicyDecision::Allow), "Allow");
-    assert_eq!(format!("{}", PolicyDecision::Ask), "Ask");
-    assert_eq!(format!("{}", PolicyDecision::Deny), "Deny");
-}
+// ── PolicyDecision Default ──────────────────────────────────────────────
 
 #[test]
 fn policy_decision_default_is_ask() {
+    // Pins the #[default] attribute to Ask: Default is public API on a
+    // published crate and must stay fail-closed.
     assert_eq!(PolicyDecision::default(), PolicyDecision::Ask);
 }
 

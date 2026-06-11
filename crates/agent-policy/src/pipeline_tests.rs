@@ -998,3 +998,42 @@ fn real_kb_multiple_gates_strictest_wins() {
         "when multiple gates fire, strictest (Deny) must win: {result:?}"
     );
 }
+
+// ── Path-invoked commands classify by basename ─────────────────────────
+//
+// Unlike agent-jj's guard (which deliberately blocks most git in
+// jj-colocated repos), the general engine must treat a command invoked by
+// path exactly like its bare name: `/usr/bin/git status` is the same
+// ReadOnly `git status`, and path invocation must not dodge classification
+// of mutating subcommands either.
+
+#[test]
+fn absolute_path_git_status_allows() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("/usr/bin/git status", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "/usr/bin/git status should classify like git status: {result:?}"
+    );
+}
+
+#[test]
+fn absolute_path_git_push_asks() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("/usr/bin/git push", default_kb());
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "/usr/bin/git push must not dodge mutating classification: {result:?}"
+    );
+}
+
+#[test]
+fn backslash_escaped_git_classifies_normally() {
+    let engine = default_engine();
+    let result = engine.evaluate_command(r"\git push", default_kb());
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "backslash-escaped git must not dodge classification: {result:?}"
+    );
+}

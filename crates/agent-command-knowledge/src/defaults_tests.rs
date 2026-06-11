@@ -315,7 +315,7 @@ fn subcommand_effects() {
             .unwrap_or_else(|| panic!("'{cmd}' should be in the KB"));
         let entry = command
             .subcommands
-            .get(*subcmd)
+            .get(subcmd)
             .unwrap_or_else(|| panic!("'{cmd} {subcmd}' should be in the KB"));
         assert_eq!(
             entry.effect, *expected,
