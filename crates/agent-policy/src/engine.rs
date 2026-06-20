@@ -937,7 +937,7 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
     // Two forms:
     //   1. `["FOO=bar"]` or `["FOO=bar", "BAR=baz"]` — all words are assignments
     //   2. `["export", "FOO=bar", ...]` — export keyword followed by assignments
-    let is_declaration = words.first().map_or(false, |w| {
+    let is_declaration = words.first().is_some_and(|w| {
         matches!(
             w.as_str(),
             "export" | "declare" | "readonly" | "local" | "typeset"
