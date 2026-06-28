@@ -17,7 +17,7 @@ pub mod word;
 mod wrapper;
 
 pub use subcommand_pattern::{SubcommandPattern, SubcommandPatternError, MAX_SUBCOMMAND_DEPTH};
-pub use word::{AssignmentValue, Word};
+pub use word::{AssignmentValue, Word, WordKind};
 pub use wrapper::{
     default_command_config, CommandConfig, ResolvedEnvPolicy, WrapperEnvPolicy, WrapperSpec,
     DEFAULT_EVAL_COMMANDS, DEFAULT_SHELLS, DEFAULT_SOURCE_COMMANDS, DEFAULT_WRAPPER_SPECS,

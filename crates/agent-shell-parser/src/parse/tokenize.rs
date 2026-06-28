@@ -27,7 +27,10 @@ pub fn find_base_command(words: &[Word]) -> String {
 pub fn command_characteristics(command: &str) -> CommandCharacteristics {
     let tokens = shlex_or_whitespace_words(command);
     let base = find_base_command(&tokens);
-    let has_dynamic_command = base.starts_with('$');
+    // Use Word::is_expansion() which checks structural metadata when
+    // available, falling back to starts_with('$') for unclassified words.
+    let cmd_word = tokens.iter().find(|t| !is_env_assignment(t));
+    let has_dynamic_command = cmd_word.is_some_and(|w| w.is_expansion());
     let indirect_execution = classify_surface(&base, &tokens, default_command_config());
 
     CommandCharacteristics {

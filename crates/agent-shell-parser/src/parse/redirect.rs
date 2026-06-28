@@ -60,7 +60,11 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
         operator,
         "" | "<" | "<<<" | "<<" | "<<-" | "<&" | ">&-" | "<&-"
     ) {
-        // tree-sitter-bash 0.25 parses `<>` as `<` + ERROR(`>`).
+        // Workaround: tree-sitter-bash does not include `<>` in its grammar
+        // (missing from the `file_redirect` choice list as of 0.25.1), so the
+        // parser sees `<` + ERROR(`>`).  This string check recovers the correct
+        // operator from the raw source text.
+        // Remove when tree-sitter-bash adds `<>` to its redirect operators.
         if operator == "<" {
             let text = node.utf8_text(source).unwrap_or("");
             if text.contains("<>") {

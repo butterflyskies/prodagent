@@ -1,6 +1,62 @@
 use std::borrow::Borrow;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+
+// ---------------------------------------------------------------------------
+// WordKind — structural classification from tree-sitter AST
+// ---------------------------------------------------------------------------
+
+/// Structural classification of a shell word based on tree-sitter AST node
+/// types.
+///
+/// When words are extracted from the tree-sitter parse tree, the node type
+/// (and its children) determines the kind. This lets downstream code check
+/// structural metadata instead of byte-scanning for `$`, `$(`, backticks,
+/// etc.
+///
+/// Words constructed from raw strings (e.g. `Word::from("...")`) default to
+/// [`Unclassified`](Self::Unclassified), which falls back to byte scanning
+/// for classification methods like [`as_classified_assignment`](Word::as_classified_assignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum WordKind {
+    /// Not yet classified — from string construction or shlex fallback.
+    /// Falls back to byte scanning for classification.
+    #[default]
+    Unclassified,
+    /// Plain literal — classified by tree-sitter as having no expansions.
+    Literal,
+    /// Contains a command substitution (`$(cmd)` or `` `cmd` ``).
+    CommandSubstitution,
+    /// Contains a variable expansion (`$VAR` or `${VAR}`).
+    VariableExpansion,
+    /// Contains an arithmetic expansion (`$((expr))`).
+    ArithmeticExpansion,
+    /// Contains multiple expansion types (e.g. `$(cmd)-$VAR`).
+    /// Treated conservatively — command substitution semantics win
+    /// (there IS an inner command to evaluate).
+    Dynamic,
+}
+
+impl WordKind {
+    /// Whether this kind represents an expansion that makes the runtime value
+    /// unknowable at parse time.
+    pub fn is_expansion(self) -> bool {
+        matches!(
+            self,
+            WordKind::CommandSubstitution
+                | WordKind::VariableExpansion
+                | WordKind::ArithmeticExpansion
+                | WordKind::Dynamic
+        )
+    }
+
+    /// Whether this kind contains a command substitution whose inner command
+    /// can be recursively evaluated through policy.
+    pub fn has_command_substitution(self) -> bool {
+        matches!(self, WordKind::CommandSubstitution | WordKind::Dynamic)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Word newtype
@@ -9,34 +65,87 @@ use std::ops::Deref;
 /// A single shell word token.
 ///
 /// Wraps a `String` with domain-specific helpers for shell analysis (flag
-/// detection, env assignment parsing, basename extraction). Derefs to `str`
-/// for seamless use wherever a string slice is expected.
+/// detection, env assignment parsing, basename extraction) and optional
+/// structural classification from the tree-sitter AST.
+///
+/// Derefs to `str` for seamless use wherever a string slice is expected.
 ///
 /// Note: `Word` carries raw shell text extracted from the parse tree. It is
 /// not sanitized or validated — consumers must not treat word equality as
 /// proof of command identity without considering the full resolution pipeline.
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct Word(String);
+///
+/// ## Equality and hashing
+///
+/// Equality and hashing are based on text content only — the [`WordKind`]
+/// metadata does not participate. This preserves backward compatibility and
+/// ensures words compare correctly regardless of how they were constructed.
+#[derive(Clone)]
+pub struct Word {
+    text: String,
+    kind: WordKind,
+}
 
 impl Word {
+    /// Create a word with explicit structural classification.
+    ///
+    /// Used by the tree-sitter word extraction path in `walk.rs`.
+    pub fn with_kind(text: impl Into<String>, kind: WordKind) -> Self {
+        Word {
+            text: text.into(),
+            kind,
+        }
+    }
+
+    /// Create a word classified as a literal (no expansions).
+    ///
+    /// Use when the tree-sitter node type guarantees no expansions
+    /// (e.g. bracket delimiters, operators, raw strings).
+    pub fn literal(text: impl Into<String>) -> Self {
+        Word {
+            text: text.into(),
+            kind: WordKind::Literal,
+        }
+    }
+
+    /// The word's structural classification from the tree-sitter AST.
+    ///
+    /// Returns [`WordKind::Unclassified`] for words constructed from raw
+    /// strings (e.g. via `Word::from`).
+    pub fn kind(&self) -> WordKind {
+        self.kind
+    }
+
+    /// Whether this word contains a shell expansion that makes its runtime
+    /// value unknowable at parse time.
+    ///
+    /// For tree-sitter-classified words, uses structural metadata. For
+    /// unclassified words (from string construction), falls back to
+    /// checking for `$` or backtick characters.
+    pub fn is_expansion(&self) -> bool {
+        match self.kind {
+            WordKind::Unclassified => self.text.contains('$') || self.text.contains('`'),
+            WordKind::Literal => false,
+            _ => true,
+        }
+    }
+
     /// Returns `true` if this word starts with `-`.
     pub fn is_flag(&self) -> bool {
-        self.0.starts_with('-')
+        self.text.starts_with('-')
     }
 
     /// Returns `true` if this word is a valid `KEY=VALUE` environment assignment.
     pub fn is_assignment(&self) -> bool {
-        is_env_assignment(&self.0)
+        is_env_assignment(&self.text)
     }
 
     /// Split at the first `=` and return `(key, value)` if the key is a valid
     /// environment variable name.
     pub fn as_assignment(&self) -> Option<(&str, &str)> {
-        let eq_pos = self.0.find('=')?;
-        let key = &self.0[..eq_pos];
+        let eq_pos = self.text.find('=')?;
+        let key = &self.text[..eq_pos];
         if is_valid_env_key(key) {
-            Some((key, &self.0[eq_pos + 1..]))
+            Some((key, &self.text[eq_pos + 1..]))
         } else {
             None
         }
@@ -44,31 +153,81 @@ impl Word {
 
     /// Like [`as_assignment`](Self::as_assignment), but classifies the value as
     /// [`AssignmentValue::Static`], [`AssignmentValue::CommandSubstitution`], or
-    /// [`AssignmentValue::VariableExpansion`] depending on the value's content.
+    /// [`AssignmentValue::VariableExpansion`] depending on the word's structural
+    /// metadata from tree-sitter.
+    ///
+    /// When the word has tree-sitter classification ([`WordKind`] is not
+    /// `Unclassified`), the structural metadata is used directly — no byte
+    /// scanning. For unclassified words (string-constructed), falls back to
+    /// [`AssignmentValue::classify`] which scans the value text.
     ///
     /// Carrying the classification in the return type means the policy layer
     /// cannot accidentally trust a value it has no way of seeing.
     pub fn as_classified_assignment(&self) -> Option<(&str, AssignmentValue<'_>)> {
         let (key, value) = self.as_assignment()?;
-        Some((key, AssignmentValue::classify(value)))
+        let av = match self.kind {
+            WordKind::CommandSubstitution | WordKind::Dynamic => {
+                AssignmentValue::CommandSubstitution
+            }
+            WordKind::VariableExpansion | WordKind::ArithmeticExpansion => {
+                AssignmentValue::VariableExpansion
+            }
+            WordKind::Literal => AssignmentValue::Static(value),
+            WordKind::Unclassified => AssignmentValue::classify(value),
+        };
+        Some((key, av))
     }
 
     /// Strip the path prefix, e.g. `/usr/bin/ls` -> `ls`.
     pub fn basename(&self) -> &str {
-        match self.0.rsplit_once('/') {
+        match self.text.rsplit_once('/') {
             Some((_, name)) if !name.is_empty() => name,
-            _ => &self.0,
+            _ => &self.text,
         }
     }
 
     /// Explicit accessor for the inner string slice.
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
     }
 
     /// Consume and return the inner `String`.
     pub fn into_inner(self) -> String {
-        self.0
+        self.text
+    }
+}
+
+// --- PartialEq / Eq / Hash (text-only, ignoring kind) ---
+
+impl PartialEq for Word {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Eq for Word {}
+
+impl Hash for Word {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+    }
+}
+
+// --- Serde (transparent — serializes as bare string, kind is transient) ---
+
+impl serde::Serialize for Word {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.text.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Word {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Word {
+            text,
+            kind: WordKind::Unclassified,
+        })
     }
 }
 
@@ -78,19 +237,19 @@ impl Deref for Word {
     type Target = str;
 
     fn deref(&self) -> &str {
-        &self.0
+        &self.text
     }
 }
 
 impl AsRef<str> for Word {
     fn as_ref(&self) -> &str {
-        &self.0
+        &self.text
     }
 }
 
 impl Borrow<str> for Word {
     fn borrow(&self) -> &str {
-        &self.0
+        &self.text
     }
 }
 
@@ -98,27 +257,33 @@ impl Borrow<str> for Word {
 
 impl fmt::Display for Word {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
 impl fmt::Debug for Word {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
+        fmt::Debug::fmt(&self.text, f)
     }
 }
 
-// --- From conversions ---
+// --- From conversions (default to Unclassified for backward compat) ---
 
 impl From<String> for Word {
     fn from(s: String) -> Self {
-        Word(s)
+        Word {
+            text: s,
+            kind: WordKind::Unclassified,
+        }
     }
 }
 
 impl From<&str> for Word {
     fn from(s: &str) -> Self {
-        Word(s.to_string())
+        Word {
+            text: s.to_string(),
+            kind: WordKind::Unclassified,
+        }
     }
 }
 
@@ -126,37 +291,37 @@ impl From<&str> for Word {
 
 impl PartialEq<str> for Word {
     fn eq(&self, other: &str) -> bool {
-        self.0 == other
+        self.text == other
     }
 }
 
 impl PartialEq<&str> for Word {
     fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
+        self.text == *other
     }
 }
 
 impl PartialEq<Word> for str {
     fn eq(&self, other: &Word) -> bool {
-        self == other.0
+        self == other.text
     }
 }
 
 impl PartialEq<Word> for &str {
     fn eq(&self, other: &Word) -> bool {
-        *self == other.0
+        *self == other.text
     }
 }
 
 impl PartialEq<String> for Word {
     fn eq(&self, other: &String) -> bool {
-        self.0 == *other
+        self.text == *other
     }
 }
 
 impl PartialEq<Word> for String {
     fn eq(&self, other: &Word) -> bool {
-        *self == other.0
+        *self == other.text
     }
 }
 
@@ -191,9 +356,12 @@ pub enum AssignmentValue<'a> {
 }
 
 impl<'a> AssignmentValue<'a> {
-    /// Classify a raw assignment value as [`Static`](Self::Static),
-    /// [`CommandSubstitution`](Self::CommandSubstitution), or
-    /// [`VariableExpansion`](Self::VariableExpansion).
+    /// Classify a raw assignment value by byte scanning.
+    ///
+    /// This is the **fallback** path for words without tree-sitter structural
+    /// metadata (i.e. [`WordKind::Unclassified`]). When a word carries
+    /// tree-sitter classification, [`Word::as_classified_assignment`] uses
+    /// the structural metadata directly and does not call this method.
     ///
     /// A value containing `$(` or a backtick is classified as
     /// `CommandSubstitution` — these have inner commands that can be
@@ -322,11 +490,55 @@ mod tests {
     }
 
     #[test]
+    fn word_equality_ignores_kind() {
+        let a = Word::from("hello");
+        let b = Word::literal("hello");
+        let c = Word::with_kind("hello", WordKind::CommandSubstitution);
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    #[test]
     fn env_assignment_checks() {
         assert!(is_env_assignment("FOO=bar"));
         assert!(is_env_assignment("_A=1"));
         assert!(!is_env_assignment("123=bad"));
         assert!(!is_env_assignment("no_equals"));
+    }
+
+    // ── WordKind ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn word_kind_default_is_unclassified() {
+        assert_eq!(Word::from("x").kind(), WordKind::Unclassified);
+    }
+
+    #[test]
+    fn word_kind_literal() {
+        assert_eq!(Word::literal("x").kind(), WordKind::Literal);
+    }
+
+    #[test]
+    fn word_kind_with_kind() {
+        let w = Word::with_kind("$(cmd)", WordKind::CommandSubstitution);
+        assert_eq!(w.kind(), WordKind::CommandSubstitution);
+    }
+
+    #[test]
+    fn word_is_expansion_classified() {
+        assert!(!Word::literal("hello").is_expansion());
+        assert!(Word::with_kind("$(cmd)", WordKind::CommandSubstitution).is_expansion());
+        assert!(Word::with_kind("$VAR", WordKind::VariableExpansion).is_expansion());
+        assert!(Word::with_kind("$((1+2))", WordKind::ArithmeticExpansion).is_expansion());
+        assert!(Word::with_kind("$(cmd)-$VAR", WordKind::Dynamic).is_expansion());
+    }
+
+    #[test]
+    fn word_is_expansion_unclassified_fallback() {
+        assert!(Word::from("$VAR").is_expansion());
+        assert!(Word::from("$(cmd)").is_expansion());
+        assert!(Word::from("`cmd`").is_expansion());
+        assert!(!Word::from("hello").is_expansion());
     }
 
     // ── AssignmentValue classification ────────────────────────────────────
@@ -422,7 +634,8 @@ mod tests {
     }
 
     #[test]
-    fn word_as_classified_assignment() {
+    fn word_as_classified_assignment_unclassified() {
+        // Unclassified words (from string construction) fall back to byte scanning.
         assert_eq!(
             Word::from("FOO=bar").as_classified_assignment(),
             Some(("FOO", AssignmentValue::Static("bar")))
@@ -443,6 +656,32 @@ mod tests {
     }
 
     #[test]
+    fn word_as_classified_assignment_with_kind() {
+        // Tree-sitter-classified words use structural metadata directly.
+        assert_eq!(
+            Word::with_kind("FOO=bar", WordKind::Literal).as_classified_assignment(),
+            Some(("FOO", AssignmentValue::Static("bar")))
+        );
+        assert_eq!(
+            Word::with_kind("FOO=$(cmd)", WordKind::CommandSubstitution).as_classified_assignment(),
+            Some(("FOO", AssignmentValue::CommandSubstitution))
+        );
+        assert_eq!(
+            Word::with_kind("FOO=$VAR", WordKind::VariableExpansion).as_classified_assignment(),
+            Some(("FOO", AssignmentValue::VariableExpansion))
+        );
+        assert_eq!(
+            Word::with_kind("FOO=$((1+2))", WordKind::ArithmeticExpansion)
+                .as_classified_assignment(),
+            Some(("FOO", AssignmentValue::VariableExpansion))
+        );
+        assert_eq!(
+            Word::with_kind("FOO=$(cmd)-$VAR", WordKind::Dynamic).as_classified_assignment(),
+            Some(("FOO", AssignmentValue::CommandSubstitution))
+        );
+    }
+
+    #[test]
     fn assignment_value_accessors() {
         assert_eq!(AssignmentValue::Static("x").static_value(), Some("x"));
         assert_eq!(AssignmentValue::CommandSubstitution.static_value(), None);
@@ -455,5 +694,18 @@ mod tests {
         assert!(AssignmentValue::CommandSubstitution.is_command_substitution());
         assert!(!AssignmentValue::VariableExpansion.is_command_substitution());
         assert!(!AssignmentValue::Static("x").is_command_substitution());
+    }
+
+    // ── Serde round-trip ─────────────────────────────────────────────────
+
+    #[test]
+    fn serde_transparent_roundtrip() {
+        let w = Word::with_kind("hello", WordKind::CommandSubstitution);
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, "\"hello\"");
+        let w2: Word = serde_json::from_str(&json).unwrap();
+        assert_eq!(w2, "hello");
+        // Deserialized word is Unclassified (kind is transient)
+        assert_eq!(w2.kind(), WordKind::Unclassified);
     }
 }
