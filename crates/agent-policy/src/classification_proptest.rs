@@ -299,25 +299,32 @@ proptest! {
         //
         // Parse a dummy command line through tree-sitter to get structural
         // classification of the command word.
+        //
+        // Use prop_assume! instead of silent `if let` skips — proptest tracks
+        // discards and fails if the generator produces too many unparseable
+        // cases (default reject threshold: 2^31).
         let dummy_cmd = format!("{word_text} arg");
         let pipeline = parse_with_substitutions(&dummy_cmd);
 
-        if let Ok(pipeline) = pipeline {
-            if let Some(seg) = pipeline.segments.first() {
-                if let Some(ts_word) = seg.words.first() {
-                    let structural_says_expansion = ts_word.is_expansion();
-                    prop_assert_eq!(
-                        structural_says_expansion,
-                        string_says_expansion,
-                        "tree-sitter is_expansion()={} but string check={} for {:?} (kind={:?})",
-                        structural_says_expansion,
-                        string_says_expansion,
-                        word_text,
-                        ts_word.kind()
-                    );
-                }
-            }
-        }
+        prop_assume!(pipeline.is_ok(), "parse failed for {:?} — discarding", word_text);
+        let pipeline = pipeline.unwrap();
+
+        prop_assume!(!pipeline.segments.is_empty(), "no segments for {:?} — discarding", word_text);
+        let seg = &pipeline.segments[0];
+
+        prop_assume!(!seg.words.is_empty(), "no words in segment for {:?} — discarding", word_text);
+        let ts_word = &seg.words[0];
+
+        let structural_says_expansion = ts_word.is_expansion();
+        prop_assert_eq!(
+            structural_says_expansion,
+            string_says_expansion,
+            "tree-sitter is_expansion()={} but string check={} for {:?} (kind={:?})",
+            structural_says_expansion,
+            string_says_expansion,
+            word_text,
+            ts_word.kind()
+        );
 
         // ── Unclassified word (simulating byte-scanning path) ──────────
         //
