@@ -165,7 +165,7 @@ impl ProdagentConfig {
     ///
     /// This is the low-level constructor — prefer [`ConfigLoader`](crate::ConfigLoader)
     /// for filesystem-based loading with figment.
-    pub fn from_layers(
+    pub(crate) fn from_layers(
         defaults: ConfigLayer,
         user: Option<ConfigLayer>,
         project: Option<ConfigLayer>,
