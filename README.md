@@ -15,7 +15,7 @@ The primary binary is `tool-gate`, a Claude Code `PreToolUse` hook that evaluate
 | `prodagent-types` | lib | Shared foundation types — `Word`, `WrapperSpec`, `SubcommandPattern`, compiled default configs |
 | `agent-shell-parser` | lib | Tree-sitter-bash parsing — shell tokenization, compound commands, substitutions, wrapper resolution |
 | `agent-command-knowledge` | lib | Command taxonomy — effect classification, subcommand maps, flag schemas, env gates, path specs |
-| `agent-policy` | lib | Policy engine — maps classified commands to Allow/Ask/Deny decisions with configurable rules |
+| `prodagent-policy` | lib | Policy engine — maps classified commands to Allow/Ask/Deny decisions with configurable rules |
 | `prodagent-config` | lib | Three-tier config cascade (defaults / user / project) via figment with monotonicity enforcement |
 | `prodagent-tool-gate` | **bin** | `PreToolUse` hook binary — the main entry point for gating agent Bash commands |
 | `agent-jj` | **bin** | Claude Code hooks for jj-colocated repos — git guard, workspace creation, cleanup |
@@ -30,7 +30,7 @@ agent-shell-parser
     |
 agent-command-knowledge
     |
-agent-policy ------------- prodagent-proofs
+prodagent-policy ---------- prodagent-proofs
     |
 prodagent-config
     |
@@ -49,7 +49,7 @@ Five-layer separation:
 
 3. **Knowledge** (`agent-command-knowledge`) — Classify commands by effect (`ReadOnly < Mutating < Unknown`). Embedded defaults cover git, cargo, gh, kubectl, and 50+ common commands with subcommand-level granularity, flag schemas, affected path specs, and environment gates. User config extends/overrides via `KnowledgeOverlay`.
 
-4. **Policy** (`agent-policy`) — The security-critical decision layer. Maps classified command effects to `Allow < Ask < Deny` decisions using configurable rules. Handles wrapper escalation, compound command aggregation (strictest wins), escalation flags, redirect detection, env gate evaluation with opaque value handling, and affected path extraction. Configurable opaque env ceiling controls the decision for unknown environment values (default: Ask).
+4. **Policy** (`prodagent-policy`) — The security-critical decision layer. Maps classified command effects to `Allow < Ask < Deny` decisions using configurable rules. Handles wrapper escalation, compound command aggregation (strictest wins), escalation flags, redirect detection, env gate evaluation with opaque value handling, and affected path extraction. Configurable opaque env ceiling controls the decision for unknown environment values (default: Ask).
 
 5. **Configuration** (`prodagent-config`) — Three-tier cascade via figment:
    - **Defaults** — compiled into the binary
