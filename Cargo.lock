@@ -399,6 +399,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prodagent-proofs"
+version = "0.8.1"
+dependencies = [
+ "agent-policy",
+]
+
+[[package]]
 name = "prodagent-types"
 version = "0.8.1"
 dependencies = [

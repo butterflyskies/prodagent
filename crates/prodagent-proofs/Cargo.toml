@@ -1,0 +1,15 @@
+[package]
+name = "prodagent-proofs"
+version.workspace = true
+description = "Kani proof harnesses for prodagent security invariants"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[dependencies]
+agent-policy = { path = "../agent-policy" }
