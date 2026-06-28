@@ -4,7 +4,7 @@
 //! defaults → user → project. Figment handles the merge semantics and
 //! tracks provenance (which file set which value) for free.
 
-use std::path::{Path, PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
 
 use figment::providers::{Format, Toml};
 use figment::Figment;
@@ -66,8 +66,8 @@ fn format_violations(violations: &[MonotonicityViolation]) -> String {
 ///     .expect("config should be valid");
 /// ```
 pub struct ConfigLoader {
-    user_path: Option<PathBuf>,
-    project_path: Option<PathBuf>,
+    user_path: Option<Utf8PathBuf>,
+    project_path: Option<Utf8PathBuf>,
 }
 
 impl ConfigLoader {
@@ -83,7 +83,7 @@ impl ConfigLoader {
     ///
     /// The file is optional — if it doesn't exist, the user layer is skipped
     /// silently (figment treats missing files as empty providers).
-    pub fn user_config(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn user_config(mut self, path: impl Into<Utf8PathBuf>) -> Self {
         self.user_path = Some(path.into());
         self
     }
@@ -92,7 +92,7 @@ impl ConfigLoader {
     ///
     /// The file is optional — if it doesn't exist, the project layer is
     /// skipped silently.
-    pub fn project_config(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn project_config(mut self, path: impl Into<Utf8PathBuf>) -> Self {
         self.project_path = Some(path.into());
         self
     }
@@ -204,8 +204,8 @@ impl ConfigLoader {
         let mut loader = Self::new();
 
         // User config
-        if let Some(home) = std::env::var_os("HOME") {
-            let user_path = Path::new(&home)
+        if let Ok(home) = std::env::var("HOME") {
+            let user_path = Utf8Path::new(&home)
                 .join(".config")
                 .join("prodagent")
                 .join("config.toml");
@@ -213,7 +213,11 @@ impl ConfigLoader {
         }
 
         // Project config — walk up from CWD
-        if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(cwd) = std::env::current_dir()
+            .ok()
+            .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
+            .ok_or(())
+        {
             if let Some(project_root) = find_project_root(&cwd) {
                 let project_path = project_root.join("config.toml");
                 if project_path.exists() {
@@ -234,7 +238,7 @@ impl Default for ConfigLoader {
 
 /// Walk up from `start` looking for a `.prodagent` directory.
 /// Returns the `.prodagent` directory path if found.
-fn find_project_root(start: &Path) -> Option<PathBuf> {
+fn find_project_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
     let mut current = Some(start);
     while let Some(dir) = current {
         let candidate = dir.join(".prodagent");

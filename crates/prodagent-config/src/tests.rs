@@ -640,7 +640,7 @@ read_only = "ask"
     .unwrap();
 
     let config = ConfigLoader::new()
-        .user_config(&user_path)
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
         .load()
         .expect("should load");
 
@@ -666,7 +666,7 @@ read_only = "ask"
     .unwrap();
 
     let config = ConfigLoader::new()
-        .project_config(&project_path)
+        .project_config(camino::Utf8PathBuf::from_path_buf(project_path).unwrap())
         .load()
         .expect("should load");
 
@@ -704,8 +704,8 @@ read_only = "allow"
     .unwrap();
 
     let result = ConfigLoader::new()
-        .user_config(&user_path)
-        .project_config(&project_path)
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+        .project_config(camino::Utf8PathBuf::from_path_buf(project_path).unwrap())
         .load();
 
     assert!(result.is_err());

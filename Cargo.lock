@@ -440,6 +440,7 @@ version = "0.8.1"
 dependencies = [
  "agent-command-knowledge",
  "agent-policy",
+ "camino",
  "figment",
  "serde",
  "tempfile",
