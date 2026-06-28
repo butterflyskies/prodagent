@@ -1,5 +1,5 @@
 [package]
-name = "agent-policy"
+name = "prodagent-policy"
 version.workspace = true
 description = "Policy engine for agent tool authorization — maps command effects to allow/ask/deny decisions"
 readme = "../../README.md"

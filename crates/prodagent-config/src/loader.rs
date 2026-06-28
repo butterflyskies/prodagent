@@ -11,8 +11,8 @@ use figment::Figment;
 use thiserror::Error;
 
 use agent_command_knowledge::KnowledgeBase;
-use agent_policy::config::PolicyConfig;
-use agent_policy::PolicyDecision;
+use prodagent_policy::config::PolicyConfig;
+use prodagent_policy::PolicyDecision;
 
 use crate::monotonicity::{validate_monotonicity, MonotonicityViolation};
 use crate::types::{ConfigLayer, ProdagentConfig};
@@ -131,7 +131,7 @@ impl ConfigLoader {
 
         // Build the user-level policy (defaults + user, before project)
         let user_policy = PolicyConfig {
-            defaults: agent_policy::config::EffectDefaults {
+            defaults: prodagent_policy::config::EffectDefaults {
                 read_only: base_layer
                     .policy
                     .defaults

@@ -12,4 +12,4 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
-agent-policy = { path = "../agent-policy" }
+prodagent-policy = { path = "../agent-policy" }

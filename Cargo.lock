@@ -25,19 +25,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-policy"
-version = "0.8.2"
-dependencies = [
- "agent-command-knowledge",
- "agent-shell-parser",
- "camino",
- "prodagent-types",
- "proptest",
- "serde",
- "toml",
-]
-
-[[package]]
 name = "agent-shell-parser"
 version = "0.8.2"
 dependencies = [
@@ -504,10 +491,10 @@ name = "prodagent-config"
 version = "0.8.2"
 dependencies = [
  "agent-command-knowledge",
- "agent-policy",
  "camino",
  "dirs",
  "figment",
+ "prodagent-policy",
  "serde",
  "tempfile",
  "thiserror",
@@ -515,10 +502,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "prodagent-policy"
+version = "0.8.2"
+dependencies = [
+ "agent-command-knowledge",
+ "agent-shell-parser",
+ "camino",
+ "prodagent-types",
+ "proptest",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "prodagent-proofs"
 version = "0.8.2"
 dependencies = [
- "agent-policy",
+ "prodagent-policy",
 ]
 
 [[package]]
@@ -526,13 +526,13 @@ name = "prodagent-tool-gate"
 version = "0.8.2"
 dependencies = [
  "agent-command-knowledge",
- "agent-policy",
  "agent-shell-parser",
  "anyhow",
  "camino",
  "clap",
  "dirs",
  "prodagent-config",
+ "prodagent-policy",
  "serde",
  "serde_json",
  "time",

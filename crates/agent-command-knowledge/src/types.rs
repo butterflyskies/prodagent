@@ -142,7 +142,7 @@ impl FlagSchema {
 ///
 /// This is the KB-side decision type — it describes what should happen, not
 /// the policy engine's final decision. The policy engine maps these to
-/// [`PolicyDecision`](agent_policy::PolicyDecision) values.
+/// [`PolicyDecision`](prodagent_policy::PolicyDecision) values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EnvGateAction {

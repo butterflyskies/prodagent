@@ -37,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `agent-types`: `WrapperEnvPolicy` enum (Inherit/Unknown/Explicit) on `WrapperSpec` for env propagation modeling
 - `agent-shell-parser`: `resolve_command_with_extra_wrappers()` — accepts additional WrapperSpecs beyond compiled defaults
 - `agent-shell-parser`: `merged_config()` — builds a CommandConfig from defaults + extras with deduplication
-- `agent-policy`: `derive_wrapper_specs()` — extracts minimal WrapperSpecs from KB-only wrappers and primes the parser at evaluation time, closing the wrapper drift gap
-- `agent-policy`: Merged CommandConfig cached per `evaluate_command` call and threaded through the evaluation tree (no per-depth cloning)
+- `prodagent-policy`: `derive_wrapper_specs()` — extracts minimal WrapperSpecs from KB-only wrappers and primes the parser at evaluation time, closing the wrapper drift gap
+- `prodagent-policy`: Merged CommandConfig cached per `evaluate_command` call and threaded through the evaluation tree (no per-depth cloning)
 - `agent-command-knowledge`: KB entries for 7 parser-only wrappers (builtin, command, exec, setsid, ionice, chrt, taskset) completing wrapper list symmetry
 - 15 new tests including parser-level stripping tests for watch/ltrace/su, wrapper resolution tests for doas/pkexec, and SubcommandPattern proptests
 
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- `agent-policy`: KB-only wrappers (doas, pkexec) now stripped correctly to reveal and classify the inner command, instead of falling through to the generic "inner command not resolved" path
+- `prodagent-policy`: KB-only wrappers (doas, pkexec) now stripped correctly to reveal and classify the inner command, instead of falling through to the generic "inner command not resolved" path
 - `agent-types`: `su` WrapperSpec uses `skip_positionals: 1` to skip the username argument and `-c`/`--command` as unanalyzable flags
 - `agent-types`: `watch` WrapperSpec has `-n`/`--interval` as value-consuming flags (previously misparsed interval as inner command)
 - `agent-types`: `ltrace` WrapperSpec has `-e`/`-o`/`-p`/`-n`/`-s`/`-A` as value-consuming flags
@@ -60,15 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **New crate**: `agent-policy` — policy engine for agent tool authorization, maps command effects to allow/ask/deny decisions
-- `agent-policy`: Full parse→classify→decide pipeline via `PolicyEngine::evaluate_command()` — takes a raw command string, returns a final authorization decision
-- `agent-policy`: `PolicyConfig` with configurable effect-class defaults and per-command/subcommand overrides
-- `agent-policy`: `PolicyConfigBuilder` for ergonomic config construction (`.allow()` / `.ask()` / `.deny()` / `.subcommand()`)
-- `agent-policy`: Config validation — rejects non-monotonic effect defaults and no-op override entries at construction time
-- `agent-policy`: Wrapper handling with floor effect, `escalates_privilege` enforcement, and fail-closed fallback for unresolved inner commands
-- `agent-policy`: Compound command aggregation (strictest wins), escalation flag detection, redirection escalation
-- `agent-policy`: 7 property-based tests including wrapper sampling from KB (caught wrapper list drift bug)
-- `agent-policy`: 43 pipeline and engine integration tests
+- **New crate**: `prodagent-policy` — policy engine for agent tool authorization, maps command effects to allow/ask/deny decisions
+- `prodagent-policy`: Full parse→classify→decide pipeline via `PolicyEngine::evaluate_command()` — takes a raw command string, returns a final authorization decision
+- `prodagent-policy`: `PolicyConfig` with configurable effect-class defaults and per-command/subcommand overrides
+- `prodagent-policy`: `PolicyConfigBuilder` for ergonomic config construction (`.allow()` / `.ask()` / `.deny()` / `.subcommand()`)
+- `prodagent-policy`: Config validation — rejects non-monotonic effect defaults and no-op override entries at construction time
+- `prodagent-policy`: Wrapper handling with floor effect, `escalates_privilege` enforcement, and fail-closed fallback for unresolved inner commands
+- `prodagent-policy`: Compound command aggregation (strictest wins), escalation flag detection, redirection escalation
+- `prodagent-policy`: 7 property-based tests including wrapper sampling from KB (caught wrapper list drift bug)
+- `prodagent-policy`: 43 pipeline and engine integration tests
 
 ### Changed
 
@@ -77,8 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- `agent-policy`: Wrapper fail-open bypass — KB-only wrappers (doas, su, pkexec, watch, ltrace) that the parser couldn't strip now correctly apply floor effect and escalates_privilege instead of defaulting to Allow
-- `agent-policy`: Bare wrappers (e.g. `sudo` with no arguments) fail-closed to Ask instead of Allow
+- `prodagent-policy`: Wrapper fail-open bypass — KB-only wrappers (doas, su, pkexec, watch, ltrace) that the parser couldn't strip now correctly apply floor effect and escalates_privilege instead of defaulting to Allow
+- `prodagent-policy`: Bare wrappers (e.g. `sudo` with no arguments) fail-closed to Ask instead of Allow
 
 ## [0.6.0] - 2026-05-31
 

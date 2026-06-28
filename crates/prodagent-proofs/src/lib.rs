@@ -19,7 +19,7 @@
 
 #[cfg(kani)]
 mod proofs {
-    use agent_policy::PolicyDecision;
+    use prodagent_policy::PolicyDecision;
 
     // ══════════════════════════════════════════════════════════════════
     // Invariant #1 — Policy monotonicity

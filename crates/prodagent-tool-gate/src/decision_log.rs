@@ -6,8 +6,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-use agent_policy::PolicyDecision;
 use camino::Utf8PathBuf;
+use prodagent_policy::PolicyDecision;
 use serde::Serialize;
 use time::format_description::well_known::Iso8601;
 use time::OffsetDateTime;

@@ -11,8 +11,8 @@
 
 use std::fmt;
 
-use agent_policy::config::{CommandPolicy, PolicyConfig};
-use agent_policy::PolicyDecision;
+use prodagent_policy::config::{CommandPolicy, PolicyConfig};
+use prodagent_policy::PolicyDecision;
 
 use crate::types::PolicyOverlay;
 
@@ -151,7 +151,7 @@ fn resolve_command_decision(policy: &PolicyConfig, cmd_name: &str) -> PolicyDeci
 
 /// The weakest (most permissive) effect default — used as the conservative
 /// floor when we can't determine a command's effect class.
-fn weakest_effect_default(defaults: &agent_policy::config::EffectDefaults) -> PolicyDecision {
+fn weakest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -> PolicyDecision {
     defaults
         .read_only
         .min(defaults.mutating)
