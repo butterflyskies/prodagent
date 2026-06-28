@@ -25,7 +25,7 @@ tree-sitter-bash = "0.25"
 prodagent-types = { path = "crates/prodagent-types", version = "^0.8" }
 agent-shell-parser = { path = "crates/agent-shell-parser", version = "^0.8" }
 agent-command-knowledge = { path = "crates/agent-command-knowledge", version = "^0.8" }
-agent-policy = { path = "crates/agent-policy", version = "^0.8" }
+prodagent-policy = { path = "crates/agent-policy", version = "^0.8" }
 prodagent-config = { path = "crates/prodagent-config", version = "^0.8" }
 time = { version = "0.3", features = ["formatting", "macros"] }
 

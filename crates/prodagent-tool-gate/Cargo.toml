@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent-command-knowledge = { workspace = true }
-agent-policy = { workspace = true }
+prodagent-policy = { workspace = true }
 agent-shell-parser = { workspace = true }
 prodagent-config = { workspace = true }
 anyhow = { workspace = true }

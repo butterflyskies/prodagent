@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use agent_command_knowledge::merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};
-use agent_policy::config::{CommandPolicy, EffectDefaults, PolicyConfig};
-use agent_policy::PolicyDecision;
+use prodagent_policy::config::{CommandPolicy, EffectDefaults, PolicyConfig};
+use prodagent_policy::PolicyDecision;
 use serde::{Deserialize, Serialize};
 
 // ── Per-layer overlay ─────────────────────────────────────────────────────

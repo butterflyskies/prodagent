@@ -13,7 +13,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 agent-command-knowledge = { workspace = true }
-agent-policy = { workspace = true }
+prodagent-policy = { workspace = true }
 camino = { workspace = true }
 dirs = { workspace = true }
 figment = { workspace = true }

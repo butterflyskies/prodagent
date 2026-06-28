@@ -1,7 +1,7 @@
 //! Core hook evaluation: stdin → policy engine → stdout.
 
 use agent_command_knowledge::default_knowledge_base;
-use agent_policy::{PolicyDecision, PolicyEngine};
+use prodagent_policy::{PolicyDecision, PolicyEngine};
 use agent_shell_parser::hook::{parse_input, PreToolUseInput};
 use prodagent_config::{load_and_apply, ConfigLoader};
 use serde::Serialize;
