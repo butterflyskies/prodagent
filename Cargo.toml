@@ -17,6 +17,7 @@ thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 shlex = "1"
+camino = "1"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 prodagent-types = { path = "crates/prodagent-types", version = "^0.8" }

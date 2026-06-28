@@ -9,6 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+camino = { workspace = true }
 prodagent-types = { workspace = true }
 agent-shell-parser = { workspace = true }
 serde = { workspace = true }

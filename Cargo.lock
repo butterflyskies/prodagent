@@ -7,6 +7,7 @@ name = "agent-command-knowledge"
 version = "0.8.1"
 dependencies = [
  "agent-shell-parser",
+ "camino",
  "prodagent-types",
  "proptest",
  "serde",
@@ -29,6 +30,7 @@ version = "0.8.1"
 dependencies = [
  "agent-command-knowledge",
  "agent-shell-parser",
+ "camino",
  "prodagent-types",
  "proptest",
  "serde",
@@ -140,6 +142,12 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+
+[[package]]
+name = "camino"
+version = "1.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f2d30e4173c4026932d51d31d6b0613b1fd3014bf3f9f8943d4ba139c437ba0"
 
 [[package]]
 name = "cc"

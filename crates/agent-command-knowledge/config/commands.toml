@@ -588,45 +588,86 @@ effect = "mutating"
 name = "ls"
 effect = "read-only"
 
+[commands.ls.paths]
+positionals = "all"
+
 [commands.tree]
 name = "tree"
 effect = "read-only"
+
+[commands.tree.paths]
+positionals = "all"
 
 [commands.cat]
 name = "cat"
 effect = "read-only"
 
+[commands.cat.paths]
+positionals = "all"
+
 [commands.head]
 name = "head"
 effect = "read-only"
+
+[commands.head.paths]
+positionals = "all"
 
 [commands.tail]
 name = "tail"
 effect = "read-only"
 
+[commands.tail.paths]
+positionals = "all"
+
 [commands.grep]
 name = "grep"
 effect = "read-only"
 
+# First positional is the pattern; remaining positionals are file/directory paths.
+[commands.grep.paths]
+positionals = { tail = 1 }
+
 [commands.find]
 name = "find"
 effect = "read-only"
+# find's grammar mixes starting directories with expression tokens (-name, -type,
+# etc.) that look like positionals but aren't paths. Skipping path extraction here
+# until we have expression-aware parsing.
+
+[commands.file]
+name = "file"
+effect = "read-only"
+
+[commands.file.paths]
+positionals = "all"
 
 [commands.stat]
 name = "stat"
 effect = "read-only"
 
+[commands.stat.paths]
+positionals = "all"
+
 [commands.diff]
 name = "diff"
 effect = "read-only"
+
+[commands.diff.paths]
+positionals = "all"
 
 [commands.wc]
 name = "wc"
 effect = "read-only"
 
+[commands.wc.paths]
+positionals = "all"
+
 [commands.sort]
 name = "sort"
 effect = "read-only"
+
+[commands.sort.paths]
+positionals = "all"
 
 [commands.uniq]
 name = "uniq"
@@ -680,6 +721,9 @@ effect = "read-only"
 name = "du"
 effect = "read-only"
 
+[commands.du.paths]
+positionals = "all"
+
 [commands.free]
 name = "free"
 effect = "read-only"
@@ -697,21 +741,38 @@ effect = "read-only"
 name = "rg"
 effect = "read-only"
 
+# First positional is the pattern; remaining positionals are paths/directories.
+[commands.rg.paths]
+positionals = { tail = 1 }
+
 [commands.fd]
 name = "fd"
 effect = "read-only"
+
+# First positional is the pattern; remaining positionals are directories to search.
+[commands.fd.paths]
+positionals = { tail = 1 }
 
 [commands.bat]
 name = "bat"
 effect = "read-only"
 
+[commands.bat.paths]
+positionals = "all"
+
 [commands.eza]
 name = "eza"
 effect = "read-only"
 
+[commands.eza.paths]
+positionals = "all"
+
 [commands.tokei]
 name = "tokei"
 effect = "read-only"
+
+[commands.tokei.paths]
+positionals = "all"
 
 [commands.hyperfine]
 name = "hyperfine"

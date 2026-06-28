@@ -15,12 +15,13 @@
 //! path-scoped. The authorization check itself is intentionally out of scope
 //! here — this layer only ensures the paths reach the decision.
 //!
-//! Modelling the path set as a newtype (rather than passing bare `Vec<Word>`
-//! around) keeps the plumbing type-driven: callers can't accidentally swap a
-//! path list for some other word list, and the union/dedup semantics used to
-//! aggregate paths across compound-command segments live in one place.
+//! Modelling the path set as a newtype (rather than passing bare
+//! `Vec<Utf8PathBuf>` around) keeps the plumbing type-driven: callers can't
+//! accidentally swap a path list for some other collection, and the union/dedup
+//! semantics used to aggregate paths across compound-command segments live in
+//! one place.
 
-use agent_shell_parser::parse::Word;
+use camino::Utf8PathBuf;
 
 /// The set of filesystem paths a command (or compound command) is expected to
 /// affect, as extracted by the knowledge layer and carried alongside a policy
@@ -32,7 +33,7 @@ use agent_shell_parser::parse::Word;
 /// [`AffectedPaths::union_with`], duplicates are collapsed while first-seen
 /// order is preserved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AffectedPaths(Vec<Word>);
+pub struct AffectedPaths(Vec<Utf8PathBuf>);
 
 impl AffectedPaths {
     /// Wrap a list of paths exactly as extracted by the knowledge layer.
@@ -41,7 +42,7 @@ impl AffectedPaths {
     /// the knowledge layer's `affected_paths` for a single command so that the
     /// engine neither adds nor drops paths.
     #[must_use]
-    pub fn new(paths: Vec<Word>) -> Self {
+    pub fn new(paths: Vec<Utf8PathBuf>) -> Self {
         Self(paths)
     }
 
@@ -65,12 +66,12 @@ impl AffectedPaths {
 
     /// The paths as a slice.
     #[must_use]
-    pub fn as_slice(&self) -> &[Word] {
+    pub fn as_slice(&self) -> &[Utf8PathBuf] {
         &self.0
     }
 
     /// Iterate over the paths.
-    pub fn iter(&self) -> std::slice::Iter<'_, Word> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Utf8PathBuf> {
         self.0.iter()
     }
 
@@ -88,21 +89,21 @@ impl AffectedPaths {
     }
 }
 
-impl From<Vec<Word>> for AffectedPaths {
-    fn from(paths: Vec<Word>) -> Self {
+impl From<Vec<Utf8PathBuf>> for AffectedPaths {
+    fn from(paths: Vec<Utf8PathBuf>) -> Self {
         Self::new(paths)
     }
 }
 
-impl FromIterator<Word> for AffectedPaths {
-    fn from_iter<I: IntoIterator<Item = Word>>(iter: I) -> Self {
+impl FromIterator<Utf8PathBuf> for AffectedPaths {
+    fn from_iter<I: IntoIterator<Item = Utf8PathBuf>>(iter: I) -> Self {
         Self(iter.into_iter().collect())
     }
 }
 
 impl<'a> IntoIterator for &'a AffectedPaths {
-    type Item = &'a Word;
-    type IntoIter = std::slice::Iter<'a, Word>;
+    type Item = &'a Utf8PathBuf;
+    type IntoIter = std::slice::Iter<'a, Utf8PathBuf>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
