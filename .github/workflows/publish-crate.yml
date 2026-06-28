@@ -1,10 +1,15 @@
 # Publish workspace crates to crates.io using Trusted Publishing (OIDC).
 # Called by the release workflow after the draft release is created.
 #
-# Publish order: prodagent-types (lib, no deps) first, then agent-shell-parser
-# (lib, depends on types), then agent-command-knowledge (lib, depends on
-# parser + types), then agent-jj (binary). Each lib must be indexed by
-# crates.io before its dependents can resolve.
+# Publish order (dependency chain):
+#   1. prodagent-types       (lib, no deps)
+#   2. agent-shell-parser    (lib, depends on types)
+#   3. agent-command-knowledge (lib, depends on parser + types)
+#   4. prodagent-policy      (lib, depends on types + parser + knowledge)
+#   5. prodagent-config      (lib, depends on knowledge + policy)
+#   6. agent-jj              (binary, depends on parser)
+#   7. prodagent-tool-gate   (binary, depends on config + policy + parser + knowledge)
+# Each lib must be indexed by crates.io before its dependents can resolve.
 name: Publish Crate
 
 on:
@@ -85,7 +90,58 @@ jobs:
             sleep 2
           done
 
+      - name: Publish prodagent-policy
+        run: cargo publish -p prodagent-policy --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for prodagent-policy on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for prodagent-policy@${version} to appear on crates.io..."
+          for i in $(seq 1 15); do
+            if cargo search prodagent-policy 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Publish prodagent-config
+        run: cargo publish -p prodagent-config --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for prodagent-config on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for prodagent-config@${version} to appear on crates.io..."
+          for i in $(seq 1 15); do
+            if cargo search prodagent-config 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Publish agent-jj
         run: cargo publish -p agent-jj --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Wait for agent-jj on crates.io
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Waiting for agent-jj@${version} to appear on crates.io..."
+          for i in $(seq 1 15); do
+            if cargo search agent-jj 2>/dev/null | grep -q "\"${version}\""; then
+              echo "Found after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Publish prodagent-tool-gate
+        run: cargo publish -p prodagent-tool-gate --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -92,7 +92,7 @@ jobs:
           archive="prodagent-${TAG_NAME}-${{ matrix.target }}"
           mkdir "${archive}"
 
-          bins=(agent-jj)
+          bins=(agent-jj prodagent-tool-gate)
           ext=""
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             ext=".exe"
