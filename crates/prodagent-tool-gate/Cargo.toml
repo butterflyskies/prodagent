@@ -1,0 +1,25 @@
+[package]
+name = "prodagent-tool-gate"
+version.workspace = true
+description = "PreToolUse hook binary — gates Bash commands via prodagent's policy engine"
+readme = "../../README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "prodagent-tool-gate"
+path = "src/main.rs"
+
+[dependencies]
+agent-command-knowledge = { workspace = true }
+agent-policy = { workspace = true }
+agent-shell-parser = { workspace = true }
+prodagent-config = { workspace = true }
+anyhow = { workspace = true }
+camino = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

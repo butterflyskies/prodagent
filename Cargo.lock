@@ -504,6 +504,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "prodagent-tool-gate"
+version = "0.8.1"
+dependencies = [
+ "agent-command-knowledge",
+ "agent-policy",
+ "agent-shell-parser",
+ "anyhow",
+ "camino",
+ "clap",
+ "dirs",
+ "prodagent-config",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "prodagent-types"
 version = "0.8.2"
 dependencies = [
