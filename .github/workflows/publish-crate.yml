@@ -5,10 +5,10 @@
 #   1. prodagent-types       (lib, no deps)
 #   2. agent-shell-parser    (lib, depends on types)
 #   3. agent-command-knowledge (lib, depends on parser + types)
-#   4. prodagent-policy      (lib, depends on types)
-#   5. prodagent-config      (lib, depends on types + policy)
-#   6. agent-jj              (binary, depends on config)
-#   7. prodagent-tool-gate   (binary, depends on config + policy)
+#   4. prodagent-policy      (lib, depends on types + parser + knowledge)
+#   5. prodagent-config      (lib, depends on knowledge + policy)
+#   6. agent-jj              (binary, depends on parser)
+#   7. prodagent-tool-gate   (binary, depends on config + policy + parser + knowledge)
 # Each lib must be indexed by crates.io before its dependents can resolve.
 name: Publish Crate
 
