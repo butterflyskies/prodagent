@@ -1,0 +1,26 @@
+# Prodagent default configuration — embedded in the binary.
+#
+# These are sensible defaults that can be overridden by user config
+# (~/.config/prodagent/config.toml) and project config (.prodagent/config.toml).
+
+# ── Policy defaults ────────────────────────────────────────────────────────
+#
+# Effect-class → decision mapping. Read-only commands are allowed by default,
+# mutating and unknown commands require confirmation.
+
+[policy.defaults]
+read_only = "allow"
+mutating = "ask"
+unknown = "ask"
+
+# No per-command policy overrides in the embedded defaults — those come from
+# user and project layers.
+
+# ── Knowledge defaults ─────────────────────────────────────────────────────
+#
+# The embedded knowledge base (agent-command-knowledge defaults.rs) is the
+# primary source of command knowledge. This TOML layer is intentionally
+# minimal — it exists to demonstrate the config structure and provide a
+# merge target for user/project overrides.
+#
+# User and project configs can add commands, wrappers, and overlays here.

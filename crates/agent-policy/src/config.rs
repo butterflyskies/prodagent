@@ -72,7 +72,7 @@ impl PolicyConfig {
 }
 
 /// Per-command policy — either a flat decision or subcommand-level overrides.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CommandPolicy {
     /// Flat decision for the entire command.
@@ -82,7 +82,7 @@ pub enum CommandPolicy {
 }
 
 /// Subcommand-level policy with optional base override.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetailedCommandPolicy {
     /// Override for the base command (no subcommand matched).
     #[serde(default)]
