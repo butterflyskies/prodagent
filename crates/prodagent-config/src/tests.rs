@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 
-use prodagent_policy::config::{CommandPolicy, DetailedCommandPolicy, EffectDefaults, PolicyConfig};
+use prodagent_policy::config::{
+    CommandPolicy, DetailedCommandPolicy, EffectDefaults, PolicyConfig,
+};
 use prodagent_policy::PolicyDecision;
 
 use crate::monotonicity::{validate_monotonicity, MonotonicityViolation};
