@@ -1100,12 +1100,26 @@ fn arb_all_positional_cmd() -> impl Strategy<Value = &'static str> {
     prop_oneof![Just("rm"), Just("touch"), Just("mkdir"), Just("rmdir"),]
 }
 
+/// Normalise a path string the same way [`AffectedPaths::new`] does:
+/// re-collect camino components to strip trailing separators.
+fn normalize_path_str(s: &str) -> String {
+    camino::Utf8PathBuf::from(s)
+        .components()
+        .collect::<camino::Utf8PathBuf>()
+        .into_string()
+}
+
 /// First-seen-order de-duplication, matching `AffectedPaths::union_with`.
+///
+/// Paths are normalised before comparison so that `"foo/"` and `"foo"` are
+/// treated as identical — mirroring the camino canonicalisation applied by
+/// `AffectedPaths`.
 fn dedup_first_seen(items: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for it in items {
-        if !out.contains(it) {
-            out.push(it.clone());
+        let norm = normalize_path_str(it);
+        if !out.contains(&norm) {
+            out.push(norm);
         }
     }
     out
@@ -1132,8 +1146,11 @@ proptest! {
             .map(|w| w.as_str().to_string())
             .collect();
 
+        // AffectedPaths normalises on construction (strips trailing
+        // separators), so the oracle must normalise the raw args too.
+        let expected: Vec<String> = args.iter().map(|a| normalize_path_str(a)).collect();
         prop_assert_eq!(
-            surfaced, args,
+            surfaced, expected,
             "engine must surface exactly the positional paths for `{}`: {:?}",
             line, result
         );
@@ -1141,9 +1158,9 @@ proptest! {
 
     /// For a compound `c1 && c2` of two `positionals = "all"` commands, the
     /// aggregate affected paths equal the first-seen-order de-duplicated union
-    /// of both commands' arguments. Oracle: the generated args combined by the
-    /// independently-defined `dedup_first_seen`. Also pins that each leaf
-    /// segment carries its own (raw) paths.
+    /// of both commands' arguments. Oracle: the generated args normalised and
+    /// combined by the independently-defined `dedup_first_seen`. Also pins
+    /// that each leaf segment carries its own (normalised) paths.
     #[test]
     fn compound_aggregate_is_union_of_segment_paths(
         cmd1 in arb_all_positional_cmd(),
