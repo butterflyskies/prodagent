@@ -42,6 +42,17 @@ impl Word {
         }
     }
 
+    /// Like [`as_assignment`](Self::as_assignment), but classifies the value as
+    /// [`AssignmentValue::Static`], [`AssignmentValue::CommandSubstitution`], or
+    /// [`AssignmentValue::VariableExpansion`] depending on the value's content.
+    ///
+    /// Carrying the classification in the return type means the policy layer
+    /// cannot accidentally trust a value it has no way of seeing.
+    pub fn as_classified_assignment(&self) -> Option<(&str, AssignmentValue<'_>)> {
+        let (key, value) = self.as_assignment()?;
+        Some((key, AssignmentValue::classify(value)))
+    }
+
     /// Strip the path prefix, e.g. `/usr/bin/ls` -> `ls`.
     pub fn basename(&self) -> &str {
         match self.0.rsplit_once('/') {
@@ -149,6 +160,102 @@ impl PartialEq<Word> for String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Assignment value classification
+// ---------------------------------------------------------------------------
+
+/// The value side of a shell env assignment (`KEY=VALUE`), classified by
+/// whether it can be resolved statically and whether it contains an inner
+/// command that can be recursively evaluated through policy.
+///
+/// The policy engine uses this to decide how to populate the environment
+/// snapshot:
+///
+/// - [`Static`](Self::Static) — known literal, used directly.
+/// - [`CommandSubstitution`](Self::CommandSubstitution) — contains `$(cmd)` or
+///   backtick-quoted command. The inner command can be recursively evaluated
+///   through policy; if allowed, the assignment is "safe" (set, value opaque).
+/// - [`VariableExpansion`](Self::VariableExpansion) — contains `$VAR` or
+///   `${VAR}`. No inner command to evaluate; the value is truly unknowable
+///   at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignmentValue<'a> {
+    /// A literal value, fully known from the command text (e.g. `FOO=bar`).
+    Static(&'a str),
+    /// A value derived from a command substitution (`$(cmd)` or `` `cmd` ``).
+    /// The inner command can be recursively evaluated through policy.
+    CommandSubstitution,
+    /// A value derived from a variable expansion (`$VAR`, `${VAR}`).
+    /// No inner command exists; the runtime value is truly unknowable.
+    VariableExpansion,
+}
+
+impl<'a> AssignmentValue<'a> {
+    /// Classify a raw assignment value as [`Static`](Self::Static),
+    /// [`CommandSubstitution`](Self::CommandSubstitution), or
+    /// [`VariableExpansion`](Self::VariableExpansion).
+    ///
+    /// A value containing `$(` or a backtick is classified as
+    /// `CommandSubstitution` — these have inner commands that can be
+    /// recursively evaluated through policy.
+    ///
+    /// A value containing `$` (but no `$(` or backtick) is classified as
+    /// `VariableExpansion` — these reference shell variables whose values
+    /// are unknowable at parse time.
+    ///
+    /// Everything else is `Static`.
+    pub fn classify(value: &'a str) -> Self {
+        // Backtick-quoted commands are always command substitutions
+        if value.contains('`') {
+            return AssignmentValue::CommandSubstitution;
+        }
+        // Check if there's a $( that isn't $(( (arithmetic expansion).
+        // A value like FOO=$(cmd)-$((1+2)) has both — command substitution wins.
+        if value.contains("$(") {
+            let bytes = value.as_bytes();
+            let mut i = 0;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'$' && bytes[i + 1] == b'(' {
+                    if i + 2 >= bytes.len() || bytes[i + 2] != b'(' {
+                        // Found a bare $( — this is a command substitution
+                        return AssignmentValue::CommandSubstitution;
+                    }
+                    i += 3; // skip $((
+                } else {
+                    i += 1;
+                }
+            }
+            // All $( were $(( — arithmetic only, treat as variable expansion
+            // (conservative: value is unknowable but no command to evaluate)
+            return AssignmentValue::VariableExpansion;
+        }
+        if value.contains('$') {
+            AssignmentValue::VariableExpansion
+        } else {
+            AssignmentValue::Static(value)
+        }
+    }
+
+    /// The literal value if [`Static`](Self::Static), otherwise `None`.
+    pub fn static_value(self) -> Option<&'a str> {
+        match self {
+            AssignmentValue::Static(v) => Some(v),
+            AssignmentValue::CommandSubstitution | AssignmentValue::VariableExpansion => None,
+        }
+    }
+
+    /// Whether this value is dynamic (not a static literal).
+    pub fn is_dynamic(self) -> bool {
+        !matches!(self, AssignmentValue::Static(_))
+    }
+
+    /// Whether this value contains a command substitution that can be
+    /// recursively evaluated through policy.
+    pub fn is_command_substitution(self) -> bool {
+        matches!(self, AssignmentValue::CommandSubstitution)
+    }
+}
+
 // --- Env assignment helpers (used by Word and by the parser's tokenizer) ---
 
 /// Check if a token is a valid `KEY=VALUE` environment assignment.
@@ -220,5 +327,133 @@ mod tests {
         assert!(is_env_assignment("_A=1"));
         assert!(!is_env_assignment("123=bad"));
         assert!(!is_env_assignment("no_equals"));
+    }
+
+    // ── AssignmentValue classification ────────────────────────────────────
+
+    #[test]
+    fn classify_static_value() {
+        assert_eq!(
+            AssignmentValue::classify("bar"),
+            AssignmentValue::Static("bar")
+        );
+        assert_eq!(AssignmentValue::classify(""), AssignmentValue::Static(""));
+        assert_eq!(
+            AssignmentValue::classify("a/b-c.d"),
+            AssignmentValue::Static("a/b-c.d")
+        );
+    }
+
+    #[test]
+    fn classify_command_substitution() {
+        assert_eq!(
+            AssignmentValue::classify("$(echo hi)"),
+            AssignmentValue::CommandSubstitution
+        );
+        assert_eq!(
+            AssignmentValue::classify("`echo hi`"),
+            AssignmentValue::CommandSubstitution
+        );
+        assert_eq!(
+            AssignmentValue::classify("prefix-$(date)"),
+            AssignmentValue::CommandSubstitution
+        );
+    }
+
+    #[test]
+    fn classify_variable_expansion() {
+        assert_eq!(
+            AssignmentValue::classify("$VAR"),
+            AssignmentValue::VariableExpansion
+        );
+        assert_eq!(
+            AssignmentValue::classify("${VAR}"),
+            AssignmentValue::VariableExpansion
+        );
+        assert_eq!(
+            AssignmentValue::classify("${VAR:-default}"),
+            AssignmentValue::VariableExpansion
+        );
+    }
+
+    #[test]
+    fn command_substitution_takes_priority_over_variable_expansion() {
+        // A value with both `$(` and bare `$` should be CommandSubstitution
+        // because the inner command can be evaluated through policy.
+        assert_eq!(
+            AssignmentValue::classify("$VAR-$(cmd)"),
+            AssignmentValue::CommandSubstitution
+        );
+    }
+
+    #[test]
+    fn arithmetic_expansion_classified_as_variable_expansion() {
+        // $((1+2)) is arithmetic expansion, not command substitution.
+        // No inner command to evaluate — treat as VariableExpansion.
+        assert_eq!(
+            AssignmentValue::classify("$((1+2))"),
+            AssignmentValue::VariableExpansion
+        );
+        assert_eq!(
+            AssignmentValue::classify("prefix-$((x+1))"),
+            AssignmentValue::VariableExpansion
+        );
+    }
+
+    #[test]
+    fn mixed_command_sub_and_arithmetic() {
+        // $(cmd)-$((1+2)) has both — command substitution wins because
+        // the inner command can be evaluated through policy.
+        assert_eq!(
+            AssignmentValue::classify("$(cmd)-$((1+2))"),
+            AssignmentValue::CommandSubstitution
+        );
+    }
+
+    #[test]
+    fn adversarial_double_paren_cmd_and_evil() {
+        // This pins the current conservative behavior of classify() —
+        // VariableExpansion is fail-closed. If classify() is later improved
+        // to detect this as CommandSubstitution, update this test accordingly.
+        assert_eq!(
+            AssignmentValue::classify("$((cmd) && evil)"),
+            AssignmentValue::VariableExpansion,
+        );
+    }
+
+    #[test]
+    fn word_as_classified_assignment() {
+        assert_eq!(
+            Word::from("FOO=bar").as_classified_assignment(),
+            Some(("FOO", AssignmentValue::Static("bar")))
+        );
+        assert_eq!(
+            Word::from("FOO=$VAR").as_classified_assignment(),
+            Some(("FOO", AssignmentValue::VariableExpansion))
+        );
+        assert_eq!(
+            Word::from("FOO=$(id -u)").as_classified_assignment(),
+            Some(("FOO", AssignmentValue::CommandSubstitution))
+        );
+        assert_eq!(
+            Word::from("FOO=`id -u`").as_classified_assignment(),
+            Some(("FOO", AssignmentValue::CommandSubstitution))
+        );
+        assert_eq!(Word::from("git").as_classified_assignment(), None);
+    }
+
+    #[test]
+    fn assignment_value_accessors() {
+        assert_eq!(AssignmentValue::Static("x").static_value(), Some("x"));
+        assert_eq!(AssignmentValue::CommandSubstitution.static_value(), None);
+        assert_eq!(AssignmentValue::VariableExpansion.static_value(), None);
+
+        assert!(AssignmentValue::CommandSubstitution.is_dynamic());
+        assert!(AssignmentValue::VariableExpansion.is_dynamic());
+        assert!(!AssignmentValue::Static("x").is_dynamic());
+
+        assert!(AssignmentValue::CommandSubstitution.is_command_substitution());
+        assert!(!AssignmentValue::VariableExpansion.is_command_substitution());
+        assert!(!AssignmentValue::Static("x").is_command_substitution());
     }
 }

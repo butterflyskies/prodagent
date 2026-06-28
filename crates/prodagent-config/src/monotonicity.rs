@@ -86,6 +86,17 @@ pub fn validate_monotonicity(
         }
     }
 
+    // ── Opaque env ceiling ─────────────────────────────────────────────────
+    if let Some(proj_ceiling) = project_overlay.opaque_env_ceiling {
+        if proj_ceiling < user_policy.opaque_env_ceiling {
+            violations.push(MonotonicityViolation {
+                path: "policy.opaque_env_ceiling".into(),
+                user_decision: user_policy.opaque_env_ceiling,
+                project_decision: proj_ceiling,
+            });
+        }
+    }
+
     // ── Per-command overrides ──────────────────────────────────────────────
     for (cmd_name, proj_policy) in &project_overlay.commands {
         let user_decision = resolve_command_decision(user_policy, cmd_name);

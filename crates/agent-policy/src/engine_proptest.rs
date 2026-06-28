@@ -16,7 +16,11 @@ use std::collections::HashMap;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn cfg(defaults: EffectDefaults, commands: HashMap<String, CommandPolicy>) -> PolicyConfig {
-    PolicyConfig { defaults, commands }
+    PolicyConfig {
+        defaults,
+        commands,
+        ..PolicyConfig::default()
+    }
 }
 
 /// CommandInfo with a chosen effect and subcommand; all wrapper/path/gate
@@ -462,10 +466,10 @@ proptest! {
             }
         }
 
-        let result_without = super::apply_env_gates(&gates, &env);
+        let result_without = super::apply_env_gates(&gates, &env, PolicyDecision::Ask);
         let mut extended = gates.clone();
         extended.push(extra_gate);
-        let result_with = super::apply_env_gates(&extended, &env);
+        let result_with = super::apply_env_gates(&extended, &env, PolicyDecision::Ask);
 
         match (result_without, result_with) {
             (None, _) => {} // adding a gate from nothing is always fine
@@ -488,7 +492,7 @@ proptest! {
     ) {
         let mut env = EnvSnapshot::clean();
         env.set(&var, &value);
-        let result = super::apply_env_gates(&[], &env);
+        let result = super::apply_env_gates(&[], &env, PolicyDecision::Ask);
         prop_assert!(result.is_none(), "empty gates should produce None");
     }
 
@@ -519,7 +523,7 @@ proptest! {
 
         let mut all_gates = gates;
         all_gates.push(deny_gate);
-        let result = super::apply_env_gates(&all_gates, &env);
+        let result = super::apply_env_gates(&all_gates, &env, PolicyDecision::Ask);
         prop_assert_eq!(result, Some(PolicyDecision::Deny),
             "a matching Deny gate should always produce Deny");
     }
@@ -541,11 +545,11 @@ proptest! {
             }
         }
 
-        let result1 = super::apply_env_gates(&gates, &env);
+        let result1 = super::apply_env_gates(&gates, &env, PolicyDecision::Ask);
 
         let mut reversed = gates.clone();
         reversed.reverse();
-        let result2 = super::apply_env_gates(&reversed, &env);
+        let result2 = super::apply_env_gates(&reversed, &env, PolicyDecision::Ask);
 
         prop_assert_eq!(result1, result2,
             "gate order should not affect the result");
@@ -616,6 +620,186 @@ proptest! {
         // Unless the var is explicitly overridden, it should be None
         prop_assert!(snap.get_value(&var).is_none(),
             "clean env should not resolve vars");
+    }
+}
+
+// ── Substitution-derived env values ──────────────────────────────────────────
+
+/// An assignment value derived from a command substitution (`$(cmd)` or backticks).
+fn arb_command_substitution_value() -> impl Strategy<Value = String> {
+    "[a-z]{1,6}".prop_flat_map(|inner| {
+        prop_oneof![
+            Just(format!("$({inner})")),
+            Just(format!("`{inner}`")),
+            Just(format!("prefix-$({inner})")),
+        ]
+    })
+}
+
+/// An assignment value derived from a variable expansion (`$VAR`, `${VAR}`).
+fn arb_variable_expansion_value() -> impl Strategy<Value = String> {
+    "[a-z]{1,6}".prop_flat_map(|inner| {
+        prop_oneof![
+            Just(format!("${}", inner.to_uppercase())),
+            Just(format!("${{{}}}", inner.to_uppercase())),
+        ]
+    })
+}
+
+/// Any dynamic (non-static) assignment value.
+fn arb_dynamic_value() -> impl Strategy<Value = String> {
+    prop_oneof![
+        arb_command_substitution_value(),
+        arb_variable_expansion_value(),
+    ]
+}
+
+/// A literal assignment value with no expansion or substitution syntax.
+fn arb_static_value() -> impl Strategy<Value = String> {
+    "[a-zA-Z0-9_/.:-]{0,8}".prop_filter("must not contain expansion syntax", |v| {
+        !v.contains('$') && !v.contains('`')
+    })
+}
+
+proptest! {
+    /// A substitution-derived inline assignment always resolves to `Unknown`
+    /// in a basic snapshot (without recursive policy evaluation context).
+    #[test]
+    fn substitution_derived_value_resolves_unknown(
+        var in "[A-Z]{1,4}",
+        dynamic in arb_dynamic_value(),
+    ) {
+        let words = [Word::from(format!("{var}={dynamic}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+        prop_assert_eq!(
+            snap.get_value(&var),
+            Some(EnvValueOwned::Unknown),
+            "dynamic value {:?} should resolve to Unknown",
+            dynamic
+        );
+    }
+
+    /// Core invariant: a substitution-derived env value fires all applicable
+    /// gates at max restriction. Equals, NotEquals, and Set all fire on
+    /// Unknown (opaque) values. Unset does NOT fire (variable IS present).
+    #[test]
+    fn substitution_derived_value_fires_gates_at_max_restriction(
+        var in "[A-Z]{1,4}",
+        dynamic in arb_dynamic_value(),
+        other_expected in "[a-z]{1,6}",
+    ) {
+        let words = [Word::from(format!("{var}={dynamic}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+
+        // Equals fires — opaque could match any expected value.
+        let equals_literal = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(dynamic.clone()),
+            decision: EnvGateAction::Ask,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&equals_literal, &snap, PolicyDecision::Ask),
+            Some(PolicyDecision::Ask),
+            "Equals gate must fire on opaque value (max restriction)"
+        );
+
+        // Equals fires for any expected value.
+        let equals_other = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(other_expected),
+            decision: EnvGateAction::Ask,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&equals_other, &snap, PolicyDecision::Ask),
+            Some(PolicyDecision::Ask),
+            "Equals gate must fire on opaque value for any expected"
+        );
+
+        // Set fires — variable IS present (opaque).
+        let set_gate = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Set,
+            decision: EnvGateAction::Allow,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&set_gate, &snap, PolicyDecision::Ask),
+            Some(PolicyDecision::Allow),
+            "Set gate must fire on opaque value (variable is present)"
+        );
+
+        // Unset does NOT fire — variable IS present.
+        let unset_gate = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Unset,
+            decision: EnvGateAction::Deny,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&unset_gate, &snap, PolicyDecision::Ask),
+            None,
+            "Unset gate must not fire when variable is present (opaque)"
+        );
+    }
+
+    /// Oracle / non-vacuity: a static assignment IS classified Static, kept
+    /// as a known value, and DOES satisfy a matching Equals gate.
+    #[test]
+    fn static_value_satisfies_matching_equals(
+        var in "[A-Z]{1,4}",
+        value in arb_static_value(),
+    ) {
+        let words = [Word::from(format!("{var}={value}"))];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+
+        prop_assert_eq!(
+            snap.get_value(&var),
+            Some(EnvValueOwned::Known(value.clone())),
+            "static value should resolve to its literal"
+        );
+
+        let gates = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Equals(value.clone()),
+            decision: EnvGateAction::Deny,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&gates, &snap, PolicyDecision::Ask),
+            Some(PolicyDecision::Deny),
+            "a matching Equals gate on a static value must fire"
+        );
+    }
+
+    /// Variable expansion values are always classified as VariableExpansion.
+    #[test]
+    fn variable_expansion_classified_correctly(
+        var in "[A-Z]{1,4}",
+        value in arb_variable_expansion_value(),
+    ) {
+        use agent_shell_parser::parse::AssignmentValue;
+        let word = Word::from(format!("{var}={value}"));
+        let (_, classified) = word.as_classified_assignment().unwrap();
+        prop_assert_eq!(
+            classified,
+            AssignmentValue::VariableExpansion,
+            "variable expansion {:?} should classify as VariableExpansion",
+            value
+        );
+    }
+
+    /// Command substitution values are always classified as CommandSubstitution.
+    #[test]
+    fn command_substitution_classified_correctly(
+        var in "[A-Z]{1,4}",
+        value in arb_command_substitution_value(),
+    ) {
+        use agent_shell_parser::parse::AssignmentValue;
+        let word = Word::from(format!("{var}={value}"));
+        let (_, classified) = word.as_classified_assignment().unwrap();
+        prop_assert_eq!(
+            classified,
+            AssignmentValue::CommandSubstitution,
+            "command substitution {:?} should classify as CommandSubstitution",
+            value
+        );
     }
 }
 
@@ -1002,6 +1186,162 @@ proptest! {
             leaf_paths, surfaced_set,
             "aggregate path set must equal the union of segment path sets: {:?}",
             result
+        );
+    }
+}
+// ── Env propagation metamorphic property ────────────────────────────────────
+
+/// Gate type for the metamorphic test.
+#[derive(Debug, Clone)]
+enum MetaGateType {
+    /// `Set` — fires when variable is present with a known value.
+    Set,
+    /// `Equals(value)` — fires when variable equals the expected value.
+    Equals,
+}
+
+fn arb_meta_gate_type() -> impl Strategy<Value = MetaGateType> {
+    prop_oneof![Just(MetaGateType::Set), Just(MetaGateType::Equals),]
+}
+
+/// Env gate action for the metamorphic test — only Ask and Deny are useful
+/// for detection (Allow would be invisible against a ReadOnly command's
+/// default Allow).
+fn arb_meta_gate_action() -> impl Strategy<Value = EnvGateAction> {
+    prop_oneof![Just(EnvGateAction::Ask), Just(EnvGateAction::Deny),]
+}
+
+proptest! {
+    /// Metamorphic property: for any env gate on variable X with value V,
+    /// these four command forms must produce the same policy decision:
+    ///
+    /// 1. `X=V cmd`             (inline assignment)
+    /// 2. `env X=V cmd`         (env wrapper)
+    /// 3. `export X=V && cmd`   (export + sequenced)
+    /// 4. `nice X=V cmd`        (transparent wrapper from KB)
+    ///
+    /// The generator produces (var_name, value, gate_type, action) and
+    /// renders all four forms. The assertion is that all four decisions
+    /// agree — any difference means env propagation or env-wrapper handling
+    /// is inconsistent.
+    ///
+    /// Form 4 samples from all transparent wrappers in the KB (ReadOnly
+    /// floor, no env clearing, no privilege escalation) to verify that
+    /// inline assignments pass through every transparent wrapper correctly.
+    /// The KB itself is the oracle — no hardcoded wrapper names.
+    #[test]
+    fn env_assignment_forms_are_equivalent(
+        var_name in "[A-Z]{2,6}",
+        value in "[a-z0-9_]{1,8}",
+        gate_type in arb_meta_gate_type(),
+        action in arb_meta_gate_action(),
+        wrapper_idx in 0..100usize,
+    ) {
+        // Use a synthetic command name that won't collide with real KB entries.
+        let cmd_name = "metamorphic_test_cmd";
+
+        // Collect transparent wrappers from the KB: ReadOnly floor, no
+        // env clearing, no privilege escalation. Filter to those whose
+        // parser spec has skip_positionals == 0, so `wrapper cmd` works
+        // without needing dummy positional args.
+        let kb_ref = default_knowledge_base();
+        let default_config = agent_shell_parser::parse::default_command_config();
+        let transparent_wrappers: Vec<&str> = kb_ref
+            .wrappers
+            .iter()
+            .filter(|(name, w)| {
+                w.floor_effect == Effect::ReadOnly
+                    && !w.clears_env
+                    && !w.escalates_privilege
+                    && default_config
+                        .wrappers
+                        .iter()
+                        .find(|s| s.name == **name)
+                        .map_or(true, |s| s.skip_positionals == 0)
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        prop_assert!(
+            !transparent_wrappers.is_empty(),
+            "KB must have at least one transparent wrapper"
+        );
+        let wrapper = transparent_wrappers[wrapper_idx % transparent_wrappers.len()];
+
+        // Build the gate
+        let gate = match &gate_type {
+            MetaGateType::Set => EnvGate {
+                var: var_name.clone(),
+                condition: EnvCondition::Set,
+                decision: action,
+            },
+            MetaGateType::Equals => EnvGate {
+                var: var_name.clone(),
+                condition: EnvCondition::Equals(value.clone()),
+                decision: action,
+            },
+        };
+
+        // Build a KB with the test command carrying the gate
+        let mut kb = default_knowledge_base().clone();
+        let cmd = agent_command_knowledge::CommandKnowledge {
+            name: cmd_name.to_string(),
+            effect: Effect::ReadOnly,
+            subcommands: Default::default(),
+            flags: Default::default(),
+            env_gates: vec![gate],
+            paths: Default::default(),
+            properties: Default::default(),
+        };
+        kb.commands.insert(cmd_name.to_string(), cmd);
+
+        let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+
+        // Form 1: inline assignment
+        let form1 = format!("{var_name}={value} {cmd_name}");
+        let result1 = engine.evaluate_command(&form1, &kb);
+
+        // Form 2: env wrapper
+        let form2 = format!("env {var_name}={value} {cmd_name}");
+        let result2 = engine.evaluate_command(&form2, &kb);
+
+        // Form 3: export + &&
+        let form3 = format!("export {var_name}={value} && {cmd_name}");
+        let result3 = engine.evaluate_command(&form3, &kb);
+
+        // Form 4: inline assignment before a transparent KB wrapper (sampled).
+        // Shell semantics: `FOO=bar wrapper cmd` scopes the assignment to the
+        // entire command; a transparent wrapper inherits and passes it through.
+        let form4 = format!("{var_name}={value} {wrapper} {cmd_name}");
+        let result4 = engine.evaluate_command(&form4, &kb);
+
+        // All four must agree on the gate's effect. The sampled wrapper is
+        // transparent (ReadOnly floor, no clear, no escalate), so the inline
+        // assignment is visible to the inner command and the gate determines
+        // the result — same as forms 1-3.
+        //
+        // Specifically: all four should produce the gate's action as the
+        // decision (since ReadOnly base = Allow and gate action ≥ Allow).
+        let expected = super::gate_action_to_decision(action);
+
+        prop_assert_eq!(
+            result1.decision, expected,
+            "form 1 ({}): expected {:?}, got {:?}: {:?}",
+            form1, expected, result1.decision, result1
+        );
+        prop_assert_eq!(
+            result2.decision, expected,
+            "form 2 ({}): expected {:?}, got {:?}: {:?}",
+            form2, expected, result2.decision, result2
+        );
+        prop_assert_eq!(
+            result3.decision, expected,
+            "form 3 ({}): expected {:?}, got {:?}: {:?}",
+            form3, expected, result3.decision, result3
+        );
+        prop_assert_eq!(
+            result4.decision, expected,
+            "form 4 ({}): expected {:?}, got {:?}: {:?}",
+            form4, expected, result4.decision, result4
         );
     }
 }

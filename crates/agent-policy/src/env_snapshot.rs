@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use agent_shell_parser::parse::types::Word;
+use agent_shell_parser::parse::types::{AssignmentValue, Word};
 
 /// The resolved environment state for a command segment.
 ///
@@ -58,22 +58,21 @@ impl EnvSnapshot {
     /// Apply inline assignments from a word slice.
     ///
     /// Scans `words` from the beginning, collecting `KEY=VALUE` assignments
-    /// until a non-assignment word is found. These become overrides in the
-    /// snapshot.
+    /// until a non-assignment word is found. Statically-known values become
+    /// overrides; substitution-derived values (`FOO=$(cmd)`, `FOO=$VAR`) are
+    /// marked unknown so the policy layer can never trust a value it cannot see.
+    /// The static/dynamic distinction is carried by [`AssignmentValue`] rather
+    /// than re-derived here with an ad-hoc string check.
     #[must_use]
     pub fn with_assignments(mut self, words: &[Word]) -> Self {
         for word in words {
-            if let Some((key, value)) = word.as_assignment() {
-                // Check if value contains substitution syntax
-                if value.contains("$(") || value.contains('`') {
-                    self.unknown.insert(key.to_string());
-                } else {
-                    self.overrides.insert(key.to_string(), value.to_string());
-                    self.unsets.remove(key);
-                    self.unknown.remove(key);
+            match word.as_classified_assignment() {
+                Some((key, AssignmentValue::Static(value))) => self.set(key, value),
+                Some((key, AssignmentValue::CommandSubstitution))
+                | Some((key, AssignmentValue::VariableExpansion)) => {
+                    self.set_unknown(key);
                 }
-            } else {
-                break;
+                None => break,
             }
         }
         self

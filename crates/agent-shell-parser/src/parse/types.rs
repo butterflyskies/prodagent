@@ -1,7 +1,9 @@
 use std::fmt;
 
 // Re-export shared types from agent-types.
-pub use prodagent_types::{CommandConfig, ResolvedEnvPolicy, Word, WrapperEnvPolicy, WrapperSpec};
+pub use prodagent_types::{
+    AssignmentValue, CommandConfig, ResolvedEnvPolicy, Word, WrapperEnvPolicy, WrapperSpec,
+};
 
 /// Shell operator separating consecutive pipeline segments.
 #[derive(Debug, Clone, PartialEq, Eq)]

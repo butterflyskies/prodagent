@@ -105,6 +105,46 @@ fn unknown_var_from_substitution() {
 }
 
 #[test]
+fn with_assignments_command_substitution_is_unknown() {
+    let words = [Word::from("FOO=$(id -u)"), Word::from("cmd")];
+    let snap = EnvSnapshot::clean().with_assignments(&words);
+    assert_eq!(snap.get_value("FOO"), Some(EnvValueOwned::Unknown));
+}
+
+#[test]
+fn with_assignments_backtick_is_unknown() {
+    let words = [Word::from("FOO=`id -u`"), Word::from("cmd")];
+    let snap = EnvSnapshot::clean().with_assignments(&words);
+    assert_eq!(snap.get_value("FOO"), Some(EnvValueOwned::Unknown));
+}
+
+#[test]
+fn with_assignments_variable_expansion_is_unknown() {
+    // The gap the old `.contains("$(")` check missed: `FOO=$VAR` and
+    // `FOO=${VAR}` are dynamic too — they must not be stored as a known
+    // literal `"$VAR"`.
+    for spec in ["FOO=$VAR", "FOO=${VAR}", "FOO=${VAR:-default}"] {
+        let words = [Word::from(spec), Word::from("cmd")];
+        let snap = EnvSnapshot::clean().with_assignments(&words);
+        assert_eq!(
+            snap.get_value("FOO"),
+            Some(EnvValueOwned::Unknown),
+            "{spec} should resolve to Unknown"
+        );
+    }
+}
+
+#[test]
+fn with_assignments_literal_is_known() {
+    let words = [Word::from("FOO=production"), Word::from("cmd")];
+    let snap = EnvSnapshot::clean().with_assignments(&words);
+    match snap.get_value("FOO") {
+        Some(EnvValueOwned::Known(v)) => assert_eq!(v, "production"),
+        other => panic!("expected Known(production), got {other:?}"),
+    }
+}
+
+#[test]
 fn fully_unknown_env() {
     let mut snap = EnvSnapshot::from_process_env();
     snap.mark_all_unknown();

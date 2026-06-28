@@ -86,6 +86,11 @@ pub struct PolicyOverlay {
     /// inherited config. Processed before additions (same as knowledge layer).
     #[serde(default)]
     pub remove_commands: Vec<String>,
+
+    /// Override the ceiling for opaque env values on value-dependent gates.
+    /// See [`PolicyConfig::opaque_env_ceiling`] for details.
+    #[serde(default)]
+    pub opaque_env_ceiling: Option<PolicyDecision>,
 }
 
 /// Optional overrides for effect-class defaults. `None` means "inherit."
@@ -112,7 +117,10 @@ impl PolicyDefaultsOverlay {
 impl PolicyOverlay {
     /// Returns `true` if this policy overlay has no effect.
     pub fn is_empty(&self) -> bool {
-        self.defaults.is_empty() && self.commands.is_empty() && self.remove_commands.is_empty()
+        self.defaults.is_empty()
+            && self.commands.is_empty()
+            && self.remove_commands.is_empty()
+            && self.opaque_env_ceiling.is_none()
     }
 
     /// Apply this overlay onto a base [`PolicyConfig`], mutating it in place.
@@ -138,7 +146,12 @@ impl PolicyOverlay {
             base.defaults.unknown = d;
         }
 
-        // 3. Per-command overrides — overlay wins.
+        // 3. Opaque env ceiling — override when specified.
+        if let Some(ceiling) = self.opaque_env_ceiling {
+            base.opaque_env_ceiling = ceiling;
+        }
+
+        // 4. Per-command overrides — overlay wins.
         for (key, policy) in self.commands {
             base.commands.insert(key, policy);
         }
@@ -191,6 +204,7 @@ impl ProdagentConfig {
                     .unwrap_or(PolicyDecision::Ask),
             },
             commands: defaults.policy.commands,
+            ..PolicyConfig::default()
         };
 
         // Merge user layer

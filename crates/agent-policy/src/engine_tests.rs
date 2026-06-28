@@ -370,6 +370,7 @@ fn noop_detailed_entry_rejected() {
     let config = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands,
+        ..PolicyConfig::default()
     };
     let err = config.validate().unwrap_err();
     assert!(
@@ -434,7 +435,7 @@ fn env_gate_equals_matching_allows() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "bar");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Allow)
     );
 }
@@ -448,7 +449,10 @@ fn env_gate_equals_nonmatching_has_no_effect() {
     }];
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "baz");
-    assert_eq!(super::apply_env_gates(&gates, &env), None);
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        None
+    );
 }
 
 #[test]
@@ -461,7 +465,7 @@ fn env_gate_not_equals_matching() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "baz"); // baz != bar → matches
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Deny)
     );
 }
@@ -475,7 +479,10 @@ fn env_gate_not_equals_same_value_no_effect() {
     }];
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "bar"); // bar == bar → doesn't match
-    assert_eq!(super::apply_env_gates(&gates, &env), None);
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        None
+    );
 }
 
 #[test]
@@ -488,7 +495,7 @@ fn env_gate_not_equals_unset_var_matches() {
     }];
     let env = EnvSnapshot::clean();
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Ask)
     );
 }
@@ -503,7 +510,7 @@ fn env_gate_set_matching() {
     let mut env = EnvSnapshot::clean();
     env.set("VIRTUAL_ENV", "/venv");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Allow)
     );
 }
@@ -516,7 +523,10 @@ fn env_gate_set_not_set_no_effect() {
         decision: EnvGateAction::Allow,
     }];
     let env = EnvSnapshot::clean();
-    assert_eq!(super::apply_env_gates(&gates, &env), None);
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        None
+    );
 }
 
 #[test]
@@ -528,7 +538,7 @@ fn env_gate_unset_matching() {
     }];
     let env = EnvSnapshot::clean();
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Deny)
     );
 }
@@ -542,13 +552,16 @@ fn env_gate_unset_when_set_no_effect() {
     }];
     let mut env = EnvSnapshot::clean();
     env.set("VIRTUAL_ENV", "/venv");
-    assert_eq!(super::apply_env_gates(&gates, &env), None);
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        None
+    );
 }
 
 #[test]
 fn env_gate_no_gates_returns_none() {
     let env = EnvSnapshot::from_process_env();
-    assert_eq!(super::apply_env_gates(&[], &env), None);
+    assert_eq!(super::apply_env_gates(&[], &env, PolicyDecision::Ask), None);
 }
 
 // ── Multiple gates: strictest wins ───────────────────────────────────────
@@ -571,7 +584,7 @@ fn env_gate_multiple_strictest_wins() {
     env.set("A", "1");
     env.set("B", "2");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Ask),
         "strictest (Ask) should win over Allow"
     );
@@ -595,32 +608,60 @@ fn env_gate_deny_short_circuits() {
     env.set("A", "1");
     env.set("B", "2");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Deny),
         "Deny should short-circuit"
     );
 }
 
-// ── Unknown env var handling (conservative) ──────────────────────────────
+// ── Opaque env values fire at configured ceiling ───────────────────────
+//
+// When a gate encounters an opaque (unknown) value on a value-dependent
+// condition (Equals/NotEquals), it fires at the configured opaque_env_ceiling
+// rather than the gate's own action. Default ceiling: Ask.
+//
+// Structural conditions (Set/Unset) are unaffected — they use the gate's
+// configured action because their truth value is deterministic for opaque.
 
 #[test]
-fn env_gate_equals_unknown_no_effect() {
+fn env_gate_equals_unknown_fires_at_ceiling() {
+    // Opaque value on Equals gate → fires at default ceiling (Ask),
+    // not the gate's own action (Deny).
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Allow,
+        decision: EnvGateAction::Deny,
     }];
     let mut env = EnvSnapshot::clean();
     env.set_unknown("FOO");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
-        None,
-        "Equals with unknown value should have no effect"
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        Some(PolicyDecision::Ask),
+        "Equals with unknown value should fire at ceiling (Ask), not gate action (Deny)"
     );
 }
 
 #[test]
-fn env_gate_not_equals_unknown_no_effect() {
+fn env_gate_equals_unknown_fires_ask() {
+    // Gate action matches ceiling → same result either way.
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Ask,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        Some(PolicyDecision::Ask),
+        "Equals with unknown value should fire Ask (ceiling = gate action)"
+    );
+}
+
+#[test]
+fn env_gate_not_equals_unknown_fires_at_ceiling() {
+    // Opaque value on NotEquals gate → fires at ceiling (Ask),
+    // not the gate's own action (Deny).
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::NotEquals("bar".into()),
@@ -629,15 +670,15 @@ fn env_gate_not_equals_unknown_no_effect() {
     let mut env = EnvSnapshot::clean();
     env.set_unknown("FOO");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
-        None,
-        "NotEquals with unknown value should have no effect"
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        Some(PolicyDecision::Ask),
+        "NotEquals with unknown value should fire at ceiling (Ask), not gate action (Deny)"
     );
 }
 
 #[test]
-fn env_gate_set_unknown_no_match() {
-    // Unknown means we can't confirm the var is set — conservative fail-closed
+fn env_gate_set_unknown_fires() {
+    // Variable IS present (just opaque) → Set gate fires
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Set,
@@ -646,15 +687,15 @@ fn env_gate_set_unknown_no_match() {
     let mut env = EnvSnapshot::clean();
     env.set_unknown("FOO");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
-        None,
-        "Set with unknown value should not match (fail-closed)"
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        Some(PolicyDecision::Allow),
+        "Set with unknown value should fire (variable is present)"
     );
 }
 
 #[test]
 fn env_gate_unset_unknown_no_match() {
-    // Unknown means *something* was assigned — Unset should NOT match
+    // Variable IS present (opaque) → Unset should NOT match
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Unset,
@@ -663,9 +704,124 @@ fn env_gate_unset_unknown_no_match() {
     let mut env = EnvSnapshot::clean();
     env.set_unknown("FOO");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         None,
-        "Unset with unknown value should not match (conservative: assume set)"
+        "Unset with unknown value should not match (variable is present)"
+    );
+}
+
+#[test]
+fn env_gate_opaque_equals_and_not_equals_both_fire_at_ceiling() {
+    // Both Equals and NotEquals fire for opaque, but both use the ceiling (Ask).
+    // Gate actions (Ask, Deny) are irrelevant for opaque value-dependent gates.
+    let gates = vec![
+        EnvGate {
+            var: "FOO".into(),
+            condition: EnvCondition::Equals("bar".into()),
+            decision: EnvGateAction::Ask,
+        },
+        EnvGate {
+            var: "FOO".into(),
+            condition: EnvCondition::NotEquals("bar".into()),
+            decision: EnvGateAction::Deny,
+        },
+    ];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
+        Some(PolicyDecision::Ask),
+        "both gates fire for opaque at ceiling (Ask), not gate actions"
+    );
+}
+
+// ── Configurable opaque_env_ceiling ─────────────────────────────────────
+//
+// The ceiling is configurable: Ask (default), Deny (stricter), Allow (opt-out).
+
+#[test]
+fn opaque_env_ceiling_deny_produces_deny() {
+    // Ceiling = Deny → opaque Equals gate fires at Deny.
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Ask, // gate action irrelevant for opaque
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Deny),
+        Some(PolicyDecision::Deny),
+        "ceiling=Deny: opaque value on Equals gate should produce Deny"
+    );
+}
+
+#[test]
+fn opaque_env_ceiling_allow_produces_allow() {
+    // Ceiling = Allow → opaque Equals gate fires at Allow (user opted in).
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny, // gate action irrelevant for opaque
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Allow),
+        Some(PolicyDecision::Allow),
+        "ceiling=Allow: opaque value should produce Allow (user opted in)"
+    );
+}
+
+#[test]
+fn opaque_env_ceiling_deny_not_equals() {
+    // Ceiling = Deny → opaque NotEquals gate fires at Deny.
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::NotEquals("bar".into()),
+        decision: EnvGateAction::Allow, // gate action irrelevant for opaque
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Deny),
+        Some(PolicyDecision::Deny),
+        "ceiling=Deny: opaque value on NotEquals gate should produce Deny"
+    );
+}
+
+#[test]
+fn opaque_env_ceiling_does_not_affect_structural_gates() {
+    // Ceiling only affects value-dependent gates (Equals/NotEquals).
+    // Set/Unset use the gate's own action regardless of ceiling.
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Allow),
+        Some(PolicyDecision::Deny),
+        "ceiling=Allow should NOT affect Set gate — structural gate uses gate action"
+    );
+}
+
+#[test]
+fn opaque_env_ceiling_does_not_affect_concrete_values() {
+    // Ceiling only applies to opaque values, not concrete ones.
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Deny,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set("FOO", "bar"); // concrete match
+    assert_eq!(
+        super::apply_env_gates(&gates, &env, PolicyDecision::Allow),
+        Some(PolicyDecision::Deny),
+        "ceiling=Allow should NOT affect concrete value matches — gate action applies"
     );
 }
 
@@ -681,7 +837,7 @@ fn env_gate_equals_matching_asks() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "bar");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Ask)
     );
 }
@@ -696,7 +852,7 @@ fn env_gate_equals_matching_denies() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "bar");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Deny)
     );
 }
@@ -711,7 +867,7 @@ fn env_gate_not_equals_allows() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "baz"); // baz != bar → matches
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Allow)
     );
 }
@@ -726,7 +882,7 @@ fn env_gate_set_asks() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "anything");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Ask)
     );
 }
@@ -741,7 +897,7 @@ fn env_gate_set_denies() {
     let mut env = EnvSnapshot::clean();
     env.set("FOO", "anything");
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Deny)
     );
 }
@@ -755,7 +911,7 @@ fn env_gate_unset_allows() {
     }];
     let env = EnvSnapshot::clean();
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Allow)
     );
 }
@@ -769,7 +925,7 @@ fn env_gate_unset_asks() {
     }];
     let env = EnvSnapshot::clean();
     assert_eq!(
-        super::apply_env_gates(&gates, &env),
+        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
         Some(PolicyDecision::Ask)
     );
 }
@@ -810,9 +966,9 @@ fn evaluate_condition_set_with_known() {
 
 #[test]
 fn evaluate_condition_set_with_unknown() {
-    // Unknown value: can't confirm the var is set — fail-closed → false
+    // Unknown value: variable IS present (opaque) → Set fires
     let val = Some(EnvValueOwned::Unknown);
-    assert!(!super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
+    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
 }
 
 #[test]
@@ -837,12 +993,12 @@ fn evaluate_condition_unset_with_known() {
 // ── Sentinel rework tests (round-2 review P1) ──────────────────────────
 
 #[test]
-fn set_condition_with_unknown_value_does_not_match() {
-    // Set gate on an unknown var → gate should NOT fire (fail-closed)
+fn set_condition_with_unknown_value_fires() {
+    // Set gate on an unknown var → gate fires (variable IS present, opaque)
     let val = Some(EnvValueOwned::Unknown);
     assert!(
-        !super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
-        "Set with Unknown value should not match (conservative fail-closed)"
+        super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
+        "Set with Unknown value should fire (opaque variable is present)"
     );
 }
 
@@ -857,10 +1013,11 @@ fn unset_condition_with_unknown_value_does_not_match() {
 }
 
 #[test]
-fn sudo_with_set_deny_gate_does_not_over_deny() {
-    // Bare sudo with a Set/Deny gate → the gate should NOT fire because the
-    // env is fully unknown (Set on unknown = false). The result should be Ask
-    // (from sudo escalation), not Deny.
+fn sudo_with_set_deny_gate_fires_for_opaque_env() {
+    // Bare sudo marks env as fully unknown. The Set gate is structural
+    // (not value-dependent), so it fires at the gate's own action (Deny),
+    // unaffected by the opaque_env_ceiling.
+    // max(Deny, Ask from sudo) = Deny.
     let gate = EnvGate {
         var: "PATH".into(),
         condition: EnvCondition::Set,
@@ -868,7 +1025,6 @@ fn sudo_with_set_deny_gate_does_not_over_deny() {
     };
     let mut kb = agent_command_knowledge::default_knowledge_base().clone();
 
-    // Build a command knowledge entry with the gate
     let cmd = agent_command_knowledge::CommandKnowledge {
         name: "mycmd".to_string(),
         effect: agent_command_knowledge::Effect::ReadOnly,
@@ -884,8 +1040,8 @@ fn sudo_with_set_deny_gate_does_not_over_deny() {
     let result = engine.evaluate_command("sudo mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "sudo with Set/Deny gate should be Ask (gate suppressed by unknown env), not Deny: {result:?}"
+        PolicyDecision::Deny,
+        "sudo with Set/Deny gate: opaque env fires gate at max restriction: {result:?}"
     );
 }
 
@@ -1006,17 +1162,17 @@ fn sudo_selective_preserve_equals_gate_fires_on_preserved_var() {
 }
 
 #[test]
-fn sudo_selective_preserve_gate_suppressed_on_non_preserved_var() {
+fn sudo_selective_preserve_non_preserved_var_fires_gate() {
     // FOO=hello sudo --preserve-env=FOO mycmd  with gate on OTHER_VAR
-    // OTHER_VAR is NOT in the preserve list → it's unknown → gate doesn't fire.
-    // Result should be Ask (from sudo escalation), not Deny.
+    // OTHER_VAR is NOT in the preserve list → it's unknown (opaque).
+    // With opaque-fires-at-max-restriction, Set/Deny gate fires → Deny.
     let kb = kb_with_set_gate("OTHER_VAR", EnvGateAction::Deny);
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "OTHER_VAR not preserved → gate suppressed → should be Ask (sudo escalation only): {result:?}"
+        PolicyDecision::Deny,
+        "OTHER_VAR not preserved → opaque → gate fires at max restriction: {result:?}"
     );
 }
 
@@ -1339,5 +1495,233 @@ fn resolve_sudo_wrapper_multiple_preserve_flags() {
         inner.get_value("SECRET"),
         Some(EnvValueOwned::Unknown),
         "SECRET not in any --preserve-env= flag → Unknown"
+    );
+}
+
+// ── Recursive policy evaluation for command substitutions in env ──────
+
+/// Build a KB with a single ReadOnly command `mycmd` carrying one env gate.
+fn kb_with_gate(gate: EnvGate) -> KnowledgeBase {
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    kb.commands.insert(
+        "mycmd".to_string(),
+        agent_command_knowledge::CommandKnowledge {
+            name: "mycmd".to_string(),
+            effect: Effect::ReadOnly,
+            subcommands: Default::default(),
+            flags: Default::default(),
+            env_gates: vec![gate],
+            paths: Default::default(),
+            properties: Default::default(),
+        },
+    );
+    kb
+}
+
+#[test]
+fn inline_literal_env_value_fires_value_gate() {
+    // Control: a literal value that matches the gate's expected value fires it.
+    let kb = kb_with_gate(EnvGate {
+        var: "DEPLOY".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("DEPLOY=danger mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "literal DEPLOY=danger should trigger the Equals/Deny gate: {result:?}"
+    );
+}
+
+#[test]
+fn inline_variable_expansion_fires_equals_gate_at_ceiling() {
+    // Variable expansion ($VAR, ${VAR}) resolves to Unknown. With default
+    // ceiling (Ask), the Equals gate fires at Ask, not the gate's Deny action.
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    for cmd in ["DEPLOY=$DEPLOY_ENV mycmd", "DEPLOY=${DEPLOY_ENV} mycmd"] {
+        let kb = kb_with_gate(EnvGate {
+            var: "DEPLOY".into(),
+            condition: EnvCondition::Equals("danger".into()),
+            decision: EnvGateAction::Deny,
+        });
+        let result = engine.evaluate_command(cmd, &kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Ask,
+            "{cmd}: opaque value fires Equals gate at ceiling (Ask): {result:?}"
+        );
+    }
+}
+
+#[test]
+fn inline_variable_expansion_deny_ceiling() {
+    // With ceiling=Deny, opaque Equals gate fires at Deny.
+    let config = PolicyConfig {
+        opaque_env_ceiling: PolicyDecision::Deny,
+        ..PolicyConfig::default()
+    };
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = kb_with_gate(EnvGate {
+        var: "DEPLOY".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let result = engine.evaluate_command("DEPLOY=$DEPLOY_ENV mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "ceiling=Deny: opaque Equals gate fires at Deny: {result:?}"
+    );
+}
+
+#[test]
+fn inline_variable_expansion_allow_ceiling() {
+    // With ceiling=Allow, opaque Equals gate fires at Allow (user opted in).
+    // mycmd is ReadOnly (Allow by default), so the overall decision is Allow.
+    let config = PolicyConfig {
+        opaque_env_ceiling: PolicyDecision::Allow,
+        ..PolicyConfig::default()
+    };
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = kb_with_gate(EnvGate {
+        var: "DEPLOY".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let result = engine.evaluate_command("DEPLOY=$DEPLOY_ENV mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "ceiling=Allow: opaque value should not escalate: {result:?}"
+    );
+}
+
+#[test]
+fn inline_variable_expansion_fires_set_gate_for_opaque() {
+    // $VAR expansion resolves to Unknown. With opaque-fires-at-max-restriction,
+    // the Set gate fires (variable IS present, just opaque).
+    let kb = kb_with_gate(EnvGate {
+        var: "TOKEN".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+
+    let dynamic = engine.evaluate_command("TOKEN=$SECRET mycmd", &kb);
+    assert_eq!(
+        dynamic.decision,
+        PolicyDecision::Deny,
+        "TOKEN=$SECRET: opaque fires Set gate at max restriction: {dynamic:?}"
+    );
+
+    let literal = engine.evaluate_command("TOKEN=abc mycmd", &kb);
+    assert_eq!(
+        literal.decision,
+        PolicyDecision::Deny,
+        "literal TOKEN=abc should fire the Set/Deny gate: {literal:?}"
+    );
+}
+
+#[test]
+fn allowed_command_substitution_fires_set_gate() {
+    // FOO=$(git status) mycmd — `git status` is ReadOnly (allowed by default).
+    // The recursive policy evaluation allows the inner command, so FOO should
+    // be set (opaque but present) and a Set gate should fire.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(git status) mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "FOO=$(allowed_cmd) should set FOO → Set/Deny gate fires: {result:?}"
+    );
+}
+
+#[test]
+fn denied_command_substitution_denies_whole_command() {
+    // FOO=$(rm -rf /) mycmd — `rm` is Mutating and has escalation flags.
+    // The recursive evaluation should escalate the inner command to at least
+    // Ask, and strictest-wins propagates that to the whole compound command.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Allow,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(rm -rf /) mycmd", &kb);
+    // The inner `rm -rf /` is Mutating (Ask by default) and the compound
+    // strictest-wins applies.
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "inner denied/escalated command should escalate the whole command: {result:?}"
+    );
+}
+
+#[test]
+fn allowed_substitution_does_not_fire_equals_gate() {
+    // FOO=$(git status) mycmd with an Equals("danger") gate on FOO.
+    // Even though the inner command is allowed and FOO is "set", the value
+    // is opaque — an Equals gate checking for a specific literal should not
+    // match.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("danger".into()),
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$(git status) mycmd", &kb);
+    // The inner command is allowed, FOO is set to the raw text "$(git status)",
+    // and Equals("danger") should not match that raw text.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "Equals gate should not match opaque substitution value: {result:?}"
+    );
+}
+
+#[test]
+fn adversarial_arithmetic_cmd_injection_stays_unknown() {
+    // FOO=$((cmd) && evil) mycmd — regardless of how classify() handles
+    // this edge case, the engine should treat FOO as unknowable. With
+    // opaque-fires-at-max-restriction, the Set/Deny gate fires (opaque
+    // variable is present). Tree-sitter is the primary defense; this test
+    // verifies the engine-level safety net.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$((cmd) && evil) mycmd", &kb);
+    // The value is unknowable but present — Set gate fires at max restriction.
+    // The overall decision is at least Deny.
+    assert_ne!(
+        result.decision,
+        PolicyDecision::Allow,
+        "adversarial input should not be silently allowed: {result:?}"
+    );
+}
+
+#[test]
+fn variable_expansion_fires_set_gate_for_opaque() {
+    // FOO=$VAR mycmd — variable expansion resolves to Unknown. With
+    // opaque-fires-at-max-restriction, the Set gate fires.
+    let kb = kb_with_gate(EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    });
+    let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
+    let result = engine.evaluate_command("FOO=$VAR mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "FOO=$VAR: opaque fires Set gate at max restriction: {result:?}"
     );
 }

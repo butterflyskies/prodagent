@@ -327,4 +327,239 @@ mod proofs {
         assert!(PolicyDecision::Deny.max(d) == PolicyDecision::Deny);
         assert!(d.max(PolicyDecision::Deny) == PolicyDecision::Deny);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #3 — Opaque env values respect the configured ceiling
+    //
+    // When an env gate encounters an opaque (unknown) value on a
+    // value-dependent condition (Equals/NotEquals), the decision is
+    // the configured `opaque_env_ceiling` — not the gate's own action.
+    // Structural conditions (Set/Unset) are deterministic for opaque
+    // values and always use the gate's own action.
+    //
+    // The invariant: for value-dependent gates,
+    //   gate(opaque, ceiling) == ceiling
+    // For structural gates:
+    //   gate(opaque) == gate(concrete_match)
+    //
+    // The implementation models `evaluate_condition` + the ceiling
+    // override as a truth table. Kani verifies exhaustively.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Model of env gate condition types matching `EnvCondition`.
+    #[derive(Clone, Copy, kani::Arbitrary)]
+    enum ConditionType {
+        Equals,
+        NotEquals,
+        Set,
+        Unset,
+    }
+
+    /// Whether a condition is value-dependent (Equals/NotEquals) or
+    /// structural (Set/Unset). Only value-dependent gates use the
+    /// ceiling for opaque values.
+    fn is_value_dependent(cond: ConditionType) -> bool {
+        matches!(cond, ConditionType::Equals | ConditionType::NotEquals)
+    }
+
+    /// Model of env value states matching `Option<EnvValueOwned>`.
+    ///
+    /// `KnownMatch` / `KnownNoMatch` model `Known(v)` where `v` does
+    /// or does not satisfy the condition. This is the key abstraction:
+    /// the string equality check becomes a boolean.
+    #[derive(Clone, Copy, kani::Arbitrary)]
+    enum ValueState {
+        /// Variable set to a value that matches the condition's expected value.
+        KnownMatch,
+        /// Variable set to a value that does NOT match the condition's expected value.
+        KnownNoMatch,
+        /// Variable set but value is opaque/unknown.
+        Unknown,
+        /// Variable not present in the environment.
+        Absent,
+    }
+
+    /// Model of `evaluate_condition` from engine.rs.
+    ///
+    /// Returns true when the gate fires (condition matches).
+    /// Must be kept in sync with the real implementation.
+    fn gate_fires(cond: ConditionType, val: ValueState) -> bool {
+        match (cond, val) {
+            // Equals: fires when value matches expected
+            (ConditionType::Equals, ValueState::KnownMatch) => true,
+            (ConditionType::Equals, ValueState::KnownNoMatch) => false,
+            (ConditionType::Equals, ValueState::Unknown) => true, // opaque: fires
+            (ConditionType::Equals, ValueState::Absent) => false,
+
+            // NotEquals: fires when value differs from expected
+            (ConditionType::NotEquals, ValueState::KnownMatch) => false,
+            (ConditionType::NotEquals, ValueState::KnownNoMatch) => true,
+            (ConditionType::NotEquals, ValueState::Unknown) => true, // opaque: fires
+            (ConditionType::NotEquals, ValueState::Absent) => true,  // not set ≠ any value
+
+            // Set: fires when variable is present (any value)
+            (ConditionType::Set, ValueState::KnownMatch) => true,
+            (ConditionType::Set, ValueState::KnownNoMatch) => true,
+            (ConditionType::Set, ValueState::Unknown) => true, // present, just opaque
+            (ConditionType::Set, ValueState::Absent) => false,
+
+            // Unset: fires when variable is not present
+            (ConditionType::Unset, ValueState::KnownMatch) => false,
+            (ConditionType::Unset, ValueState::KnownNoMatch) => false,
+            (ConditionType::Unset, ValueState::Unknown) => false, // present → not unset
+            (ConditionType::Unset, ValueState::Absent) => true,
+        }
+    }
+
+    /// Convert gate firing into a policy decision, accounting for the
+    /// opaque_env_ceiling on value-dependent conditions.
+    ///
+    /// When a gate fires:
+    /// - Value-dependent (Equals/NotEquals) with opaque value → `ceiling`
+    /// - Structural (Set/Unset) or concrete value → gate's own `action`
+    /// When a gate doesn't fire → `Allow` (identity for max).
+    fn gate_decision(
+        fires: bool,
+        action: PolicyDecision,
+        val: ValueState,
+        cond: ConditionType,
+        ceiling: PolicyDecision,
+    ) -> PolicyDecision {
+        if fires {
+            if matches!(val, ValueState::Unknown) && is_value_dependent(cond) {
+                ceiling
+            } else {
+                action
+            }
+        } else {
+            PolicyDecision::Allow
+        }
+    }
+
+    /// **The invariant**: for value-dependent gates, the decision
+    /// produced by an opaque value equals the configured ceiling.
+    ///
+    /// `gate(opaque, ceiling) == ceiling` for Equals/NotEquals.
+    ///
+    /// This is the core configurability property: the engine respects
+    /// the user's chosen ceiling for opaque values on value-dependent
+    /// gates. Exhaustively verified over all condition types and all
+    /// ceiling values.
+    #[kani::proof]
+    fn opaque_respects_configured_ceiling() {
+        let cond = kani::any::<ConditionType>();
+        let action = kani::any::<PolicyDecision>();
+        let ceiling = kani::any::<PolicyDecision>();
+
+        let opaque_fires = gate_fires(cond, ValueState::Unknown);
+        let opaque_decision =
+            gate_decision(opaque_fires, action, ValueState::Unknown, cond, ceiling);
+
+        if is_value_dependent(cond) {
+            // Value-dependent gates with opaque: decision == ceiling
+            // (because opaque always fires for Equals/NotEquals)
+            assert!(
+                opaque_decision == ceiling,
+                "value-dependent gate(opaque) must equal configured ceiling"
+            );
+        } else {
+            // Structural gates: opaque uses gate's action (unchanged)
+            let expected =
+                gate_decision(opaque_fires, action, ValueState::KnownMatch, cond, ceiling);
+            assert!(
+                opaque_decision == expected,
+                "structural gate(opaque) must use gate's own action"
+            );
+        }
+    }
+
+    /// Opaque values never LOWER a gate's effect relative to the ceiling.
+    ///
+    /// For any concrete value, `gate(opaque, ceiling) >= ceiling` for
+    /// value-dependent gates. Combined with `max` accumulation, this
+    /// ensures the ceiling is respected.
+    #[kani::proof]
+    fn opaque_at_least_ceiling_for_value_dependent() {
+        let cond = kani::any::<ConditionType>();
+        let ceiling = kani::any::<PolicyDecision>();
+        let action = kani::any::<PolicyDecision>();
+
+        kani::assume(is_value_dependent(cond));
+
+        let opaque_fires = gate_fires(cond, ValueState::Unknown);
+        let opaque_decision =
+            gate_decision(opaque_fires, action, ValueState::Unknown, cond, ceiling);
+
+        assert!(
+            opaque_decision >= ceiling,
+            "opaque value on value-dependent gate must be >= ceiling"
+        );
+    }
+
+    /// Opaque values still fire whenever any concrete value fires
+    /// (the gate_fires truth table is unchanged — ceiling only affects
+    /// the DECISION, not WHETHER the gate fires).
+    #[kani::proof]
+    fn opaque_fires_whenever_any_concrete_fires() {
+        let cond = kani::any::<ConditionType>();
+        let concrete = kani::any::<ValueState>();
+
+        kani::assume(!matches!(concrete, ValueState::Unknown));
+
+        if gate_fires(cond, concrete) {
+            assert!(
+                gate_fires(cond, ValueState::Unknown),
+                "if any concrete value fires the gate, opaque must also fire"
+            );
+        }
+    }
+
+    /// Structural gates are unaffected by the ceiling — their decision
+    /// for opaque values equals their decision for concrete values
+    /// (when the gate fires in both cases).
+    #[kani::proof]
+    fn structural_gates_ignore_ceiling() {
+        let cond = kani::any::<ConditionType>();
+        let action = kani::any::<PolicyDecision>();
+        let ceiling = kani::any::<PolicyDecision>();
+
+        kani::assume(!is_value_dependent(cond));
+
+        let opaque_decision = gate_decision(
+            gate_fires(cond, ValueState::Unknown),
+            action,
+            ValueState::Unknown,
+            cond,
+            ceiling,
+        );
+        let concrete_decision = gate_decision(
+            gate_fires(cond, ValueState::KnownMatch),
+            action,
+            ValueState::KnownMatch,
+            cond,
+            ceiling,
+        );
+
+        // For Set: both fire → both get `action`
+        // For Unset: opaque doesn't fire (Allow), concrete doesn't fire (Allow)
+        // Either way, ceiling is irrelevant.
+        assert!(
+            opaque_decision == concrete_decision,
+            "structural gate must produce same decision for opaque and concrete"
+        );
+    }
+
+    /// The `gate_decision` helper preserves monotonicity: firing with
+    /// any decision is always at least as restrictive as not firing.
+    #[kani::proof]
+    fn gate_firing_is_at_least_as_restrictive_as_not_firing() {
+        let action = kani::any::<PolicyDecision>();
+        let cond = kani::any::<ConditionType>();
+        let ceiling = kani::any::<PolicyDecision>();
+        let val = kani::any::<ValueState>();
+
+        let fired = gate_decision(true, action, val, cond, ceiling);
+        let silent = gate_decision(false, action, val, cond, ceiling);
+        assert!(fired >= silent);
+    }
 }
