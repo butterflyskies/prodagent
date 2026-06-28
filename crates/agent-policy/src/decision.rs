@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyDecision {
     Allow,

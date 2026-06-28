@@ -21,22 +21,6 @@
 mod proofs {
     use agent_policy::PolicyDecision;
 
-    // ── Helpers ────────────────────────────────────────────────────────
-
-    /// Symbolic `PolicyDecision` for Kani.
-    ///
-    /// Maps a bounded `u8` in `0..3` to the three variants, preserving
-    /// the discriminant ordering that `derive(Ord)` produces.
-    fn any_decision() -> PolicyDecision {
-        let v: u8 = kani::any();
-        kani::assume(v < 3);
-        match v {
-            0 => PolicyDecision::Allow,
-            1 => PolicyDecision::Ask,
-            _ => PolicyDecision::Deny,
-        }
-    }
-
     // ══════════════════════════════════════════════════════════════════
     // Invariant #1 — Policy monotonicity
     //
@@ -60,7 +44,7 @@ mod proofs {
     /// The derived `Ord` on `PolicyDecision` is reflexive.
     #[kani::proof]
     fn ord_reflexive() {
-        let a = any_decision();
+        let a = kani::any::<PolicyDecision>();
         assert!(a <= a);
         assert!(a >= a);
     }
@@ -68,8 +52,8 @@ mod proofs {
     /// The derived `Ord` on `PolicyDecision` is antisymmetric.
     #[kani::proof]
     fn ord_antisymmetric() {
-        let a = any_decision();
-        let b = any_decision();
+        let a = kani::any::<PolicyDecision>();
+        let b = kani::any::<PolicyDecision>();
         if a <= b && b <= a {
             assert!(a == b);
         }
@@ -78,9 +62,9 @@ mod proofs {
     /// The derived `Ord` on `PolicyDecision` is transitive.
     #[kani::proof]
     fn ord_transitive() {
-        let a = any_decision();
-        let b = any_decision();
-        let c = any_decision();
+        let a = kani::any::<PolicyDecision>();
+        let b = kani::any::<PolicyDecision>();
+        let c = kani::any::<PolicyDecision>();
         if a <= b && b <= c {
             assert!(a <= c);
         }
@@ -106,8 +90,8 @@ mod proofs {
     /// old `strictest` and the new `d`.
     #[kani::proof]
     fn max_is_upper_bound() {
-        let a = any_decision();
-        let b = any_decision();
+        let a = kani::any::<PolicyDecision>();
+        let b = kani::any::<PolicyDecision>();
         let m = a.max(b);
         assert!(m >= a);
         assert!(m >= b);
@@ -116,24 +100,24 @@ mod proofs {
     /// `max` is commutative — segment evaluation order doesn't matter.
     #[kani::proof]
     fn max_commutative() {
-        let a = any_decision();
-        let b = any_decision();
+        let a = kani::any::<PolicyDecision>();
+        let b = kani::any::<PolicyDecision>();
         assert!(a.max(b) == b.max(a));
     }
 
     /// `max` is associative — grouping of segment evaluations doesn't matter.
     #[kani::proof]
     fn max_associative() {
-        let a = any_decision();
-        let b = any_decision();
-        let c = any_decision();
+        let a = kani::any::<PolicyDecision>();
+        let b = kani::any::<PolicyDecision>();
+        let c = kani::any::<PolicyDecision>();
         assert!(a.max(b).max(c) == a.max(b.max(c)));
     }
 
     /// `max` is idempotent — evaluating the same segment twice doesn't change anything.
     #[kani::proof]
     fn max_idempotent() {
-        let a = any_decision();
+        let a = kani::any::<PolicyDecision>();
         assert!(a.max(a) == a);
     }
 
@@ -143,7 +127,7 @@ mod proofs {
     /// that starting value doesn't suppress any segment decision.
     #[kani::proof]
     fn allow_is_max_identity() {
-        let d = any_decision();
+        let d = kani::any::<PolicyDecision>();
         assert!(PolicyDecision::Allow.max(d) == d);
         assert!(d.max(PolicyDecision::Allow) == d);
     }
@@ -164,9 +148,9 @@ mod proofs {
     /// property holds for 3, it holds for any N by induction.
     #[kani::proof]
     fn fold_max_never_relaxes_3_segments() {
-        let d1 = any_decision();
-        let d2 = any_decision();
-        let d3 = any_decision();
+        let d1 = kani::any::<PolicyDecision>();
+        let d2 = kani::any::<PolicyDecision>();
+        let d3 = kani::any::<PolicyDecision>();
 
         let mut strictest = PolicyDecision::Allow;
         strictest = strictest.max(d1);
@@ -185,8 +169,8 @@ mod proofs {
     /// processing a new segment, it can never decrease after.
     #[kani::proof]
     fn fold_step_only_escalates() {
-        let before = any_decision();
-        let new_segment = any_decision();
+        let before = kani::any::<PolicyDecision>();
+        let new_segment = kani::any::<PolicyDecision>();
         let after = before.max(new_segment);
         assert!(after >= before, "max-fold step must never relax");
     }
@@ -203,8 +187,8 @@ mod proofs {
     /// This proves equivalence with `strictest.max(result.decision)`.
     #[kani::proof]
     fn gt_update_equivalent_to_max() {
-        let strictest = any_decision();
-        let decision = any_decision();
+        let strictest = kani::any::<PolicyDecision>();
+        let decision = kani::any::<PolicyDecision>();
 
         // Pattern from evaluate_pipeline
         let via_gt = if decision > strictest {
@@ -260,7 +244,7 @@ mod proofs {
     /// For ANY prior `strictest` value, `max(Ask)` is never Allow.
     #[kani::proof]
     fn parse_error_compound_path_not_allow() {
-        let prior_strictest = any_decision();
+        let prior_strictest = kani::any::<PolicyDecision>();
         let after = prior_strictest.max(PolicyDecision::Ask);
         assert!(
             after != PolicyDecision::Allow,
@@ -281,8 +265,8 @@ mod proofs {
     /// `has_parse_errors` triggers the `max(Ask)` escalation.
     #[kani::proof]
     fn parse_error_escalation_floor() {
-        let d1 = any_decision();
-        let d2 = any_decision();
+        let d1 = kani::any::<PolicyDecision>();
+        let d2 = kani::any::<PolicyDecision>();
 
         // Simulate: two segments evaluated, then parse-error escalation
         let mut strictest = PolicyDecision::Allow;
@@ -309,7 +293,7 @@ mod proofs {
     /// If a segment was already Deny, `max(Ask)` must not weaken it.
     #[kani::proof]
     fn deny_survives_parse_error_escalation() {
-        let prior = any_decision();
+        let prior = kani::any::<PolicyDecision>();
         kani::assume(prior == PolicyDecision::Deny);
         let after = prior.max(PolicyDecision::Ask);
         assert!(
@@ -327,7 +311,7 @@ mod proofs {
     /// escalates_privilege (engine.rs:192).
     #[kani::proof]
     fn escalation_flag_only_raises() {
-        let d = any_decision();
+        let d = kani::any::<PolicyDecision>();
         let escalated = d.max(PolicyDecision::Ask);
         assert!(escalated >= d, "escalation must not lower decision");
         assert!(
@@ -339,7 +323,7 @@ mod proofs {
     /// `Deny.max(anything)` is always Deny — strongest decision is absorbing.
     #[kani::proof]
     fn deny_is_absorbing() {
-        let d = any_decision();
+        let d = kani::any::<PolicyDecision>();
         assert!(PolicyDecision::Deny.max(d) == PolicyDecision::Deny);
         assert!(d.max(PolicyDecision::Deny) == PolicyDecision::Deny);
     }
