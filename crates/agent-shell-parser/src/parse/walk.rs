@@ -1,36 +1,126 @@
 use super::redirect::detect_redirections;
 use super::tokenize::shlex_or_whitespace_words;
-use super::types::{Operator, Redirection, Word};
+use super::types::{Operator, Redirection, Word, WordKind};
 use tree_sitter::Node;
 
-/// Strip the outermost matching quote pair from a word.
+/// Strip the outermost matching quote pair from a word and attach structural
+/// classification from the tree-sitter AST.
 ///
 /// Handles single quotes, double quotes, and `$'...'` ANSI-C quotes.
 /// Unmatched or absent quotes leave the word unchanged. Escape sequences
 /// inside `$'...'` are left as-is (they are source text, not interpreted).
-fn strip_quotes(word: &str) -> Word {
+fn strip_quotes(word: &str, kind: WordKind) -> Word {
     // $'...' ANSI-C quotes
     if let Some(inner) = word.strip_prefix("$'") {
         if let Some(inner) = inner.strip_suffix('\'') {
-            return Word::from(inner);
+            return Word::with_kind(inner, kind);
         }
-        return Word::from(word);
+        return Word::with_kind(word, kind);
     }
     // Single quotes
     if let Some(inner) = word.strip_prefix('\'') {
         if let Some(inner) = inner.strip_suffix('\'') {
-            return Word::from(inner);
+            return Word::with_kind(inner, kind);
         }
-        return Word::from(word);
+        return Word::with_kind(word, kind);
     }
     // Double quotes
     if let Some(inner) = word.strip_prefix('"') {
         if let Some(inner) = inner.strip_suffix('"') {
-            return Word::from(inner);
+            return Word::with_kind(inner, kind);
         }
-        return Word::from(word);
+        return Word::with_kind(word, kind);
     }
-    Word::from(word)
+    Word::with_kind(word, kind)
+}
+
+// ---------------------------------------------------------------------------
+// Tree-sitter node → WordKind classification
+// ---------------------------------------------------------------------------
+
+/// Classify a tree-sitter node into a [`WordKind`] based on its node type
+/// and the types of its descendants.
+///
+/// This is the core function that preserves tree-sitter AST structure as
+/// metadata on extracted words, eliminating the need for downstream byte
+/// scanning.
+fn classify_node_kind(node: Node) -> WordKind {
+    match node.kind() {
+        // Leaf types that indicate specific expansion forms
+        "command_substitution" | "process_substitution" => WordKind::CommandSubstitution,
+        "simple_expansion" => WordKind::VariableExpansion,
+        "expansion" => {
+            // ${...} can contain command substitution in some forms
+            // (e.g. ${var:-$(cmd)}). Check descendants.
+            if has_descendant_kind(node, "command_substitution") {
+                WordKind::CommandSubstitution
+            } else {
+                WordKind::VariableExpansion
+            }
+        }
+        "arithmetic_expansion" => WordKind::ArithmeticExpansion,
+
+        // Container types — classify by inspecting children
+        "concatenation" | "string" | "string_content" | "variable_assignment" | "command_name" => {
+            classify_children(node)
+        }
+
+        // Literal types — no expansions possible
+        "raw_string" | "heredoc_body" | "regex" | "number" | "test_operator" => WordKind::Literal,
+
+        // Named nodes whose children may contain expansions
+        "word" => classify_children(node),
+
+        // Anonymous text nodes (operators, delimiters)
+        _ if !node.is_named() => WordKind::Literal,
+
+        // Unknown named node — conservatively inspect children
+        _ => classify_children(node),
+    }
+}
+
+/// Check if any descendant node has the given kind.
+fn has_descendant_kind(node: Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind || has_descendant_kind(child, kind) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Classify a node by inspecting its children.
+///
+/// Command substitution takes priority over variable expansion (the inner
+/// command can be recursively evaluated through policy).
+fn classify_children(node: Node) -> WordKind {
+    let mut has_cmd_sub = false;
+    let mut has_var_exp = false;
+    let mut has_arith = false;
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match classify_node_kind(child) {
+            WordKind::CommandSubstitution => has_cmd_sub = true,
+            WordKind::VariableExpansion => has_var_exp = true,
+            WordKind::ArithmeticExpansion => has_arith = true,
+            WordKind::Dynamic => return WordKind::Dynamic,
+            WordKind::Literal | WordKind::Unclassified => {}
+        }
+    }
+
+    match (has_cmd_sub, has_var_exp, has_arith) {
+        // Command substitution present — takes priority
+        (true, true, _) | (true, _, true) => WordKind::Dynamic,
+        (true, false, false) => WordKind::CommandSubstitution,
+        // Variable expansion only
+        (false, true, _) => WordKind::VariableExpansion,
+        // Arithmetic expansion only
+        (false, false, true) => WordKind::ArithmeticExpansion,
+        // No expansions
+        (false, false, false) => WordKind::Literal,
+    }
 }
 
 pub(super) struct WalkResult {
@@ -48,6 +138,9 @@ pub(super) struct SegmentInfo {
     /// node types like `command`, `declaration_command`, `test_command`) or
     /// via explicit shlex tokenization at the call site (for unknown node
     /// types and heredoc loose words). There is no implicit fallback.
+    ///
+    /// Words extracted from tree-sitter carry [`WordKind`] structural
+    /// classification; shlex-fallback words are [`WordKind::Unclassified`].
     pub(super) words: Vec<Word>,
 }
 
@@ -108,7 +201,8 @@ fn propagate_redirect(result: &mut WalkResult, node_kind: &str, redir: &Redirect
     }
 }
 
-/// Extract word-level tokens from a `command` node's named children.
+/// Extract word-level tokens from a `command` node's named children,
+/// classifying each word using the tree-sitter node type.
 ///
 /// Each named child of a tree-sitter `command` node represents one shell
 /// word: `command_name`, `word`, `raw_string`, `string`,
@@ -117,7 +211,8 @@ fn propagate_redirect(result: &mut WalkResult, node_kind: &str, redir: &Redirect
 ///
 /// The full source text of each child is used, preserving quotes and
 /// substitution delimiters. This matches shell semantics: `$(echo test)`
-/// is one word, `'hello world'` is one word.
+/// is one word, `'hello world'` is one word. Each word carries a
+/// [`WordKind`] derived from the tree-sitter node type.
 fn extract_command_words(node: Node, source: &[u8]) -> Vec<Word> {
     let mut words = Vec::new();
     let mut cursor = node.walk();
@@ -130,7 +225,8 @@ fn extract_command_words(node: Node, source: &[u8]) -> Vec<Word> {
             continue;
         }
         if let Ok(text) = child.utf8_text(source) {
-            words.push(strip_quotes(text));
+            let kind = classify_node_kind(child);
+            words.push(strip_quotes(text, kind));
         }
     }
     words
@@ -149,7 +245,7 @@ fn extract_declaration_words(node: Node, source: &[u8]) -> Vec<Word> {
             // Anonymous keyword nodes: export, declare, local, readonly, typeset
             "export" | "declare" | "local" | "readonly" | "typeset" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(strip_quotes(text));
+                    words.push(Word::literal(text));
                 }
             }
             _ if child.is_named() => {
@@ -161,7 +257,8 @@ fn extract_declaration_words(node: Node, source: &[u8]) -> Vec<Word> {
                     continue;
                 }
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(strip_quotes(text));
+                    let kind = classify_node_kind(child);
+                    words.push(strip_quotes(text, kind));
                 }
             }
             _ => {}
@@ -181,7 +278,8 @@ fn extract_variable_assignments_words(node: Node, source: &[u8]) -> Vec<Word> {
         if let Ok(text) = child.utf8_text(source) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {
-                words.push(strip_quotes(trimmed));
+                let kind = classify_node_kind(child);
+                words.push(strip_quotes(trimmed, kind));
             }
         }
     }
@@ -198,12 +296,13 @@ fn extract_unset_words(node: Node, source: &[u8]) -> Vec<Word> {
         match child.kind() {
             "unset" | "unsetenv" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(strip_quotes(text));
+                    words.push(Word::literal(text));
                 }
             }
             _ if child.is_named() => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(strip_quotes(text));
+                    let kind = classify_node_kind(child);
+                    words.push(strip_quotes(text, kind));
                 }
             }
             _ => {}
@@ -229,10 +328,10 @@ fn extract_test_words_recursive(node: Node, source: &[u8], words: &mut Vec<Word>
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            // Bracket delimiters — include as words
+            // Bracket delimiters — include as literal words
             "[[" | "]]" | "[" | "]" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(Word::from(text));
+                    words.push(Word::literal(text));
                 }
             }
             // Compound test expressions — recurse into them
@@ -242,13 +341,14 @@ fn extract_test_words_recursive(node: Node, source: &[u8], words: &mut Vec<Word>
             // Operators and leaf tokens — extract text
             "test_operator" => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(Word::from(text));
+                    words.push(Word::literal(text));
                 }
             }
-            // Named nodes (string, word, variable, etc.) — extract and strip quotes
+            // Named nodes (string, word, variable, etc.) — extract, classify, strip quotes
             _ if child.is_named() => {
                 if let Ok(text) = child.utf8_text(source) {
-                    words.push(strip_quotes(text));
+                    let kind = classify_node_kind(child);
+                    words.push(strip_quotes(text, kind));
                 }
             }
             // Anonymous operators like ==, !=, =~, -eq, &&, ||, etc.
@@ -264,7 +364,7 @@ fn extract_test_words_recursive(node: Node, source: &[u8], words: &mut Vec<Word>
                         || text == "&&"
                         || text == "||"
                     {
-                        words.push(Word::from(text));
+                        words.push(Word::literal(text));
                     }
                 }
             }
@@ -304,7 +404,8 @@ pub(super) fn walk_ast(node: Node, source: &[u8]) -> WalkResult {
             let words: Vec<Word> = if text.is_empty() {
                 vec![]
             } else {
-                vec![strip_quotes(text)]
+                let kind = classify_node_kind(node);
+                vec![strip_quotes(text, kind)]
             };
             WalkResult::single_with_words(node.start_byte(), node.end_byte(), None, words)
         }
@@ -727,7 +828,8 @@ fn is_leaf_command(node: Node) -> bool {
 
 /// Extract tree-sitter words from a leaf command node.
 ///
-/// All leaf command node types have word-level extraction.
+/// All leaf command node types have word-level extraction with structural
+/// classification via [`classify_node_kind`].
 fn extract_leaf_words(node: Node, source: &[u8]) -> Vec<Word> {
     match node.kind() {
         "command" => extract_command_words(node, source),
@@ -739,7 +841,8 @@ fn extract_leaf_words(node: Node, source: &[u8]) -> Vec<Word> {
             if text.is_empty() {
                 vec![]
             } else {
-                vec![strip_quotes(text)]
+                let kind = classify_node_kind(node);
+                vec![strip_quotes(text, kind)]
             }
         }
         "variable_assignments" => extract_variable_assignments_words(node, source),
@@ -770,40 +873,47 @@ fn trim_at_heredoc_body(node: Node, end: &mut usize) {
 
 #[cfg(test)]
 mod walk_tests {
-    use super::strip_quotes;
+    use super::*;
 
     #[test]
     fn strip_quotes_empty_string() {
-        assert_eq!(strip_quotes(""), "");
+        assert_eq!(strip_quotes("", WordKind::Literal), "");
     }
 
     #[test]
     fn strip_quotes_empty_single_quotes() {
-        let w = strip_quotes("''");
+        let w = strip_quotes("''", WordKind::Literal);
         assert_eq!(w, "");
     }
 
     #[test]
     fn strip_quotes_empty_double_quotes() {
-        let w = strip_quotes("\"\"");
+        let w = strip_quotes("\"\"", WordKind::Literal);
         assert_eq!(w, "");
     }
 
     #[test]
     fn strip_quotes_ansi_c_quotes() {
-        let w = strip_quotes("$'hello'");
+        let w = strip_quotes("$'hello'", WordKind::Literal);
         assert_eq!(w, "hello");
     }
 
     #[test]
     fn strip_quotes_unclosed_double_quote() {
-        let w = strip_quotes("\"unclosed");
+        let w = strip_quotes("\"unclosed", WordKind::Literal);
         assert_eq!(w, "\"unclosed");
     }
 
     #[test]
     fn strip_quotes_unmatched_single_quote() {
-        let w = strip_quotes("'unmatched");
+        let w = strip_quotes("'unmatched", WordKind::Literal);
         assert_eq!(w, "'unmatched");
+    }
+
+    #[test]
+    fn strip_quotes_preserves_kind() {
+        let w = strip_quotes("'hello'", WordKind::CommandSubstitution);
+        assert_eq!(w.kind(), WordKind::CommandSubstitution);
+        assert_eq!(w, "hello");
     }
 }

@@ -23,15 +23,17 @@ const MAX_SUBSTITUTION_DEPTH: usize = 32;
 /// Collect outermost `command_substitution` and `process_substitution`
 /// nodes. Does not recurse into found substitutions — that is handled by
 /// recursive parsing of each span's inner text.
+///
+/// The inner command text is extracted from tree-sitter's named children
+/// rather than string-stripping delimiters — the AST already knows the
+/// boundary between delimiters (`$(`, `)`, `` ` ``) and content.
 pub(super) fn collect_substitutions(node: Node, source: &[u8], out: &mut Vec<RawSubstSpan>) {
     if matches!(node.kind(), "command_substitution" | "process_substitution") {
-        let full = node.utf8_text(source).unwrap_or("");
-        let inner = strip_subst_delimiters(full);
-        if !inner.is_empty() {
+        if let Some(inner) = extract_inner_from_node(node, source) {
             out.push(RawSubstSpan {
                 start: node.start_byte(),
                 end: node.end_byte(),
-                inner: inner.to_string(),
+                inner,
             });
         }
         return;
@@ -42,7 +44,44 @@ pub(super) fn collect_substitutions(node: Node, source: &[u8], out: &mut Vec<Raw
     }
 }
 
-/// `$(cmd)` → `cmd`, `` `cmd` `` → `cmd`, `<(cmd)` / `>(cmd)` → `cmd`.
+/// Extract the inner command text from a `command_substitution` or
+/// `process_substitution` node using tree-sitter's children.
+///
+/// The named children span the content between delimiters. For `$(echo hi)`,
+/// the named child is the `command` node containing `echo hi`. For
+/// `` `echo hi` ``, the structure is the same — backtick delimiters are
+/// anonymous, content nodes are named.
+///
+/// Falls back to [`strip_subst_delimiters`] if the node has no named
+/// children (e.g. empty substitutions or error-recovery nodes).
+fn extract_inner_from_node(node: Node, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    let named: Vec<Node> = node.named_children(&mut cursor).collect();
+    if named.is_empty() {
+        // No named children — try the string-stripping fallback for
+        // edge cases (error-recovery nodes, unusual tree shapes).
+        let full = node.utf8_text(source).ok()?;
+        let inner = strip_subst_delimiters(full);
+        return if inner.is_empty() {
+            None
+        } else {
+            Some(inner.to_string())
+        };
+    }
+    let start = named.first().unwrap().start_byte();
+    let end = named.last().unwrap().end_byte();
+    source
+        .get(start..end)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Fallback: `$(cmd)` → `cmd`, `` `cmd` `` → `cmd`, `<(cmd)` / `>(cmd)` → `cmd`.
+///
+/// Used only when tree-sitter produces no named children (error recovery).
+/// The primary path uses [`extract_inner_from_node`] which reads the AST
+/// structure directly.
 fn strip_subst_delimiters(text: &str) -> &str {
     let t = if text.starts_with("$(") || text.starts_with("<(") || text.starts_with(">(") {
         text.get(2..text.len().saturating_sub(1)).unwrap_or("")

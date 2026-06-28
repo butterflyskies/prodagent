@@ -60,7 +60,10 @@ pub(crate) fn classify_surface(
     words: &[Word],
     config: &CommandConfig,
 ) -> Option<IndirectExecution> {
-    if base.starts_with('$') {
+    // Use Word::is_expansion() which checks tree-sitter structural metadata
+    // when available, falling back to byte scanning for unclassified words.
+    let cmd_word = words.iter().find(|w| !is_env_assignment(w));
+    if cmd_word.is_some_and(|w| w.is_expansion()) {
         return Some(IndirectExecution::Eval);
     }
     if config.eval_commands.iter().any(|c| c == base) {

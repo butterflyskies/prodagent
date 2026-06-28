@@ -43,6 +43,6 @@ pub use tokenize::{
 pub use types::{
     AssignmentValue, CommandArg, CommandCharacteristics, CommandConfig, IndirectExecution,
     Operator, ParseError, ParsedCommand, ParsedFlag, ParsedPipeline, Redirection, ResolvedCommand,
-    ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, UnanalyzableCommand, Word, WrapperEnvPolicy,
-    WrapperSpec,
+    ResolvedEnvPolicy, ShellSegment, SubstitutionSpan, UnanalyzableCommand, Word, WordKind,
+    WrapperEnvPolicy, WrapperSpec,
 };
