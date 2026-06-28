@@ -198,18 +198,17 @@ impl ConfigLoader {
     /// Load configuration from the standard filesystem locations.
     ///
     /// Discovers:
-    /// - User config: `$HOME/.config/prodagent/config.toml`
+    /// - User config: `<config_dir>/prodagent/config.toml` (XDG-compliant via `dirs::config_dir`)
     /// - Project config: walks up from `cwd` looking for `.prodagent/config.toml`
     pub fn from_environment() -> Self {
         let mut loader = Self::new();
 
-        // User config
-        if let Ok(home) = std::env::var("HOME") {
-            let user_path = Utf8Path::new(&home)
-                .join(".config")
-                .join("prodagent")
-                .join("config.toml");
-            loader.user_path = Some(user_path);
+        // User config — use XDG-compliant config directory
+        if let Some(config_dir) = dirs::config_dir() {
+            if let Ok(config_dir) = Utf8PathBuf::try_from(config_dir) {
+                let user_path = config_dir.join("prodagent").join("config.toml");
+                loader.user_path = Some(user_path);
+            }
         }
 
         // Project config — walk up from CWD
