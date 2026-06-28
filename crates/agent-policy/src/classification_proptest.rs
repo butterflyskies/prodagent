@@ -14,6 +14,8 @@
 use agent_shell_parser::parse::{parse_with_substitutions, AssignmentValue, Word, WordKind};
 use proptest::prelude::*;
 
+const PROPTEST_CASES: u32 = 1024;
+
 // ── Restrictiveness ordering ────────────────────────────────────────────────
 
 /// Restrictiveness rank: higher = more conservative.
@@ -60,9 +62,18 @@ fn arb_nonempty_literal() -> impl Strategy<Value = String> {
     })
 }
 
+/// Shell reserved words that confuse tree-sitter when used inside backtick
+/// substitutions (e.g. `` `for` `` parses as a keyword, not a command).
+const SHELL_RESERVED: &[&str] = &[
+    "if", "then", "else", "elif", "fi", "do", "done", "case", "esac", "while", "until", "for",
+    "in", "function", "select", "time", "coproc",
+];
+
 /// Simple command name for use inside substitutions.
 fn arb_cmd_name() -> impl Strategy<Value = String> {
-    "[a-z]{2,6}"
+    "[a-z]{2,6}".prop_filter("not a shell reserved word", |s| {
+        !SHELL_RESERVED.contains(&s.as_str())
+    })
 }
 
 /// Simple variable name for use in expansions.
@@ -109,6 +120,15 @@ fn arb_assignment_value() -> impl Strategy<Value = String> {
         // ── Mixed: $(cmd)$((expr)) — Dynamic ──
         1 => (arb_cmd_name(), 1u32..50, 1u32..50)
             .prop_map(|(cmd, a, b)| format!("$({cmd})$(({a}+{b}))")),
+        // ── Nested command substitution: $(cmd $(inner)) ──
+        2 => (arb_cmd_name(), arb_cmd_name())
+            .prop_map(|(outer, inner)| format!("$({outer} $({inner}))")),
+        // ── Command substitution containing variable expansion: $(cmd ${VAR}) ──
+        2 => (arb_cmd_name(), arb_var_name())
+            .prop_map(|(cmd, var)| format!("$({cmd} ${{{var}}})")),
+        // ── Variable expansion with command substitution default: ${VAR:-$(cmd)} ──
+        2 => (arb_var_name(), arb_cmd_name())
+            .prop_map(|(var, cmd)| format!("${{{var}:-$({cmd})}}")),
     ]
 }
 
@@ -117,9 +137,42 @@ fn arb_assignment() -> impl Strategy<Value = String> {
     (arb_env_key(), arb_assignment_value()).prop_map(|(key, value)| format!("{key}={value}"))
 }
 
+// ── Command-word generators ─────────────────────────────────────────────────
+
+/// Generate a command word (not an assignment value) for expansion testing.
+///
+/// Each variant produces a syntactically valid shell word that might appear
+/// as the command name in a pipeline segment. The proptest verifies that
+/// `Word::is_expansion()` agrees with `starts_with('$')` — the structural
+/// check must match the string-level heuristic for command words.
+fn arb_command_word() -> impl Strategy<Value = String> {
+    prop_oneof![
+        // ── Literal command name ──
+        3 => arb_cmd_name(),
+        // ── Variable expansion: $CMD ──
+        2 => arb_var_name().prop_map(|var| format!("${var}")),
+        // ── Variable expansion: ${CMD} ──
+        2 => arb_var_name().prop_map(|var| format!("${{{var}}}")),
+        // ── Command substitution: $(cmd) ──
+        2 => arb_cmd_name().prop_map(|cmd| format!("$({cmd})")),
+        // ── Backtick substitution: `cmd` ──
+        2 => arb_cmd_name().prop_map(|cmd| format!("`{cmd}`")),
+        // ── Arithmetic expansion: $((expr)) ──
+        1 => (1u32..100, 1u32..100)
+            .prop_map(|(a, b)| format!("$(({a}+{b}))")),
+        // ── Nested: $(cmd $(inner)) ──
+        1 => (arb_cmd_name(), arb_cmd_name())
+            .prop_map(|(outer, inner)| format!("$({outer} $({inner}))")),
+        // ── Literal path command ──
+        2 => arb_cmd_name().prop_map(|cmd| format!("/usr/bin/{cmd}")),
+    ]
+}
+
 // ── Properties ──────────────────────────────────────────────────────────────
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(PROPTEST_CASES))]
+
     /// Metamorphic property: for any well-formed shell assignment, tree-sitter
     /// classification and byte-scanning classification agree on the
     /// AssignmentValue category. When they disagree, the byte scanner must be
@@ -222,6 +275,64 @@ proptest! {
             classification_label(&ts_value),
             ts_rank,
             assignment
+        );
+    }
+
+    /// Metamorphic property: for command words (not assignment values),
+    /// `Word::is_expansion()` must agree with `starts_with('$')` or
+    /// `contains('`')`.
+    ///
+    /// This covers the `resolve.rs` / `tokenize.rs` path where command-name
+    /// classification gates whether a pipeline segment is treated as indirect
+    /// execution. The structural check (tree-sitter WordKind) must match the
+    /// string-level heuristic for all generated command words.
+    ///
+    /// Oracle: a command word is an expansion if and only if it starts with
+    /// `$` or contains a backtick — defined independently of both the
+    /// structural and byte-scanning classification paths.
+    #[test]
+    fn command_name_expansion_agrees_with_string_check(word_text in arb_command_word()) {
+        let string_says_expansion =
+            word_text.starts_with('$') || word_text.contains('`');
+
+        // ── Classified word (simulating tree-sitter path) ──────────────
+        //
+        // Parse a dummy command line through tree-sitter to get structural
+        // classification of the command word.
+        let dummy_cmd = format!("{word_text} arg");
+        let pipeline = parse_with_substitutions(&dummy_cmd);
+
+        if let Ok(pipeline) = pipeline {
+            if let Some(seg) = pipeline.segments.first() {
+                if let Some(ts_word) = seg.words.first() {
+                    let structural_says_expansion = ts_word.is_expansion();
+                    prop_assert_eq!(
+                        structural_says_expansion,
+                        string_says_expansion,
+                        "tree-sitter is_expansion()={} but string check={} for {:?} (kind={:?})",
+                        structural_says_expansion,
+                        string_says_expansion,
+                        word_text,
+                        ts_word.kind()
+                    );
+                }
+            }
+        }
+
+        // ── Unclassified word (simulating byte-scanning path) ──────────
+        //
+        // Word::from produces Unclassified — is_expansion() falls back to
+        // checking for $ or backtick characters.
+        let bs_word = Word::from(word_text.as_str());
+        let byte_says_expansion = bs_word.is_expansion();
+
+        prop_assert_eq!(
+            byte_says_expansion,
+            string_says_expansion,
+            "byte-scanning is_expansion()={} but string check={} for {:?}",
+            byte_says_expansion,
+            string_says_expansion,
+            word_text
         );
     }
 }
