@@ -262,10 +262,14 @@ mod proofs {
     fn parse_error_compound_path_not_allow() {
         let prior_strictest = any_decision();
         let after = prior_strictest.max(PolicyDecision::Ask);
-        assert!(after != PolicyDecision::Allow,
-            "after max(Ask), decision must not be Allow");
-        assert!(after >= PolicyDecision::Ask,
-            "after max(Ask), decision must be at least Ask");
+        assert!(
+            after != PolicyDecision::Allow,
+            "after max(Ask), decision must not be Allow"
+        );
+        assert!(
+            after >= PolicyDecision::Ask,
+            "after max(Ask), decision must be at least Ask"
+        );
     }
 
     /// Combining both parse-error paths: no matter how the compound
@@ -287,10 +291,14 @@ mod proofs {
         // Parse error escalation
         strictest = strictest.max(PolicyDecision::Ask);
 
-        assert!(strictest >= PolicyDecision::Ask,
-            "parse error must guarantee at least Ask");
-        assert!(strictest != PolicyDecision::Allow,
-            "parse error must never allow");
+        assert!(
+            strictest >= PolicyDecision::Ask,
+            "parse error must guarantee at least Ask"
+        );
+        assert!(
+            strictest != PolicyDecision::Allow,
+            "parse error must never allow"
+        );
         // Also: still >= every segment decision (monotonicity preserved)
         assert!(strictest >= d1);
         assert!(strictest >= d2);
@@ -304,8 +312,10 @@ mod proofs {
         let prior = any_decision();
         kani::assume(prior == PolicyDecision::Deny);
         let after = prior.max(PolicyDecision::Ask);
-        assert!(after == PolicyDecision::Deny,
-            "Deny must not be weakened by parse-error Ask");
+        assert!(
+            after == PolicyDecision::Deny,
+            "Deny must not be weakened by parse-error Ask"
+        );
     }
 
     // ── Cross-cutting: escalation can only raise ──────────────────────
@@ -320,8 +330,10 @@ mod proofs {
         let d = any_decision();
         let escalated = d.max(PolicyDecision::Ask);
         assert!(escalated >= d, "escalation must not lower decision");
-        assert!(escalated >= PolicyDecision::Ask,
-            "escalation must reach at least Ask");
+        assert!(
+            escalated >= PolicyDecision::Ask,
+            "escalation must reach at least Ask"
+        );
     }
 
     /// `Deny.max(anything)` is always Deny — strongest decision is absorbing.
