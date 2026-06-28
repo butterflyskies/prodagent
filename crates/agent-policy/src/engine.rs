@@ -871,7 +871,7 @@ fn evaluate_condition(condition: &EnvCondition, value: Option<&EnvValueOwned>) -
             Some(EnvValueOwned::Unknown) => true, // opaque: fires at max restriction
             None => true,                         // var not set ≠ any value
         },
-        EnvCondition::Set => matches!(value, Some(_)),
+        EnvCondition::Set => value.is_some(),
         EnvCondition::Unset => value.is_none(),
     }
 }
