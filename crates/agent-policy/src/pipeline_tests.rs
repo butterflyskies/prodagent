@@ -709,11 +709,10 @@ fn env_wrapper_clean_env_hides_process_vars() {
 }
 
 #[test]
-fn sudo_without_e_marks_env_unknown() {
-    // Use a gate with Equals/Deny where the var IS set in the process env.
-    // If sudo correctly marks env as unknown, the Equals condition can't
-    // confirm, so the Deny gate is suppressed. Result should be exactly Ask
-    // (from sudo escalation), NOT Deny.
+fn sudo_without_e_opaque_env_fires_gate() {
+    // sudo without -E marks env as fully unknown. With opaque-fires-at-max-
+    // restriction, the Equals gate fires (opaque could match), producing Deny.
+    // Combined with sudo escalation (Ask), max(Deny, Ask) = Deny.
     let gate = EnvGate {
         var: "PATH".into(), // PATH is always set in process env
         condition: EnvCondition::Equals(std::env::var("PATH").unwrap_or_default()),
@@ -725,12 +724,12 @@ fn sudo_without_e_marks_env_unknown() {
     kb.commands.insert("mycmd".to_string(), command);
 
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
-    // sudo without -E → env is unknown → Equals can't confirm → Deny suppressed
+    // sudo without -E → env is unknown → Equals fires at max restriction → Deny
     let result = engine.evaluate_command("sudo mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "sudo without -E should be exactly Ask (gate suppressed by unknown env): {result:?}"
+        PolicyDecision::Deny,
+        "sudo without -E: opaque env fires Equals gate at max restriction: {result:?}"
     );
 }
 
@@ -950,12 +949,11 @@ fn real_kb_env_wrapper_passes_assignments_to_inner_gate() {
     );
 }
 
-// sudo strips env for inner gate — Equals gate cannot confirm.
+// sudo strips env for inner gate — opaque fires at max restriction.
 #[test]
-fn real_kb_sudo_strips_env_for_inner_gate() {
-    // Use PATH (always set in process env) with its actual value.
-    // Without sudo, the Equals gate would match and Deny.
-    // With sudo, env is marked unknown → gate suppressed → Ask.
+fn real_kb_sudo_opaque_env_fires_equals_gate() {
+    // sudo marks env as fully unknown. With opaque-fires-at-max-restriction,
+    // the Equals/Deny gate fires (opaque could match) → Deny.
     let path_value = std::env::var("PATH").unwrap_or_default();
     let gate = EnvGate {
         var: "PATH".into(),
@@ -968,8 +966,8 @@ fn real_kb_sudo_strips_env_for_inner_gate() {
     let result = engine.evaluate_command("sudo git push", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "sudo should strip env, suppressing the Equals/Deny gate: {result:?}"
+        PolicyDecision::Deny,
+        "sudo opaque env: Equals gate fires at max restriction: {result:?}"
     );
 }
 

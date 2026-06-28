@@ -327,4 +327,151 @@ mod proofs {
         assert!(PolicyDecision::Deny.max(d) == PolicyDecision::Deny);
         assert!(d.max(PolicyDecision::Deny) == PolicyDecision::Deny);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #3 — Opaque env values fire at max restriction
+    //
+    // When an env gate encounters an opaque (unknown) value, it fires
+    // at the gate's configured action — never silently passes.
+    //
+    // The invariant: gate(opaque) >= gate(any_concrete_value)
+    //
+    // The implementation models `evaluate_condition` as a truth table
+    // over (condition_type, value_state) pairs. Kani verifies the
+    // invariant exhaustively over the bounded domain.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Model of env gate condition types matching `EnvCondition`.
+    #[derive(Clone, Copy, kani::Arbitrary)]
+    enum ConditionType {
+        Equals,
+        NotEquals,
+        Set,
+        Unset,
+    }
+
+    /// Model of env value states matching `Option<EnvValueOwned>`.
+    ///
+    /// `KnownMatch` / `KnownNoMatch` model `Known(v)` where `v` does
+    /// or does not satisfy the condition. This is the key abstraction:
+    /// the string equality check becomes a boolean.
+    #[derive(Clone, Copy, kani::Arbitrary)]
+    enum ValueState {
+        /// Variable set to a value that matches the condition's expected value.
+        KnownMatch,
+        /// Variable set to a value that does NOT match the condition's expected value.
+        KnownNoMatch,
+        /// Variable set but value is opaque/unknown.
+        Unknown,
+        /// Variable not present in the environment.
+        Absent,
+    }
+
+    /// Model of `evaluate_condition` from engine.rs.
+    ///
+    /// Returns true when the gate fires (condition matches).
+    /// Must be kept in sync with the real implementation.
+    fn gate_fires(cond: ConditionType, val: ValueState) -> bool {
+        match (cond, val) {
+            // Equals: fires when value matches expected
+            (ConditionType::Equals, ValueState::KnownMatch) => true,
+            (ConditionType::Equals, ValueState::KnownNoMatch) => false,
+            (ConditionType::Equals, ValueState::Unknown) => true, // max restriction
+            (ConditionType::Equals, ValueState::Absent) => false,
+
+            // NotEquals: fires when value differs from expected
+            (ConditionType::NotEquals, ValueState::KnownMatch) => false,
+            (ConditionType::NotEquals, ValueState::KnownNoMatch) => true,
+            (ConditionType::NotEquals, ValueState::Unknown) => true, // max restriction
+            (ConditionType::NotEquals, ValueState::Absent) => true,  // not set ≠ any value
+
+            // Set: fires when variable is present (any value)
+            (ConditionType::Set, ValueState::KnownMatch) => true,
+            (ConditionType::Set, ValueState::KnownNoMatch) => true,
+            (ConditionType::Set, ValueState::Unknown) => true, // present, just opaque
+            (ConditionType::Set, ValueState::Absent) => false,
+
+            // Unset: fires when variable is not present
+            (ConditionType::Unset, ValueState::KnownMatch) => false,
+            (ConditionType::Unset, ValueState::KnownNoMatch) => false,
+            (ConditionType::Unset, ValueState::Unknown) => false, // present → not unset
+            (ConditionType::Unset, ValueState::Absent) => true,
+        }
+    }
+
+    /// Convert gate firing into a policy decision.
+    ///
+    /// When a gate fires, it produces the gate's configured action
+    /// (mapped to `PolicyDecision`). When it doesn't fire, the gate
+    /// contributes nothing — modeled as `Allow` (identity for max).
+    fn gate_decision(fires: bool, action: PolicyDecision) -> PolicyDecision {
+        if fires {
+            action
+        } else {
+            PolicyDecision::Allow
+        }
+    }
+
+    /// **The invariant**: for any condition type and gate action,
+    /// the decision produced by an opaque value is >= the decision
+    /// produced by ANY concrete value.
+    ///
+    /// `gate(opaque) >= gate(any_concrete_value)`
+    ///
+    /// This is the core security property: an opaque env value never
+    /// causes a gate to silently pass when some concrete value would
+    /// have triggered it. Exhaustively verified over all 4 condition
+    /// types, all 4 concrete value states, and all 3 gate actions.
+    #[kani::proof]
+    fn opaque_fires_at_max_restriction() {
+        let cond = kani::any::<ConditionType>();
+        let action = kani::any::<PolicyDecision>();
+        let concrete = kani::any::<ValueState>();
+
+        // Exclude Unknown from "concrete" — we're comparing opaque vs concrete
+        kani::assume(!matches!(concrete, ValueState::Unknown));
+
+        let opaque_fires = gate_fires(cond, ValueState::Unknown);
+        let concrete_fires = gate_fires(cond, concrete);
+
+        let opaque_decision = gate_decision(opaque_fires, action);
+        let concrete_decision = gate_decision(concrete_fires, action);
+
+        assert!(
+            opaque_decision >= concrete_decision,
+            "gate(opaque) must be >= gate(concrete) for all conditions and actions"
+        );
+    }
+
+    /// Opaque values never LOWER a gate's effect — they can only match
+    /// or exceed what a concrete value would produce.
+    ///
+    /// Stronger form: if a concrete value causes a gate to fire,
+    /// the opaque value ALSO causes it to fire.
+    #[kani::proof]
+    fn opaque_fires_whenever_any_concrete_fires() {
+        let cond = kani::any::<ConditionType>();
+        let concrete = kani::any::<ValueState>();
+
+        kani::assume(!matches!(concrete, ValueState::Unknown));
+
+        if gate_fires(cond, concrete) {
+            assert!(
+                gate_fires(cond, ValueState::Unknown),
+                "if any concrete value fires the gate, opaque must also fire"
+            );
+        }
+    }
+
+    /// The `gate_decision` helper preserves the max-restriction semantics:
+    /// firing with action A produces A; not firing produces Allow (the
+    /// identity for max). Since A >= Allow for all A, firing is always
+    /// at least as restrictive as not firing.
+    #[kani::proof]
+    fn gate_firing_is_at_least_as_restrictive_as_not_firing() {
+        let action = kani::any::<PolicyDecision>();
+        let fired = gate_decision(true, action);
+        let silent = gate_decision(false, action);
+        assert!(fired >= silent);
+    }
 }

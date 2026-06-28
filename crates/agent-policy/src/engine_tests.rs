@@ -601,26 +601,48 @@ fn env_gate_deny_short_circuits() {
     );
 }
 
-// ── Unknown env var handling (conservative) ──────────────────────────────
+// ── Opaque env values fire at max restriction ────────────────────────────
+//
+// When a gate encounters an opaque (unknown) value, it fires at its
+// configured action for any condition that COULD match a concrete value.
+// Invariant: gate(opaque) >= gate(any_concrete_value).
 
 #[test]
-fn env_gate_equals_unknown_no_effect() {
+fn env_gate_equals_unknown_fires() {
+    // Opaque value could equal "bar" → gate fires at max restriction
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Allow,
+        decision: EnvGateAction::Deny,
     }];
     let mut env = EnvSnapshot::clean();
     env.set_unknown("FOO");
     assert_eq!(
         super::apply_env_gates(&gates, &env),
-        None,
-        "Equals with unknown value should have no effect"
+        Some(PolicyDecision::Deny),
+        "Equals with unknown value should fire at max restriction"
     );
 }
 
 #[test]
-fn env_gate_not_equals_unknown_no_effect() {
+fn env_gate_equals_unknown_fires_ask() {
+    let gates = vec![EnvGate {
+        var: "FOO".into(),
+        condition: EnvCondition::Equals("bar".into()),
+        decision: EnvGateAction::Ask,
+    }];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Ask),
+        "Equals with unknown value should fire Ask"
+    );
+}
+
+#[test]
+fn env_gate_not_equals_unknown_fires() {
+    // Opaque value could differ from "bar" → gate fires at max restriction
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::NotEquals("bar".into()),
@@ -630,14 +652,14 @@ fn env_gate_not_equals_unknown_no_effect() {
     env.set_unknown("FOO");
     assert_eq!(
         super::apply_env_gates(&gates, &env),
-        None,
-        "NotEquals with unknown value should have no effect"
+        Some(PolicyDecision::Deny),
+        "NotEquals with unknown value should fire at max restriction"
     );
 }
 
 #[test]
-fn env_gate_set_unknown_no_match() {
-    // Unknown means we can't confirm the var is set — conservative fail-closed
+fn env_gate_set_unknown_fires() {
+    // Variable IS present (just opaque) → Set gate fires
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Set,
@@ -647,14 +669,14 @@ fn env_gate_set_unknown_no_match() {
     env.set_unknown("FOO");
     assert_eq!(
         super::apply_env_gates(&gates, &env),
-        None,
-        "Set with unknown value should not match (fail-closed)"
+        Some(PolicyDecision::Allow),
+        "Set with unknown value should fire (variable is present)"
     );
 }
 
 #[test]
 fn env_gate_unset_unknown_no_match() {
-    // Unknown means *something* was assigned — Unset should NOT match
+    // Variable IS present (opaque) → Unset should NOT match
     let gates = vec![EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Unset,
@@ -665,7 +687,31 @@ fn env_gate_unset_unknown_no_match() {
     assert_eq!(
         super::apply_env_gates(&gates, &env),
         None,
-        "Unset with unknown value should not match (conservative: assume set)"
+        "Unset with unknown value should not match (variable is present)"
+    );
+}
+
+#[test]
+fn env_gate_opaque_equals_and_not_equals_both_fire() {
+    // Both Equals and NotEquals fire for opaque — most restrictive wins
+    let gates = vec![
+        EnvGate {
+            var: "FOO".into(),
+            condition: EnvCondition::Equals("bar".into()),
+            decision: EnvGateAction::Ask,
+        },
+        EnvGate {
+            var: "FOO".into(),
+            condition: EnvCondition::NotEquals("bar".into()),
+            decision: EnvGateAction::Deny,
+        },
+    ];
+    let mut env = EnvSnapshot::clean();
+    env.set_unknown("FOO");
+    assert_eq!(
+        super::apply_env_gates(&gates, &env),
+        Some(PolicyDecision::Deny),
+        "both gates fire for opaque, strictest (Deny) wins"
     );
 }
 
@@ -810,9 +856,9 @@ fn evaluate_condition_set_with_known() {
 
 #[test]
 fn evaluate_condition_set_with_unknown() {
-    // Unknown value: can't confirm the var is set — fail-closed → false
+    // Unknown value: variable IS present (opaque) → Set fires
     let val = Some(EnvValueOwned::Unknown);
-    assert!(!super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
+    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
 }
 
 #[test]
@@ -837,12 +883,12 @@ fn evaluate_condition_unset_with_known() {
 // ── Sentinel rework tests (round-2 review P1) ──────────────────────────
 
 #[test]
-fn set_condition_with_unknown_value_does_not_match() {
-    // Set gate on an unknown var → gate should NOT fire (fail-closed)
+fn set_condition_with_unknown_value_fires() {
+    // Set gate on an unknown var → gate fires (variable IS present, opaque)
     let val = Some(EnvValueOwned::Unknown);
     assert!(
-        !super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
-        "Set with Unknown value should not match (conservative fail-closed)"
+        super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
+        "Set with Unknown value should fire (opaque variable is present)"
     );
 }
 
@@ -857,10 +903,10 @@ fn unset_condition_with_unknown_value_does_not_match() {
 }
 
 #[test]
-fn sudo_with_set_deny_gate_does_not_over_deny() {
-    // Bare sudo with a Set/Deny gate → the gate should NOT fire because the
-    // env is fully unknown (Set on unknown = false). The result should be Ask
-    // (from sudo escalation), not Deny.
+fn sudo_with_set_deny_gate_fires_for_opaque_env() {
+    // Bare sudo marks env as fully unknown. With opaque-fires-at-max-restriction,
+    // the Set gate fires (variable could be present) → Deny.
+    // max(Deny, Ask from sudo) = Deny.
     let gate = EnvGate {
         var: "PATH".into(),
         condition: EnvCondition::Set,
@@ -868,7 +914,6 @@ fn sudo_with_set_deny_gate_does_not_over_deny() {
     };
     let mut kb = agent_command_knowledge::default_knowledge_base().clone();
 
-    // Build a command knowledge entry with the gate
     let cmd = agent_command_knowledge::CommandKnowledge {
         name: "mycmd".to_string(),
         effect: agent_command_knowledge::Effect::ReadOnly,
@@ -884,8 +929,8 @@ fn sudo_with_set_deny_gate_does_not_over_deny() {
     let result = engine.evaluate_command("sudo mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "sudo with Set/Deny gate should be Ask (gate suppressed by unknown env), not Deny: {result:?}"
+        PolicyDecision::Deny,
+        "sudo with Set/Deny gate: opaque env fires gate at max restriction: {result:?}"
     );
 }
 
@@ -1006,17 +1051,17 @@ fn sudo_selective_preserve_equals_gate_fires_on_preserved_var() {
 }
 
 #[test]
-fn sudo_selective_preserve_gate_suppressed_on_non_preserved_var() {
+fn sudo_selective_preserve_non_preserved_var_fires_gate() {
     // FOO=hello sudo --preserve-env=FOO mycmd  with gate on OTHER_VAR
-    // OTHER_VAR is NOT in the preserve list → it's unknown → gate doesn't fire.
-    // Result should be Ask (from sudo escalation), not Deny.
+    // OTHER_VAR is NOT in the preserve list → it's unknown (opaque).
+    // With opaque-fires-at-max-restriction, Set/Deny gate fires → Deny.
     let kb = kb_with_set_gate("OTHER_VAR", EnvGateAction::Deny);
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("FOO=hello sudo --preserve-env=FOO mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Ask,
-        "OTHER_VAR not preserved → gate suppressed → should be Ask (sudo escalation only): {result:?}"
+        PolicyDecision::Deny,
+        "OTHER_VAR not preserved → opaque → gate fires at max restriction: {result:?}"
     );
 }
 
@@ -1380,11 +1425,9 @@ fn inline_literal_env_value_fires_value_gate() {
 }
 
 #[test]
-fn inline_substitution_env_value_does_not_fire_value_gate() {
-    // A substitution-derived value cannot statically equal "danger", so the
-    // value-specific gate must not fire — the command falls back to its
-    // ReadOnly default (Allow). These variable-expansion forms (`$VAR`,
-    // `${VAR}`) are the gap the old `.contains("$(")` check missed.
+fn inline_variable_expansion_fires_equals_gate_for_opaque() {
+    // Variable expansion ($VAR, ${VAR}) resolves to Unknown. With opaque-fires-
+    // at-max-restriction, the Equals gate fires (value could equal "danger").
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     for cmd in ["DEPLOY=$DEPLOY_ENV mycmd", "DEPLOY=${DEPLOY_ENV} mycmd"] {
         let kb = kb_with_gate(EnvGate {
@@ -1395,17 +1438,16 @@ fn inline_substitution_env_value_does_not_fire_value_gate() {
         let result = engine.evaluate_command(cmd, &kb);
         assert_eq!(
             result.decision,
-            PolicyDecision::Allow,
-            "{cmd}: dynamic value must not satisfy the value gate: {result:?}"
+            PolicyDecision::Deny,
+            "{cmd}: opaque value fires Equals gate at max restriction: {result:?}"
         );
     }
 }
 
 #[test]
-fn inline_variable_expansion_does_not_satisfy_set_gate() {
-    // Under the old behavior `FOO=$VAR` was stored as a known literal, so a
-    // `Set` gate fired. Now it resolves to Unknown and the presence gate is
-    // suppressed — consistent with `FOO=$(cmd)`.
+fn inline_variable_expansion_fires_set_gate_for_opaque() {
+    // $VAR expansion resolves to Unknown. With opaque-fires-at-max-restriction,
+    // the Set gate fires (variable IS present, just opaque).
     let kb = kb_with_gate(EnvGate {
         var: "TOKEN".into(),
         condition: EnvCondition::Set,
@@ -1416,8 +1458,8 @@ fn inline_variable_expansion_does_not_satisfy_set_gate() {
     let dynamic = engine.evaluate_command("TOKEN=$SECRET mycmd", &kb);
     assert_eq!(
         dynamic.decision,
-        PolicyDecision::Allow,
-        "TOKEN=$SECRET should not confirm presence (Unknown): {dynamic:?}"
+        PolicyDecision::Deny,
+        "TOKEN=$SECRET: opaque fires Set gate at max restriction: {dynamic:?}"
     );
 
     let literal = engine.evaluate_command("TOKEN=abc mycmd", &kb);
@@ -1492,9 +1534,10 @@ fn allowed_substitution_does_not_fire_equals_gate() {
 #[test]
 fn adversarial_arithmetic_cmd_injection_stays_unknown() {
     // FOO=$((cmd) && evil) mycmd — regardless of how classify() handles
-    // this edge case, the engine should treat FOO as unknowable and the
-    // Set gate should NOT fire. Tree-sitter is the primary defense;
-    // this test verifies the engine-level safety net.
+    // this edge case, the engine should treat FOO as unknowable. With
+    // opaque-fires-at-max-restriction, the Set/Deny gate fires (opaque
+    // variable is present). Tree-sitter is the primary defense; this test
+    // verifies the engine-level safety net.
     let kb = kb_with_gate(EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Set,
@@ -1502,9 +1545,8 @@ fn adversarial_arithmetic_cmd_injection_stays_unknown() {
     });
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
     let result = engine.evaluate_command("FOO=$((cmd) && evil) mycmd", &kb);
-    // The value is unknowable — Set gate must not fire.
-    // The overall decision may be escalated by the parse (tree-sitter
-    // handles the substitution correctly), but the gate itself stays silent.
+    // The value is unknowable but present — Set gate fires at max restriction.
+    // The overall decision is at least Deny.
     assert_ne!(
         result.decision,
         PolicyDecision::Allow,
@@ -1513,10 +1555,9 @@ fn adversarial_arithmetic_cmd_injection_stays_unknown() {
 }
 
 #[test]
-fn variable_expansion_does_not_fire_set_gate_even_with_allowed_context() {
-    // FOO=$VAR mycmd — variable expansion is truly unknowable regardless of
-    // any policy context. There is no inner command to evaluate, so FOO must
-    // remain unknown and the Set gate must not fire.
+fn variable_expansion_fires_set_gate_for_opaque() {
+    // FOO=$VAR mycmd — variable expansion resolves to Unknown. With
+    // opaque-fires-at-max-restriction, the Set gate fires.
     let kb = kb_with_gate(EnvGate {
         var: "FOO".into(),
         condition: EnvCondition::Set,
@@ -1526,7 +1567,7 @@ fn variable_expansion_does_not_fire_set_gate_even_with_allowed_context() {
     let result = engine.evaluate_command("FOO=$VAR mycmd", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Allow,
-        "FOO=$VAR should not fire Set gate (variable expansion is unknowable): {result:?}"
+        PolicyDecision::Deny,
+        "FOO=$VAR: opaque fires Set gate at max restriction: {result:?}"
     );
 }

@@ -787,11 +787,11 @@ fn resolve_sudo_wrapper_from_words(words: &[Word], outer_env: &EnvSnapshot) -> E
 /// or there are no gates. When multiple gates match, the **strictest** action
 /// wins (Deny > Ask > Allow). A Deny gate short-circuits remaining evaluation.
 ///
-/// Unknown env var handling (conservative fail-closed):
-/// - `Equals` with unknown value → non-matching (gate has no effect)
-/// - `NotEquals` with unknown value → non-matching (gate has no effect)
-/// - `Set` with unknown value → non-matching (can't confirm the var is set)
-/// - `Unset` with unknown value → non-matching (can't confirm the var is absent)
+/// Opaque (unknown) env value handling — fires at most restrictive outcome:
+/// - `Equals` with unknown value → matching (could equal expected; fire gate)
+/// - `NotEquals` with unknown value → matching (could differ; fire gate)
+/// - `Set` with unknown value → matching (variable IS present, just opaque)
+/// - `Unset` with unknown value → non-matching (variable is present → not unset)
 fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecision> {
     if gates.is_empty() {
         return None;
@@ -823,22 +823,28 @@ fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecisio
 
 /// Evaluate an env condition against a resolved env value.
 ///
-/// Conservative fail-closed behavior: when the value is `Unknown`, all
-/// conditions return `false` — the gate does not fire. Only concrete
-/// `Known` values (or `None` for `Unset`) cause a gate to match.
+/// Opaque-fires-at-max-restriction: when the value is `Unknown` (opaque),
+/// the gate fires for any condition that COULD match some concrete value.
+/// This ensures `gate(opaque) >= gate(any_concrete_value)` — the gate never
+/// silently passes when it can't resolve the value.
+///
+/// - `Equals(v)`:    Known → exact match; Unknown → fires (could equal v); None → false
+/// - `NotEquals(v)`: Known → exact mismatch; Unknown → fires (could differ); None → true
+/// - `Set`:          Known → true; Unknown → true (var IS present); None → false
+/// - `Unset`:        Known → false; Unknown → false (var IS present); None → true
 fn evaluate_condition(condition: &EnvCondition, value: Option<&EnvValueOwned>) -> bool {
     match condition {
         EnvCondition::Equals(expected) => match value {
             Some(EnvValueOwned::Known(actual)) => actual == expected,
-            Some(EnvValueOwned::Unknown) => false, // can't confirm equality
-            None => false,                         // var not set
+            Some(EnvValueOwned::Unknown) => true, // opaque: fires at max restriction
+            None => false,                        // var not set
         },
         EnvCondition::NotEquals(expected) => match value {
             Some(EnvValueOwned::Known(actual)) => actual != expected,
-            Some(EnvValueOwned::Unknown) => false, // can't confirm inequality
-            None => true,                          // var not set ≠ any value
+            Some(EnvValueOwned::Unknown) => true, // opaque: fires at max restriction
+            None => true,                         // var not set ≠ any value
         },
-        EnvCondition::Set => matches!(value, Some(EnvValueOwned::Known(_))),
+        EnvCondition::Set => matches!(value, Some(_)),
         EnvCondition::Unset => value.is_none(),
     }
 }
@@ -875,7 +881,7 @@ fn base_command_from_words(words: &[Word]) -> String {
 /// - **Static** (`FOO=bar`): set the variable to the literal value.
 /// - **CommandSubstitution** (`FOO=$(cmd)`): if ALL substitution decisions in
 ///   this segment were allowed, set the variable with the raw substitution text
-///   (opaque but present — `Set` gates fire, `Equals` gates won't match).
+///   (opaque but present — all applicable gates fire at max restriction).
 ///   If any decision was not Allow, or there are no substitutions, mark unknown.
 ///   This is slightly conservative (a denied substitution in an argument
 ///   position causes assignment-position substitutions to also be marked

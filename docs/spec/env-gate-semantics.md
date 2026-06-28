@@ -23,11 +23,15 @@ enforces.
 
 ## Gate evaluation on unknown/opaque values
 
+Invariant: `gate(opaque) >= gate(any_concrete_value)` — when the value is
+opaque, the gate fires at its most restrictive outcome. An opaque value
+never silently passes a gate that could fire for some concrete value.
+
 | Value state | `Set` gate | `Unset` gate | `Equals(v)` gate | `NotEquals(v)` gate |
 |-------------|-----------|-------------|-----------------|-------------------|
 | Known literal | fires if set | fires if unset | fires if matches | fires if differs |
-| Opaque (allowed substitution) | fires (is set) | does not fire | does not fire | does not fire |
-| Unknown (denied/variable expansion) | does not fire | does not fire | does not fire | does not fire |
+| Opaque (allowed substitution) | fires (is set) | does not fire | fires (max restriction) | fires (max restriction) |
+| Unknown (denied/variable expansion) | fires (is set) | does not fire | fires (max restriction) | fires (max restriction) |
 | Unset | does not fire | fires | does not fire | fires |
 
 ## Metamorphic properties (proptests)

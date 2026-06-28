@@ -675,11 +675,11 @@ proptest! {
         );
     }
 
-    /// Core invariant: a substitution-derived env value never statically
-    /// satisfies a value-specific gate in a basic snapshot. Equals, NotEquals,
-    /// and Set must not fire on Unknown values (fail-closed).
+    /// Core invariant: a substitution-derived env value fires all applicable
+    /// gates at max restriction. Equals, NotEquals, and Set all fire on
+    /// Unknown (opaque) values. Unset does NOT fire (variable IS present).
     #[test]
-    fn substitution_derived_value_without_policy_context_resolves_unknown(
+    fn substitution_derived_value_fires_gates_at_max_restriction(
         var in "[A-Z]{1,4}",
         dynamic in arb_dynamic_value(),
         other_expected in "[a-z]{1,6}",
@@ -687,32 +687,31 @@ proptest! {
         let words = [Word::from(format!("{var}={dynamic}"))];
         let snap = EnvSnapshot::clean().with_assignments(&words);
 
-        // Equals against the exact substitution text — the adversarial case.
+        // Equals fires — opaque could match any expected value.
         let equals_literal = vec![EnvGate {
             var: var.clone(),
             condition: EnvCondition::Equals(dynamic.clone()),
-            decision: EnvGateAction::Allow,
+            decision: EnvGateAction::Ask,
         }];
         prop_assert_eq!(
             super::apply_env_gates(&equals_literal, &snap),
-            None,
-            "Equals gate must not match the raw substitution text {:?}",
-            dynamic
+            Some(PolicyDecision::Ask),
+            "Equals gate must fire on opaque value (max restriction)"
         );
 
-        // Equals against an arbitrary other literal.
+        // Equals fires for any expected value.
         let equals_other = vec![EnvGate {
             var: var.clone(),
             condition: EnvCondition::Equals(other_expected),
-            decision: EnvGateAction::Allow,
+            decision: EnvGateAction::Ask,
         }];
         prop_assert_eq!(
             super::apply_env_gates(&equals_other, &snap),
-            None,
-            "Equals gate must not match an unknowable value"
+            Some(PolicyDecision::Ask),
+            "Equals gate must fire on opaque value for any expected"
         );
 
-        // Set must not fire — presence cannot be confirmed.
+        // Set fires — variable IS present (opaque).
         let set_gate = vec![EnvGate {
             var: var.clone(),
             condition: EnvCondition::Set,
@@ -720,8 +719,20 @@ proptest! {
         }];
         prop_assert_eq!(
             super::apply_env_gates(&set_gate, &snap),
+            Some(PolicyDecision::Allow),
+            "Set gate must fire on opaque value (variable is present)"
+        );
+
+        // Unset does NOT fire — variable IS present.
+        let unset_gate = vec![EnvGate {
+            var: var.clone(),
+            condition: EnvCondition::Unset,
+            decision: EnvGateAction::Deny,
+        }];
+        prop_assert_eq!(
+            super::apply_env_gates(&unset_gate, &snap),
             None,
-            "Set gate must not fire on an unknowable value"
+            "Unset gate must not fire when variable is present (opaque)"
         );
     }
 
