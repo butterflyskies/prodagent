@@ -13,6 +13,7 @@ pub mod lookup;
 pub mod merge;
 pub mod types;
 
+pub use camino::Utf8PathBuf;
 pub use defaults::default_knowledge_base;
 pub use lookup::classify;
 pub use merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};

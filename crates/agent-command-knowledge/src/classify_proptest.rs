@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use prodagent_types::Word;
 use proptest::prelude::*;
 
@@ -83,8 +84,8 @@ fn single_cmd_kb(
 // positional region after the command + subcommand is exactly P. Expected
 // paths are derived from P by the *definition* of each mode, not by classify.
 // ===========================================================================
-fn arb_positional_path_case() -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Word>)>
-{
+fn arb_positional_path_case(
+) -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Utf8PathBuf>)> {
     (
         arb_word(),
         prop::collection::vec(arb_word(), 1..3),
@@ -104,17 +105,19 @@ fn arb_positional_path_case() -> impl Strategy<Value = (KnowledgeBase, String, V
             input.extend(sub_words.iter().map(|s| Word::from(s.as_str())));
             input.extend(p.iter().map(|s| Word::from(s.as_str())));
 
-            let expected: Vec<Word> = match mode {
+            let expected: Vec<Utf8PathBuf> = match mode {
                 PathPositionals::None => vec![],
-                PathPositionals::All => p.iter().map(|s| Word::from(s.as_str())).collect(),
+                PathPositionals::All => p.iter().map(|s| Utf8PathBuf::from(s.as_str())).collect(),
                 PathPositionals::Last => p
                     .last()
-                    .map(|s| Word::from(s.as_str()))
+                    .map(|s| Utf8PathBuf::from(s.as_str()))
                     .into_iter()
                     .collect(),
-                PathPositionals::Tail(k) => {
-                    p.iter().skip(k).map(|s| Word::from(s.as_str())).collect()
-                }
+                PathPositionals::Tail(k) => p
+                    .iter()
+                    .skip(k)
+                    .map(|s| Utf8PathBuf::from(s.as_str()))
+                    .collect(),
             };
             (kb, cmd, input, expected)
         })
@@ -124,7 +127,8 @@ fn arb_positional_path_case() -> impl Strategy<Value = (KnowledgeBase, String, V
 // Path extraction — path FLAGS (`-C val` and `--flag=val`), independent oracle.
 // Subcommand paths = None, so affected_paths must be exactly the flag values.
 // ===========================================================================
-fn arb_path_flag_case() -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Word>)> {
+fn arb_path_flag_case(
+) -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Utf8PathBuf>)> {
     (
         arb_word(),
         arb_word(),
@@ -149,7 +153,7 @@ fn arb_path_flag_case() -> impl Strategy<Value = (KnowledgeBase, String, Vec<Wor
                     input.push(Word::from(flag.as_str()));
                     input.push(Word::from(v.as_str()));
                 }
-                expected.push(Word::from(v.as_str()));
+                expected.push(Utf8PathBuf::from(v.as_str()));
             }
             (kb, cmd, input, expected)
         })
@@ -160,7 +164,7 @@ fn arb_path_flag_case() -> impl Strategy<Value = (KnowledgeBase, String, Vec<Wor
 // counted as a positional, and the subcommand word must not leak into paths.
 // ===========================================================================
 fn arb_skip_arg_before_subcommand(
-) -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Word>)> {
+) -> impl Strategy<Value = (KnowledgeBase, String, Vec<Word>, Vec<Utf8PathBuf>)> {
     (
         arb_word(),
         arb_word(),
@@ -189,7 +193,8 @@ fn arb_skip_arg_before_subcommand(
             ];
             input.extend(p.iter().map(|s| Word::from(s.as_str())));
 
-            let expected: Vec<Word> = p.iter().map(|s| Word::from(s.as_str())).collect();
+            let expected: Vec<Utf8PathBuf> =
+                p.iter().map(|s| Utf8PathBuf::from(s.as_str())).collect();
             (kb, cmd, input, expected)
         })
 }

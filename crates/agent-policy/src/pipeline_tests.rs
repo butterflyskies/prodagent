@@ -1,5 +1,4 @@
-use agent_command_knowledge::{default_knowledge_base, KnowledgeBase};
-use agent_shell_parser::parse::Word;
+use agent_command_knowledge::{default_knowledge_base, KnowledgeBase, Utf8PathBuf};
 
 use super::*;
 use crate::config::PolicyConfig;
@@ -1104,8 +1103,14 @@ fn compound_command_aggregates_paths_across_segments() {
         .iter()
         .find(|s| s.label == "touch b.txt")
         .expect("touch segment");
-    assert_eq!(seg_a.affected_paths.as_slice(), &[Word::from("a.txt")]);
-    assert_eq!(seg_b.affected_paths.as_slice(), &[Word::from("b.txt")]);
+    assert_eq!(
+        seg_a.affected_paths.as_slice(),
+        &[Utf8PathBuf::from("a.txt")]
+    );
+    assert_eq!(
+        seg_b.affected_paths.as_slice(),
+        &[Utf8PathBuf::from("b.txt")]
+    );
 }
 
 #[test]

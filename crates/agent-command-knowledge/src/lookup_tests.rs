@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use prodagent_types::Word;
 
 use crate::lookup::classify;
@@ -149,7 +150,9 @@ fn git_c_flag_extracts_path() {
         &words(&["git", "-C", "/tmp/repo", "push"]),
         &kb,
     );
-    assert!(info.affected_paths.contains(&Word::from("/tmp/repo")));
+    assert!(info
+        .affected_paths
+        .contains(&Utf8PathBuf::from("/tmp/repo")));
 }
 
 // --- gh tests ---
@@ -200,8 +203,8 @@ fn rm_extracts_all_paths() {
     let kb = rm_knowledge();
     let info = classify(&Word::from("rm"), &words(&["rm", "-rf", "foo", "bar"]), &kb);
     assert_eq!(info.effect, Effect::Mutating);
-    assert!(info.affected_paths.contains(&Word::from("foo")));
-    assert!(info.affected_paths.contains(&Word::from("bar")));
+    assert!(info.affected_paths.contains(&Utf8PathBuf::from("foo")));
+    assert!(info.affected_paths.contains(&Utf8PathBuf::from("bar")));
 }
 
 // --- unknown command ---
@@ -281,10 +284,14 @@ fn git_add_paths_exclude_subcommand_word() {
         &kb,
     );
     assert_eq!(info.effect, Effect::Mutating);
-    assert!(info.affected_paths.contains(&Word::from("src/main.rs")));
-    assert!(info.affected_paths.contains(&Word::from("README.md")));
+    assert!(info
+        .affected_paths
+        .contains(&Utf8PathBuf::from("src/main.rs")));
+    assert!(info
+        .affected_paths
+        .contains(&Utf8PathBuf::from("README.md")));
     assert!(
-        !info.affected_paths.contains(&Word::from("add")),
+        !info.affected_paths.contains(&Utf8PathBuf::from("add")),
         "subcommand 'add' should not be in affected paths"
     );
 }
@@ -343,9 +350,11 @@ fn chmod_tail_skips_mode() {
         &words(&["chmod", "755", "script.sh", "other.sh"]),
         &kb,
     );
-    assert!(info.affected_paths.contains(&Word::from("script.sh")));
-    assert!(info.affected_paths.contains(&Word::from("other.sh")));
-    assert!(!info.affected_paths.contains(&Word::from("755")));
+    assert!(info
+        .affected_paths
+        .contains(&Utf8PathBuf::from("script.sh")));
+    assert!(info.affected_paths.contains(&Utf8PathBuf::from("other.sh")));
+    assert!(!info.affected_paths.contains(&Utf8PathBuf::from("755")));
 }
 
 // --- PathPositionals::Last ---
@@ -365,5 +374,5 @@ fn cp_last_gets_destination() {
         &words(&["cp", "source.txt", "dest.txt"]),
         &kb,
     );
-    assert_eq!(info.affected_paths, vec![Word::from("dest.txt")]);
+    assert_eq!(info.affected_paths, vec![Utf8PathBuf::from("dest.txt")]);
 }

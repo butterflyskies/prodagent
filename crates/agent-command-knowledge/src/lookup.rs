@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use prodagent_types::Word;
 
 use crate::types::{
@@ -221,12 +222,17 @@ fn merge_flag_schemas(parent: &FlagSchema, child: &FlagSchema) -> FlagSchema {
 /// the same view that `longest_match` operated on, minus the subcommand words.
 /// This ensures positional path extraction agrees with subcommand resolution
 /// about which words are arguments vs flag values.
+///
+/// Shell words are validated as UTF-8 paths at this boundary. Since `Word`
+/// wraps `String` (already UTF-8), the conversion to `Utf8PathBuf` is
+/// infallible. This gives downstream consumers proper path semantics (joining,
+/// prefix matching, canonicalization) without re-parsing.
 fn extract_paths(
     words: &[Word],
     positionals: &[&Word],
     path_spec: &PathSpec,
     flag_schema: &FlagSchema,
-) -> Vec<Word> {
+) -> Vec<Utf8PathBuf> {
     let mut paths = Vec::new();
 
     for flag in &flag_schema.path {
@@ -234,12 +240,12 @@ fn extract_paths(
         let mut i = 0;
         while i < words.len() {
             if words[i] == flag.as_str() && i + 1 < words.len() {
-                paths.push(words[i + 1].clone());
+                paths.push(Utf8PathBuf::from(words[i + 1].as_str()));
                 i += 2;
                 continue;
             }
             if let Some(value) = words[i].strip_prefix(prefix.as_str()) {
-                paths.push(Word::from(value));
+                paths.push(Utf8PathBuf::from(value));
             }
             i += 1;
         }
@@ -248,14 +254,19 @@ fn extract_paths(
     match &path_spec.positionals {
         PathPositionals::None => {}
         PathPositionals::All => {
-            paths.extend(positionals.iter().map(|p| (*p).clone()));
+            paths.extend(positionals.iter().map(|p| Utf8PathBuf::from(p.as_str())));
         }
         PathPositionals::Tail(skip) => {
-            paths.extend(positionals.iter().skip(*skip).map(|p| (*p).clone()));
+            paths.extend(
+                positionals
+                    .iter()
+                    .skip(*skip)
+                    .map(|p| Utf8PathBuf::from(p.as_str())),
+            );
         }
         PathPositionals::Last => {
             if let Some(last) = positionals.last() {
-                paths.push((*last).clone());
+                paths.push(Utf8PathBuf::from(last.as_str()));
             }
         }
     }

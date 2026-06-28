@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use camino::Utf8PathBuf;
 use prodagent_types::{SubcommandPattern, Word};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -239,7 +240,11 @@ pub struct CommandInfo {
     pub effect: Effect,
     pub subcommand: Option<String>,
     pub has_escalation_flags: bool,
-    pub affected_paths: Vec<Word>,
+    /// Filesystem paths the command is expected to affect, validated as UTF-8
+    /// at the extraction boundary. Non-UTF-8 shell words are skipped during
+    /// extraction — they cannot represent valid filesystem paths on platforms
+    /// this crate targets.
+    pub affected_paths: Vec<Utf8PathBuf>,
     pub env_gates: Vec<EnvGate>,
     pub wrapper: Option<WrapperInfo>,
 }
@@ -371,7 +376,7 @@ impl CommandInfo {
             effect: Effect::Unknown,
             subcommand: None,
             has_escalation_flags: false,
-            affected_paths: vec![],
+            affected_paths: Vec::new(),
             env_gates: vec![],
             wrapper: None,
         }
