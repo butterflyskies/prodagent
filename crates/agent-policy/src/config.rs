@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::decision::PolicyDecision;
 
 /// Policy configuration — effect-class defaults and per-command overrides.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyConfig {
     /// Default decisions for each effect class.
     /// Missing entries fall back to built-in defaults.
@@ -16,6 +16,40 @@ pub struct PolicyConfig {
     /// values are either a flat decision or a map of subcommand -> decision.
     #[serde(default)]
     pub commands: HashMap<String, CommandPolicy>,
+
+    /// Ceiling for opaque (unresolvable) env values on value-dependent gates.
+    ///
+    /// When a command substitution or variable expansion produces an unknowable
+    /// env value and that value hits a value-dependent gate (Equals/NotEquals),
+    /// this ceiling determines the escalation level instead of the gate's own
+    /// action. Structural gates (Set/Unset) are unaffected — their truth value
+    /// is deterministic for opaque values.
+    ///
+    /// - `Ask` (default): safe but usable — opaque values prompt for confirmation.
+    /// - `Deny`: stricter — opaque values are treated as maximum restriction.
+    /// - `Allow`: opts out of env-gate protection for opaque values entirely.
+    ///
+    /// # WARNING
+    ///
+    /// Setting this to `Allow` means commands with unresolvable env values will
+    /// be auto-allowed. This disables env-gate protection for substitution-derived
+    /// values.
+    #[serde(default = "default_opaque_env_ceiling")]
+    pub opaque_env_ceiling: PolicyDecision,
+}
+
+fn default_opaque_env_ceiling() -> PolicyDecision {
+    PolicyDecision::Ask
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self {
+            defaults: EffectDefaults::default(),
+            commands: HashMap::new(),
+            opaque_env_ceiling: default_opaque_env_ceiling(),
+        }
+    }
 }
 
 /// Default effect -> decision mapping.
@@ -106,10 +140,21 @@ impl PolicyConfig {
 /// Provides a fluent API for constructing policy configurations with
 /// effect-class defaults and per-command overrides. Validates monotonicity
 /// and rejects no-op entries on [`build`](Self::build).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PolicyConfigBuilder {
     defaults: EffectDefaults,
     commands: HashMap<String, CommandPolicy>,
+    opaque_env_ceiling: PolicyDecision,
+}
+
+impl Default for PolicyConfigBuilder {
+    fn default() -> Self {
+        Self {
+            defaults: EffectDefaults::default(),
+            commands: HashMap::new(),
+            opaque_env_ceiling: default_opaque_env_ceiling(),
+        }
+    }
 }
 
 impl PolicyConfigBuilder {
@@ -230,6 +275,16 @@ impl PolicyConfigBuilder {
         self
     }
 
+    // ── Opaque env ceiling ──────────────────────────────────────────────
+
+    /// Set the ceiling for opaque env values on value-dependent gates.
+    ///
+    /// Default: `Ask`. See [`PolicyConfig::opaque_env_ceiling`] for details.
+    pub fn opaque_env_ceiling(mut self, ceiling: PolicyDecision) -> Self {
+        self.opaque_env_ceiling = ceiling;
+        self
+    }
+
     // ── Build ──────────────────────────────────────────────────────────
 
     /// Consume the builder and return a validated [`PolicyConfig`].
@@ -240,6 +295,7 @@ impl PolicyConfigBuilder {
         let config = PolicyConfig {
             defaults: self.defaults,
             commands: self.commands,
+            opaque_env_ceiling: self.opaque_env_ceiling,
         };
         config.validate()?;
         Ok(config)

@@ -16,7 +16,11 @@ use std::collections::HashMap;
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn cfg(defaults: EffectDefaults, commands: HashMap<String, CommandPolicy>) -> PolicyConfig {
-    PolicyConfig { defaults, commands }
+    PolicyConfig {
+        defaults,
+        commands,
+        ..PolicyConfig::default()
+    }
 }
 
 /// CommandInfo with a chosen effect and subcommand; all wrapper/path/gate
@@ -462,10 +466,10 @@ proptest! {
             }
         }
 
-        let result_without = super::apply_env_gates(&gates, &env);
+        let result_without = super::apply_env_gates(&gates, &env, PolicyDecision::Ask);
         let mut extended = gates.clone();
         extended.push(extra_gate);
-        let result_with = super::apply_env_gates(&extended, &env);
+        let result_with = super::apply_env_gates(&extended, &env, PolicyDecision::Ask);
 
         match (result_without, result_with) {
             (None, _) => {} // adding a gate from nothing is always fine
@@ -488,7 +492,7 @@ proptest! {
     ) {
         let mut env = EnvSnapshot::clean();
         env.set(&var, &value);
-        let result = super::apply_env_gates(&[], &env);
+        let result = super::apply_env_gates(&[], &env, PolicyDecision::Ask);
         prop_assert!(result.is_none(), "empty gates should produce None");
     }
 
@@ -519,7 +523,7 @@ proptest! {
 
         let mut all_gates = gates;
         all_gates.push(deny_gate);
-        let result = super::apply_env_gates(&all_gates, &env);
+        let result = super::apply_env_gates(&all_gates, &env, PolicyDecision::Ask);
         prop_assert_eq!(result, Some(PolicyDecision::Deny),
             "a matching Deny gate should always produce Deny");
     }
@@ -541,11 +545,11 @@ proptest! {
             }
         }
 
-        let result1 = super::apply_env_gates(&gates, &env);
+        let result1 = super::apply_env_gates(&gates, &env, PolicyDecision::Ask);
 
         let mut reversed = gates.clone();
         reversed.reverse();
-        let result2 = super::apply_env_gates(&reversed, &env);
+        let result2 = super::apply_env_gates(&reversed, &env, PolicyDecision::Ask);
 
         prop_assert_eq!(result1, result2,
             "gate order should not affect the result");
@@ -694,7 +698,7 @@ proptest! {
             decision: EnvGateAction::Ask,
         }];
         prop_assert_eq!(
-            super::apply_env_gates(&equals_literal, &snap),
+            super::apply_env_gates(&equals_literal, &snap, PolicyDecision::Ask),
             Some(PolicyDecision::Ask),
             "Equals gate must fire on opaque value (max restriction)"
         );
@@ -706,7 +710,7 @@ proptest! {
             decision: EnvGateAction::Ask,
         }];
         prop_assert_eq!(
-            super::apply_env_gates(&equals_other, &snap),
+            super::apply_env_gates(&equals_other, &snap, PolicyDecision::Ask),
             Some(PolicyDecision::Ask),
             "Equals gate must fire on opaque value for any expected"
         );
@@ -718,7 +722,7 @@ proptest! {
             decision: EnvGateAction::Allow,
         }];
         prop_assert_eq!(
-            super::apply_env_gates(&set_gate, &snap),
+            super::apply_env_gates(&set_gate, &snap, PolicyDecision::Ask),
             Some(PolicyDecision::Allow),
             "Set gate must fire on opaque value (variable is present)"
         );
@@ -730,7 +734,7 @@ proptest! {
             decision: EnvGateAction::Deny,
         }];
         prop_assert_eq!(
-            super::apply_env_gates(&unset_gate, &snap),
+            super::apply_env_gates(&unset_gate, &snap, PolicyDecision::Ask),
             None,
             "Unset gate must not fire when variable is present (opaque)"
         );
@@ -758,7 +762,7 @@ proptest! {
             decision: EnvGateAction::Deny,
         }];
         prop_assert_eq!(
-            super::apply_env_gates(&gates, &snap),
+            super::apply_env_gates(&gates, &snap, PolicyDecision::Ask),
             Some(PolicyDecision::Deny),
             "a matching Equals gate on a static value must fire"
         );

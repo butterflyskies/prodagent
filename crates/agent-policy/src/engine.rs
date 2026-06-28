@@ -203,8 +203,11 @@ impl PolicyEngine {
                     let mut d = self.evaluate(parsed.command.as_str(), &inner_info);
 
                     // Apply env gates with the accumulated snapshot
-                    if let Some(gate_decision) = apply_env_gates(&inner_info.env_gates, &inner_env)
-                    {
+                    if let Some(gate_decision) = apply_env_gates(
+                        &inner_info.env_gates,
+                        &inner_env,
+                        self.config.opaque_env_ceiling,
+                    ) {
                         d = d.max(gate_decision);
                     }
 
@@ -408,7 +411,9 @@ impl PolicyEngine {
 
         // Apply env gates after classification and per-command overrides (gates can only escalate)
         let mut decision = self.evaluate(&base_command, &info);
-        if let Some(gate_decision) = apply_env_gates(&info.env_gates, &env) {
+        if let Some(gate_decision) =
+            apply_env_gates(&info.env_gates, &env, self.config.opaque_env_ceiling)
+        {
             decision = decision.max(gate_decision);
         }
 
@@ -787,12 +792,19 @@ fn resolve_sudo_wrapper_from_words(words: &[Word], outer_env: &EnvSnapshot) -> E
 /// or there are no gates. When multiple gates match, the **strictest** action
 /// wins (Deny > Ask > Allow). A Deny gate short-circuits remaining evaluation.
 ///
-/// Opaque (unknown) env value handling — fires at most restrictive outcome:
-/// - `Equals` with unknown value → matching (could equal expected; fire gate)
-/// - `NotEquals` with unknown value → matching (could differ; fire gate)
-/// - `Set` with unknown value → matching (variable IS present, just opaque)
-/// - `Unset` with unknown value → non-matching (variable is present → not unset)
-fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecision> {
+/// Opaque (unknown) env value handling:
+/// - Value-dependent conditions (`Equals`, `NotEquals`) with an opaque value
+///   fire at the configured `opaque_env_ceiling` rather than the gate's own
+///   action. The ceiling is configurable (default: `Ask`).
+/// - Structural conditions (`Set`, `Unset`) are deterministic for opaque values
+///   and always use the gate's configured action:
+///   - `Set` with unknown value → matching (variable IS present, just opaque)
+///   - `Unset` with unknown value → non-matching (variable is present → not unset)
+fn apply_env_gates(
+    gates: &[EnvGate],
+    env: &EnvSnapshot,
+    opaque_env_ceiling: PolicyDecision,
+) -> Option<PolicyDecision> {
     if gates.is_empty() {
         return None;
     }
@@ -801,10 +813,25 @@ fn apply_env_gates(gates: &[EnvGate], env: &EnvSnapshot) -> Option<PolicyDecisio
 
     for gate in gates {
         let env_val = env.get_value(&gate.var);
+
+        // Detect opaque values hitting value-dependent conditions.
+        // Equals/NotEquals can't be resolved for opaque values — the ceiling
+        // determines the escalation level. Set/Unset are structurally
+        // deterministic and always use the gate's own action.
+        let is_opaque_value_dependent = matches!(
+            (&gate.condition, env_val.as_ref()),
+            (EnvCondition::Equals(_), Some(EnvValueOwned::Unknown))
+                | (EnvCondition::NotEquals(_), Some(EnvValueOwned::Unknown))
+        );
+
         let matches = evaluate_condition(&gate.condition, env_val.as_ref());
 
         if matches {
-            let decision = gate_action_to_decision(gate.decision);
+            let decision = if is_opaque_value_dependent {
+                opaque_env_ceiling
+            } else {
+                gate_action_to_decision(gate.decision)
+            };
 
             // Deny short-circuits
             if decision == PolicyDecision::Deny {

@@ -709,10 +709,10 @@ fn env_wrapper_clean_env_hides_process_vars() {
 }
 
 #[test]
-fn sudo_without_e_opaque_env_fires_gate() {
-    // sudo without -E marks env as fully unknown. With opaque-fires-at-max-
-    // restriction, the Equals gate fires (opaque could match), producing Deny.
-    // Combined with sudo escalation (Ask), max(Deny, Ask) = Deny.
+fn sudo_without_e_opaque_env_fires_gate_at_ceiling() {
+    // sudo without -E marks env as fully unknown. With default ceiling (Ask),
+    // the Equals gate fires at Ask (the ceiling), not the gate's own Deny action.
+    // Combined with sudo escalation (Ask), max(Ask, Ask) = Ask.
     let gate = EnvGate {
         var: "PATH".into(), // PATH is always set in process env
         condition: EnvCondition::Equals(std::env::var("PATH").unwrap_or_default()),
@@ -724,12 +724,38 @@ fn sudo_without_e_opaque_env_fires_gate() {
     kb.commands.insert("mycmd".to_string(), command);
 
     let engine = PolicyEngine::new(PolicyConfig::default()).unwrap();
-    // sudo without -E → env is unknown → Equals fires at max restriction → Deny
+    // sudo without -E → env is unknown → Equals fires at ceiling (Ask)
+    let result = engine.evaluate_command("sudo mycmd", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "sudo without -E: opaque env fires Equals gate at ceiling (Ask): {result:?}"
+    );
+}
+
+#[test]
+fn sudo_without_e_opaque_env_deny_ceiling() {
+    // With ceiling configured to Deny, opaque Equals gate fires at Deny.
+    let gate = EnvGate {
+        var: "PATH".into(),
+        condition: EnvCondition::Equals(std::env::var("PATH").unwrap_or_default()),
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let config = PolicyConfig {
+        opaque_env_ceiling: PolicyDecision::Deny,
+        ..PolicyConfig::default()
+    };
+    let engine = PolicyEngine::new(config).unwrap();
     let result = engine.evaluate_command("sudo mycmd", &kb);
     assert_eq!(
         result.decision,
         PolicyDecision::Deny,
-        "sudo without -E: opaque env fires Equals gate at max restriction: {result:?}"
+        "ceiling=Deny: sudo opaque env fires Equals gate at Deny: {result:?}"
     );
 }
 
@@ -949,11 +975,11 @@ fn real_kb_env_wrapper_passes_assignments_to_inner_gate() {
     );
 }
 
-// sudo strips env for inner gate — opaque fires at max restriction.
+// sudo strips env for inner gate — opaque fires at configured ceiling.
 #[test]
-fn real_kb_sudo_opaque_env_fires_equals_gate() {
-    // sudo marks env as fully unknown. With opaque-fires-at-max-restriction,
-    // the Equals/Deny gate fires (opaque could match) → Deny.
+fn real_kb_sudo_opaque_env_fires_equals_gate_at_ceiling() {
+    // sudo marks env as fully unknown. With default ceiling (Ask), the
+    // Equals/Deny gate fires at Ask (the ceiling), not the gate's Deny action.
     let path_value = std::env::var("PATH").unwrap_or_default();
     let gate = EnvGate {
         var: "PATH".into(),
@@ -966,8 +992,8 @@ fn real_kb_sudo_opaque_env_fires_equals_gate() {
     let result = engine.evaluate_command("sudo git push", &kb);
     assert_eq!(
         result.decision,
-        PolicyDecision::Deny,
-        "sudo opaque env: Equals gate fires at max restriction: {result:?}"
+        PolicyDecision::Ask,
+        "sudo opaque env: Equals gate fires at ceiling (Ask): {result:?}"
     );
 }
 
