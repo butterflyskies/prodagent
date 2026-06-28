@@ -1,4 +1,5 @@
 use agent_command_knowledge::{default_knowledge_base, KnowledgeBase};
+use agent_shell_parser::parse::Word;
 
 use super::*;
 use crate::config::PolicyConfig;
@@ -1036,4 +1037,90 @@ fn backslash_escaped_git_classifies_normally() {
         result.decision >= PolicyDecision::Ask,
         "backslash-escaped git must not dodge classification: {result:?}"
     );
+}
+
+// ── Path-scoped decision inputs ─────────────────────────────────────────
+//
+// The knowledge layer extracts affected paths during classification; these
+// tests pin that the policy engine *surfaces* them on the result (the
+// decision-input plumbing) rather than discarding them. Authorization
+// against those paths is intentionally out of scope.
+
+/// Collect a result's affected paths as plain strings for assertions.
+fn paths_of(result: &PolicyResult) -> Vec<String> {
+    result
+        .affected_paths
+        .iter()
+        .map(|w| w.as_str().to_string())
+        .collect()
+}
+
+#[test]
+fn simple_command_surfaces_positional_paths() {
+    let engine = default_engine();
+    // rm has `positionals = "all"` → both args are affected paths.
+    let result = engine.evaluate_command("rm foo.txt bar.txt", default_kb());
+    assert_eq!(paths_of(&result), vec!["foo.txt", "bar.txt"]);
+    // The single segment carries the same paths.
+    assert_eq!(result.segments.len(), 1);
+    assert_eq!(
+        result.segments[0].affected_paths.as_slice(),
+        result.affected_paths.as_slice()
+    );
+}
+
+#[test]
+fn last_positional_path_extraction_reaches_result() {
+    let engine = default_engine();
+    // cp has `positionals = "last"` → only the destination is the affected path.
+    let result = engine.evaluate_command("cp src.txt dest.txt", default_kb());
+    assert_eq!(paths_of(&result), vec!["dest.txt"]);
+}
+
+#[test]
+fn read_only_command_with_no_path_spec_has_empty_paths() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("ls -la", default_kb());
+    assert!(
+        result.affected_paths.is_empty(),
+        "ls has no path spec → no affected paths: {result:?}"
+    );
+}
+
+#[test]
+fn compound_command_aggregates_paths_across_segments() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("rm a.txt && touch b.txt", default_kb());
+    // Aggregate is the union of both segments' paths.
+    assert_eq!(paths_of(&result), vec!["a.txt", "b.txt"]);
+    // Each leaf segment carries its own paths.
+    let seg_a = result
+        .segments
+        .iter()
+        .find(|s| s.label == "rm a.txt")
+        .expect("rm segment");
+    let seg_b = result
+        .segments
+        .iter()
+        .find(|s| s.label == "touch b.txt")
+        .expect("touch segment");
+    assert_eq!(seg_a.affected_paths.as_slice(), &[Word::from("a.txt")]);
+    assert_eq!(seg_b.affected_paths.as_slice(), &[Word::from("b.txt")]);
+}
+
+#[test]
+fn compound_command_dedupes_aggregate_paths() {
+    let engine = default_engine();
+    // Same path touched by two segments → appears once in the aggregate.
+    let result = engine.evaluate_command("rm shared.txt && touch shared.txt", default_kb());
+    assert_eq!(paths_of(&result), vec!["shared.txt"]);
+}
+
+#[test]
+fn wrapper_surfaces_inner_command_paths() {
+    let engine = default_engine();
+    // sudo is a privilege-escalating wrapper; the affected paths are the
+    // wrapped command's paths, not the wrapper's.
+    let result = engine.evaluate_command("sudo rm /etc/hosts", default_kb());
+    assert_eq!(paths_of(&result), vec!["/etc/hosts"]);
 }
