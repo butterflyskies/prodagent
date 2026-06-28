@@ -23,27 +23,42 @@
 
 use camino::Utf8PathBuf;
 
+/// Normalize a path by re-collecting its [`camino`] components.
+///
+/// This strips trailing separators (`foo/` → `foo`) and collapses redundant
+/// separators (`a//b` → `a/b`), giving a canonical string representation so
+/// that paths differing only in trailing slash are recognised as duplicates
+/// during [`AffectedPaths::union_with`].
+fn normalize(path: Utf8PathBuf) -> Utf8PathBuf {
+    path.components().collect()
+}
+
 /// The set of filesystem paths a command (or compound command) is expected to
 /// affect, as extracted by the knowledge layer and carried alongside a policy
 /// decision.
 ///
-/// For a single command this is exactly the list the knowledge layer produced
-/// (order-preserving, including any duplicates the extraction yielded). When
-/// aggregated across the segments of a compound command via
+/// Paths are normalised on construction via [`camino`] component
+/// re-collection — trailing separators and redundant slashes are stripped so
+/// that dedup in [`AffectedPaths::union_with`] is slash-insensitive.
+///
+/// For a single command this is the knowledge layer's list with canonical
+/// path forms (order-preserving, including any duplicates the extraction
+/// yielded). When aggregated across compound-command segments via
 /// [`AffectedPaths::union_with`], duplicates are collapsed while first-seen
 /// order is preserved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AffectedPaths(Vec<Utf8PathBuf>);
 
 impl AffectedPaths {
-    /// Wrap a list of paths exactly as extracted by the knowledge layer.
+    /// Wrap a list of paths from the knowledge layer.
     ///
-    /// No de-duplication or reordering is applied — this faithfully mirrors
-    /// the knowledge layer's `affected_paths` for a single command so that the
+    /// Each path is normalised (trailing separators stripped) but no
+    /// de-duplication or reordering is applied — this faithfully mirrors the
+    /// knowledge layer's `affected_paths` for a single command so that the
     /// engine neither adds nor drops paths.
     #[must_use]
     pub fn new(paths: Vec<Utf8PathBuf>) -> Self {
-        Self(paths)
+        Self(paths.into_iter().map(normalize).collect())
     }
 
     /// An empty path set (no paths affected, or none extracted).
@@ -97,7 +112,7 @@ impl From<Vec<Utf8PathBuf>> for AffectedPaths {
 
 impl FromIterator<Utf8PathBuf> for AffectedPaths {
     fn from_iter<I: IntoIterator<Item = Utf8PathBuf>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self(iter.into_iter().map(normalize).collect())
     }
 }
 
