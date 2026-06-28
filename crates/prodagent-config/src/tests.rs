@@ -29,6 +29,7 @@ fn default_layer() -> ConfigLayer {
             },
             commands: HashMap::new(),
             remove_commands: vec![],
+            opaque_env_ceiling: None,
         },
     }
 }
@@ -44,6 +45,7 @@ fn monotonicity_project_tightens_default_is_ok() {
             unknown: PolicyDecision::Ask,
         },
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     // Project tightens read_only from Allow → Ask
@@ -68,6 +70,7 @@ fn monotonicity_project_weakens_default_is_violation() {
             unknown: PolicyDecision::Deny,
         },
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     // Project tries to weaken mutating from Deny → Ask
@@ -94,6 +97,7 @@ fn monotonicity_project_weakens_command_flat() {
     let user_policy = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands,
+        ..PolicyConfig::default()
     };
 
     // Project tries to allow rm
@@ -118,6 +122,7 @@ fn monotonicity_project_tightens_command_is_ok() {
     let user_policy = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands,
+        ..PolicyConfig::default()
     };
 
     // Project tightens git to Ask
@@ -149,6 +154,7 @@ fn monotonicity_project_weakens_subcommand() {
     let user_policy = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands,
+        ..PolicyConfig::default()
     };
 
     // Project tries to allow git push
@@ -183,6 +189,7 @@ fn monotonicity_project_removes_user_command_is_violation() {
     let user_policy = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands,
+        ..PolicyConfig::default()
     };
 
     // Project tries to remove the user's rm policy
@@ -201,6 +208,7 @@ fn monotonicity_project_removes_nonexistent_command_is_ok() {
     let user_policy = PolicyConfig {
         defaults: EffectDefaults::default(),
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     // Removing a command the user didn't set is a no-op, not a violation
@@ -222,6 +230,7 @@ fn monotonicity_multiple_violations_all_reported() {
             unknown: PolicyDecision::Deny,
         },
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     // Project tries to weaken all three defaults
@@ -251,6 +260,7 @@ fn monotonicity_same_decision_is_ok() {
             unknown: PolicyDecision::Ask,
         },
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     // Project sets the same values — no change, no violation
@@ -743,6 +753,7 @@ fn policy_overlay_apply_to_removes_then_adds() {
             m.insert("old-cmd".into(), CommandPolicy::Flat(PolicyDecision::Allow));
             m
         },
+        ..PolicyConfig::default()
     };
 
     let overlay = PolicyOverlay {
@@ -773,6 +784,7 @@ fn policy_overlay_partial_defaults_preserves_unset() {
             unknown: PolicyDecision::Deny,
         },
         commands: HashMap::new(),
+        ..PolicyConfig::default()
     };
 
     let overlay = PolicyOverlay {

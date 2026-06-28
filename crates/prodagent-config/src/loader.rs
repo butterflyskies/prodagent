@@ -149,6 +149,10 @@ impl ConfigLoader {
                     .unwrap_or(PolicyDecision::Ask),
             },
             commands: base_layer.policy.commands.clone(),
+            opaque_env_ceiling: base_layer
+                .policy
+                .opaque_env_ceiling
+                .unwrap_or(PolicyDecision::Ask),
         };
 
         // Validate user-level policy
