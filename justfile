@@ -1,5 +1,6 @@
-# Install the hook binary to ~/.cargo/bin
+# Install hook binaries to ~/.cargo/bin
 install:
+    cargo install --path crates/prodagent-tool-gate
     cargo install --path crates/agent-jj
 
 # Run all checks (format, lint, test)
