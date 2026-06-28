@@ -1018,3 +1018,7 @@ mod pipeline_tests;
 #[cfg(test)]
 #[path = "engine_proptest.rs"]
 mod engine_proptest;
+
+#[cfg(test)]
+#[path = "classification_proptest.rs"]
+mod classification_proptest;
