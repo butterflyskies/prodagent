@@ -22,18 +22,27 @@ struct HookSpecificOutput {
     hook_event_name: &'static str,
     permission_decision: PolicyDecision,
     permission_decision_reason: String,
-    /// When true, this decision is stricter than the user's own policy
-    /// because the project config tightened it. The harness should present
-    /// a three-option consent gate: Allow once / Deny / Always Allow.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    conflict: Option<bool>,
-    /// The decision the project config wanted (only present on conflict).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    project_decision: Option<PolicyDecision>,
-    /// The config entry that "Always Allow" would write to user config
-    /// to resolve this conflict permanently (only present on conflict).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    override_config: Option<OverrideEntry>,
+    /// Conflict information when the project config tightens the decision
+    /// beyond the user's own policy. Present only when a conflict exists.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    conflict: Option<ConflictInfo>,
+}
+
+/// Project-vs-user conflict metadata.
+///
+/// Present in the hook output when the merged decision is stricter than
+/// the user's own policy because the project config tightened it. The
+/// harness should present a three-option consent gate: Allow once / Deny
+/// / Always Allow.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConflictInfo {
+    /// Always true when present --- signals this is a project-vs-user conflict.
+    conflict: bool,
+    /// The decision the project config wanted.
+    project_decision: PolicyDecision,
+    /// The config entry that "Always Allow" would write to user config.
+    override_config: OverrideEntry,
 }
 
 /// A config entry describing what to write to user config when the user
@@ -63,8 +72,6 @@ impl HookOutput {
                 permission_decision: decision,
                 permission_decision_reason: reason,
                 conflict: None,
-                project_decision: None,
-                override_config: None,
             },
         }
     }
@@ -74,9 +81,11 @@ impl HookOutput {
         project_decision: PolicyDecision,
         override_config: OverrideEntry,
     ) -> Self {
-        self.hook_specific_output.conflict = Some(true);
-        self.hook_specific_output.project_decision = Some(project_decision);
-        self.hook_specific_output.override_config = Some(override_config);
+        self.hook_specific_output.conflict = Some(ConflictInfo {
+            conflict: true,
+            project_decision,
+            override_config,
+        });
         self
     }
 }
@@ -159,15 +168,29 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
 
 /// Extract the base command name from a raw command string.
 ///
-/// Takes the first non-assignment word's basename (e.g. `/usr/bin/git` -> `git`,
-/// `FOO=bar rm -rf` -> `rm`).
+/// Uses the shell parser to properly tokenize the command, then skips
+/// leading environment assignments and returns the basename of the first
+/// real command word (e.g. `/usr/bin/git` -> `git`, `FOO=bar rm -rf` -> `rm`).
+///
+/// Falls back to naive whitespace splitting if the parser fails.
 fn extract_base_command(command: &str) -> String {
+    if let Ok(pipeline) = agent_shell_parser::parse::parse_with_substitutions(command) {
+        if let Some(segment) = pipeline.segments.first() {
+            for word in &segment.words {
+                if word.is_assignment() {
+                    continue;
+                }
+                return word.basename().to_string();
+            }
+        }
+    }
+
+    // Fallback: naive split_whitespace parsing
     let words: Vec<&str> = command.split_whitespace().collect();
     for word in &words {
         if word.contains('=') && !word.starts_with('-') {
             continue; // Skip env assignments
         }
-        // Take basename
         return word.rsplit('/').next().unwrap_or(word).to_string();
     }
     command.split_whitespace().next().unwrap_or("").to_string()

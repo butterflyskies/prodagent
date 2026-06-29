@@ -1996,6 +1996,10 @@ fn override_command_bypasses_merged_ask() {
         PolicyDecision::Allow,
         "user override should bypass merged Ask: {result:?}"
     );
+    assert!(
+        result.reason.contains("user override"),
+        "reason should mention override: {result:?}"
+    );
 }
 
 // ── No override → normal evaluation ────────────────────────────────────
@@ -2030,6 +2034,11 @@ fn override_is_idempotent() {
 
     let first = engine.evaluate_command("rm /tmp/foo", &kb);
     let second = engine.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        first.decision,
+        PolicyDecision::Allow,
+        "override should produce Allow"
+    );
     assert_eq!(
         first.decision, second.decision,
         "override must be idempotent"
@@ -2186,4 +2195,74 @@ rm = "allow"
         deserialized.overrides.commands.get("rm"),
         Some(CommandPolicy::Flat(PolicyDecision::Allow))
     ));
+}
+
+// ── Override fallthrough / reason assertion / value pinning ────────────
+
+#[test]
+fn override_non_matching_command_falls_through() {
+    // Override is set for "git", but we evaluate "rm" which is denied.
+    // The override must not affect unrelated commands.
+    let config = PolicyConfig::builder()
+        .deny("rm")
+        .override_command("git", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    let result = engine.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "override for git must not affect rm: {result:?}"
+    );
+    assert!(
+        !result.reason.contains("user override"),
+        "reason should NOT mention user override for non-matching command: {result:?}"
+    );
+}
+
+#[test]
+fn override_command_bypasses_merged_ask_reason() {
+    // Extends override_command_bypasses_merged_ask: also asserts the reason
+    // string confirms the override path was taken.
+    let config = PolicyConfig::builder()
+        .command_base("git", PolicyDecision::Ask)
+        .override_command("git", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command("git status", &KnowledgeBase::default());
+    assert_eq!(result.decision, PolicyDecision::Allow);
+    assert!(
+        result.reason.contains("user override"),
+        "reason should confirm override path was taken: {result:?}"
+    );
+}
+
+#[test]
+fn override_is_idempotent_value() {
+    // Extends override_is_idempotent: pins the actual decision value,
+    // not just stability between evaluations.
+    let config = PolicyConfig::builder()
+        .deny("rm")
+        .override_command("rm", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    let first = engine.evaluate_command("rm /tmp/foo", &kb);
+    let second = engine.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        first.decision,
+        PolicyDecision::Allow,
+        "override should produce Allow"
+    );
+    assert_eq!(
+        first.decision, second.decision,
+        "override must be idempotent"
+    );
 }

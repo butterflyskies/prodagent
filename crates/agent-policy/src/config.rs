@@ -130,6 +130,39 @@ impl Default for EffectDefaults {
     }
 }
 
+/// Validate that no path rules have empty paths lists (would never fire).
+///
+/// Individual pattern validation (empty strings, bare globs) is handled
+/// by the `PathGlob` constructor --- invalid patterns can't be represented.
+fn validate_path_rules(rules: &[PathRule], prefix: &str) -> Result<(), String> {
+    for (i, rule) in rules.iter().enumerate() {
+        if rule.paths.is_empty() {
+            return Err(format!(
+                "{prefix}.path_rules[{i}]: empty paths list (rule would never fire)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject `Detailed` command entries that are no-ops (no base override and
+/// no subcommands).
+fn validate_commands(
+    commands: &HashMap<String, CommandPolicy>,
+    prefix: &str,
+) -> Result<(), String> {
+    for (name, policy) in commands {
+        if let CommandPolicy::Detailed(detail) = policy {
+            if detail.base.is_none() && detail.subcommands.is_empty() {
+                return Err(format!(
+                    "no-op command policy for \"{name}\" in {prefix}: Detailed entry has no base override and no subcommands"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl PolicyConfig {
     /// Validate that effect defaults are monotonic: read_only <= mutating <= unknown.
     ///
@@ -149,47 +182,10 @@ impl PolicyConfig {
             ));
         }
 
-        // Reject path rules with empty paths (would never fire).
-        // Individual pattern validation (empty strings, bare globs) is handled
-        // by the PathGlob constructor — invalid patterns can't be represented.
-        for (i, rule) in self.path_rules.iter().enumerate() {
-            if rule.paths.is_empty() {
-                return Err(format!(
-                    "path_rules[{i}]: empty paths list (rule would never fire)"
-                ));
-            }
-        }
-
-        // Reject Detailed entries that are no-ops (no base override + no subcommands)
-        for (name, policy) in &self.commands {
-            if let CommandPolicy::Detailed(detail) = policy {
-                if detail.base.is_none() && detail.subcommands.is_empty() {
-                    return Err(format!(
-                        "no-op command policy for \"{name}\": Detailed entry has no base override and no subcommands"
-                    ));
-                }
-            }
-        }
-
-        // Validate override path rules (same constraints as regular path rules)
-        for (i, rule) in self.overrides.path_rules.iter().enumerate() {
-            if rule.paths.is_empty() {
-                return Err(format!(
-                    "overrides.path_rules[{i}]: empty paths list (rule would never fire)"
-                ));
-            }
-        }
-
-        // Reject no-op Detailed entries in overrides
-        for (name, policy) in &self.overrides.commands {
-            if let CommandPolicy::Detailed(detail) = policy {
-                if detail.base.is_none() && detail.subcommands.is_empty() {
-                    return Err(format!(
-                        "no-op override command policy for \"{name}\": Detailed entry has no base override and no subcommands"
-                    ));
-                }
-            }
-        }
+        validate_path_rules(&self.path_rules, "policy")?;
+        validate_commands(&self.commands, "policy")?;
+        validate_path_rules(&self.overrides.path_rules, "overrides")?;
+        validate_commands(&self.overrides.commands, "overrides")?;
 
         Ok(())
     }

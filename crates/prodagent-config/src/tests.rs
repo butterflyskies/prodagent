@@ -1492,7 +1492,9 @@ fn monotonicity_project_overrides_are_rejected() {
         "project config with overrides should be a monotonicity violation"
     );
     assert!(
-        violations.iter().any(|v| v.path == "policy.overrides"),
+        violations
+            .iter()
+            .any(|v| v.path == "policy.overrides (prohibited in project config)"),
         "violation should reference overrides path"
     );
 }

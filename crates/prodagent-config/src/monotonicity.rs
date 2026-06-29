@@ -134,7 +134,7 @@ pub fn validate_monotonicity(
     if let Some(ref overrides) = project_overlay.overrides {
         if !overrides.is_empty() {
             violations.push(MonotonicityViolation {
-                path: "policy.overrides".into(),
+                path: "policy.overrides (prohibited in project config)".into(),
                 user_decision: PolicyDecision::Deny,
                 project_decision: PolicyDecision::Allow,
             });

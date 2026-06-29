@@ -456,20 +456,24 @@ impl PolicyEngine {
         // marking it unknown.
         let env = build_env_with_substitution_results(words, sub_decisions, base_env);
 
-        // ── User overrides (highest priority — explicit consent) ────────
-        // Check if the user has an override that bypasses project restrictions
-        // for this command+path combination.
-        if let Some(override_result) = self.check_override(&base_command, &info, cwd, &env, segment)
-        {
-            return override_result;
-        }
-
         // Wrapper handling — use pre-built merged config
+        // Wrappers are resolved through the normal pipeline (which evaluates
+        // the inner command, where overrides can fire on the inner command).
+        // Overrides on the wrapper itself are skipped — a flat override for
+        // `sudo` must not bypass `resolve_wrapper_core`.
         if info.wrapper.is_some() {
             let mut result =
                 self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0, &env, cwd);
             maybe_escalate_for_redirection(&mut result, segment);
             return result;
+        }
+
+        // ── User overrides (explicit consent, non-wrapper commands only) ──
+        // Check if the user has an override that bypasses project restrictions
+        // for this command+path combination.
+        if let Some(override_result) = self.check_override(&base_command, &info, cwd, &env, segment)
+        {
+            return override_result;
         }
 
         // ── Path-scoped rules (checked before per-command and effect-class) ──
@@ -523,10 +527,14 @@ impl PolicyEngine {
 
     /// Check user overrides for a command segment.
     ///
-    /// Overrides are checked before the normal evaluation pipeline. If an
-    /// override matches (either a command override or a path rule override),
-    /// its decision is used directly — bypassing the `max(user, project)`
-    /// merge, path rules, and env gates.
+    /// Overrides bypass the `max(user, project)` merge and path rules, but
+    /// KB-level safety rails still apply:
+    /// - **Env gates** — escalation-only gates from the knowledge base fire
+    ///   even on overridden commands (they represent safety invariants, not
+    ///   project policy).
+    /// - **Escalation flags** — commands flagged for escalation are bumped to
+    ///   at least Ask regardless of the override decision.
+    /// - **Redirection escalation** — output redirections still escalate.
     ///
     /// The override check mirrors the normal evaluation tiers but uses the
     /// `overrides` config section instead of the main config.
@@ -535,7 +543,7 @@ impl PolicyEngine {
         base_command: &str,
         info: &CommandInfo,
         cwd: Option<&str>,
-        _env: &EnvSnapshot,
+        env: &EnvSnapshot,
         segment: &ShellSegment,
     ) -> Option<PolicyResult> {
         if self.config.overrides.is_empty() {
@@ -567,6 +575,16 @@ impl PolicyEngine {
                 ),
             )
             .with_paths(AffectedPaths::new(info.affected_paths.clone()));
+            // Apply env gates (KB safety rails still apply to overrides)
+            if let Some(gate_decision) =
+                apply_env_gates(&info.env_gates, env, self.config.opaque_env_ceiling)
+            {
+                result.decision = result.decision.max(gate_decision);
+            }
+            if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
+                result.decision = PolicyDecision::Ask;
+                result.reason = format!("{} (escalated: escalation flags)", result.reason);
+            }
             maybe_escalate_for_redirection(&mut result, segment);
             return Some(result);
         }
@@ -578,6 +596,16 @@ impl PolicyEngine {
                 format!("{base_command}: effect={:?} (user override)", info.effect),
             )
             .with_paths(AffectedPaths::new(info.affected_paths.clone()));
+            // Apply env gates (KB safety rails still apply to overrides)
+            if let Some(gate_decision) =
+                apply_env_gates(&info.env_gates, env, self.config.opaque_env_ceiling)
+            {
+                result.decision = result.decision.max(gate_decision);
+            }
+            if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
+                result.decision = PolicyDecision::Ask;
+                result.reason = format!("{} (escalated: escalation flags)", result.reason);
+            }
             maybe_escalate_for_redirection(&mut result, segment);
             return Some(result);
         }
