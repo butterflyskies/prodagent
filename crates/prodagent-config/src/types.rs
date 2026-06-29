@@ -138,8 +138,9 @@ impl PolicyOverlay {
     /// Processing order mirrors the knowledge layer:
     /// 1. Remove commands listed in `remove_commands`.
     /// 2. Override effect defaults (only `Some` values).
-    /// 3. Merge per-command overrides (overlay wins on conflict).
-    /// 4. Merge path-scoped rules (overlay rules prepended — evaluated first).
+    /// 3. Override opaque env ceiling (when specified).
+    /// 4. Merge per-command overrides (overlay wins on conflict).
+    /// 5. Merge path-scoped rules (overlay rules prepended — evaluated first).
     pub fn apply_to(self, base: &mut PolicyConfig) {
         // 1. Removals first.
         for key in &self.remove_commands {

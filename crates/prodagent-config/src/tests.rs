@@ -945,6 +945,16 @@ fn monotonicity_path_rule_weakens_is_violation() {
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1, "weakening path rule should be caught");
     assert!(violations[0].path.contains("path_rules"));
+    assert_eq!(
+        violations[0].user_decision,
+        PolicyDecision::Ask,
+        "user floor should be Ask (strongest effect default)"
+    );
+    assert_eq!(
+        violations[0].project_decision,
+        PolicyDecision::Allow,
+        "project tried to weaken to Allow"
+    );
 }
 
 #[test]
@@ -977,6 +987,16 @@ fn monotonicity_path_rule_weakens_command_is_violation() {
         "path rule weakening a user-denied command should be caught"
     );
     assert!(violations[0].path.contains("command=rm"));
+    assert_eq!(
+        violations[0].user_decision,
+        PolicyDecision::Deny,
+        "user denied rm"
+    );
+    assert_eq!(
+        violations[0].project_decision,
+        PolicyDecision::Allow,
+        "project tried to allow rm via path rule"
+    );
 }
 
 #[test]
@@ -1017,6 +1037,18 @@ fn path_rules_overlay_prepends() {
     assert_eq!(
         config.policy.path_rules[1].paths,
         vec!["/tmp/*".to_string()]
+    );
+
+    // Verify decision values survived the merge
+    assert_eq!(
+        config.policy.path_rules[0].decision,
+        PolicyDecision::Deny,
+        "project rule decision should be preserved"
+    );
+    assert_eq!(
+        config.policy.path_rules[1].decision,
+        PolicyDecision::Ask,
+        "user rule decision should be preserved"
     );
 }
 

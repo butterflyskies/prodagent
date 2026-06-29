@@ -101,16 +101,20 @@ fn no_partial_prefix_match() {
 
 #[test]
 fn expand_tilde_with_suffix() {
-    let expanded = expand_tilde("~/dev/project");
+    // Core assertion: non-tilde paths pass through unchanged
+    assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+
+    // Tilde expansion only testable when HOME is set
     if let Some(home) = dirs::home_dir() {
+        let expanded = expand_tilde("~/dev/project");
         assert_eq!(expanded, format!("{}/dev/project", home.display()));
     }
 }
 
 #[test]
 fn expand_tilde_bare() {
-    let expanded = expand_tilde("~");
     if let Some(home) = dirs::home_dir() {
+        let expanded = expand_tilde("~");
         assert_eq!(expanded, home.to_string_lossy().as_ref());
     }
 }
@@ -169,15 +173,29 @@ fn no_rules_returns_none() {
 #[test]
 fn cwd_matches_rule() {
     let rules = vec![PathRule {
-        paths: vec!["~/dev/*".to_string()],
+        paths: vec!["/home/testuser/dev/*".to_string()],
         decision: PolicyDecision::Allow,
         command: None,
     }];
 
+    let result = evaluate_path_rules(&rules, "git", Some("/home/testuser/dev/my-project"), &[]);
+    assert!(result.is_some(), "CWD under the rule's prefix should match");
+    assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn cwd_matches_rule_with_tilde() {
+    // Tilde expansion: only runs when HOME is set
     if let Some(home) = dirs::home_dir() {
+        let rules = vec![PathRule {
+            paths: vec!["~/dev/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        }];
+
         let cwd = format!("{}/dev/my-project", home.display());
         let result = evaluate_path_rules(&rules, "git", Some(&cwd), &[]);
-        assert!(result.is_some());
+        assert!(result.is_some(), "tilde-expanded CWD should match");
         assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
     }
 }

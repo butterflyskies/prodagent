@@ -12,7 +12,7 @@
 use std::fmt;
 
 use prodagent_policy::config::{CommandPolicy, PolicyConfig};
-use prodagent_policy::path_rules::PathRule;
+use prodagent_policy::path_rules::{glob_covers, PathRule};
 use prodagent_policy::PolicyDecision;
 
 use crate::types::PolicyOverlay;
@@ -137,14 +137,16 @@ pub fn validate_monotonicity(
         for (i, rule) in path_rules.iter().enumerate() {
             let user_floor = path_rule_floor(rule, user_policy);
 
-            // Also check against user-level path rules: if the user has
-            // a path rule for the same command, the project cannot weaken
-            // that path rule's decision.
+            // Check against user-level path rules with structural coverage:
+            // find all user rules that could match a subset of what the
+            // project rule matches, and take the most restrictive as the
+            // floor.
             let user_path_floor = user_policy
                 .path_rules
                 .iter()
-                .find(|r| r.command == rule.command && r.paths == rule.paths)
+                .filter(|r| user_rule_covers_project(r, rule))
                 .map(|r| r.decision)
+                .max() // most restrictive covering rule
                 .unwrap_or(user_floor);
 
             let effective_floor = user_floor.max(user_path_floor);
@@ -271,6 +273,30 @@ fn check_command_policy(
             }
         }
     }
+}
+
+/// Check whether a user path rule structurally covers a project path rule.
+///
+/// A user rule covers a project rule when:
+/// 1. The user rule's command scope is equal or broader (`None` covers all)
+/// 2. At least one of the project rule's path globs is within the scope
+///    of at least one of the user rule's path globs
+fn user_rule_covers_project(user_rule: &PathRule, proj_rule: &PathRule) -> bool {
+    // Command scope: user None covers anything; user Some(x) only covers Some(x)
+    if let Some(ref user_cmd) = user_rule.command {
+        match &proj_rule.command {
+            Some(proj_cmd) if proj_cmd == user_cmd => {}
+            _ => return false,
+        }
+    }
+
+    // Path coverage: any project glob within any user glob
+    proj_rule.paths.iter().any(|proj_pat| {
+        user_rule
+            .paths
+            .iter()
+            .any(|user_pat| glob_covers(user_pat, proj_pat))
+    })
 }
 
 /// Resolve the user's effective decision for a specific subcommand.

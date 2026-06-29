@@ -1860,17 +1860,30 @@ fn path_rule_traversal_bypass_blocked() {
 
 #[test]
 fn path_rule_without_cwd_backward_compatible() {
-    // Engine without CWD (old API) should work exactly as before
+    use crate::path_rules::PathRule;
+
+    // Path rules present but old API (no CWD) — should fall through
+    // to effect-class defaults, not panic or match spuriously.
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
         .build()
         .unwrap();
 
     let engine = PolicyEngine::new(config).unwrap();
     let kb = KnowledgeBase::default();
 
+    // Old API without CWD — no path info, path rules can't match, falls through
     let result = engine.evaluate_command("ls", &kb);
-    assert_eq!(result.decision, PolicyDecision::Ask);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "without CWD, path rules should not fire: {result:?}"
+    );
 }
 
 #[test]
@@ -1901,4 +1914,32 @@ fn path_rule_order_first_match_wins() {
     // /tmp/other → second rule wins (allow)
     let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/other"));
     assert_eq!(result.decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn path_rule_allow_overridden_by_escalation_flags() {
+    use crate::path_rules::PathRule;
+
+    // Path rule allows git in /tmp, but `git push --force` has escalation
+    // flags that should bump the decision to at least Ask.
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // git push --force in /tmp — path rule fires Allow, but --force is an
+    // escalation flag that should escalate to at least Ask
+    let result = engine.evaluate_command_with_cwd("git push --force", &kb, Some("/tmp/repo"));
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "escalation flags should override path rule Allow: {result:?}"
+    );
 }

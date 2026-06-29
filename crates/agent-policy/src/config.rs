@@ -106,6 +106,24 @@ impl PolicyConfig {
             ));
         }
 
+        // Reject path rules with empty paths (would never fire) or bare globs
+        for (i, rule) in self.path_rules.iter().enumerate() {
+            if rule.paths.is_empty() {
+                return Err(format!(
+                    "path_rules[{i}]: empty paths list (rule would never fire)"
+                ));
+            }
+            for pat in &rule.paths {
+                let stripped = pat.trim();
+                if stripped == "*" || stripped == "**" {
+                    return Err(format!(
+                        "path_rules[{i}]: bare glob pattern \"{pat}\" would match all paths; \
+                         use an explicit path prefix (e.g. \"/tmp/*\")"
+                    ));
+                }
+            }
+        }
+
         // Reject Detailed entries that are no-ops (no base override + no subcommands)
         for (name, policy) in &self.commands {
             if let CommandPolicy::Detailed(detail) = policy {

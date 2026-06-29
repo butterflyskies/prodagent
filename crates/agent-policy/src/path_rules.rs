@@ -103,31 +103,29 @@ pub struct PathRuleResult {
 
 /// Check whether any input path matches any of a rule's path globs.
 fn rule_matches(rule: &PathRule, cwd: Option<&str>, affected_paths: &[&str]) -> bool {
-    let expanded_patterns: Vec<String> = rule.paths.iter().map(|p| expand_tilde(p)).collect();
+    let expanded_patterns: Vec<String> = rule.paths.iter().map(|p| normalize_pattern(p)).collect();
 
-    // Check CWD
-    if let Some(cwd) = cwd {
+    let cwd_matches = cwd.is_some_and(|cwd| {
         let normalized_cwd = resolve_and_normalize(cwd);
-        if expanded_patterns
+        expanded_patterns
             .iter()
             .any(|pat| path_matches(&normalized_cwd, pat))
-        {
-            return true;
-        }
+    });
+
+    if affected_paths.is_empty() {
+        // No affected paths extracted — CWD alone determines the match.
+        return cwd_matches;
     }
 
-    // Check affected paths
-    for path in affected_paths {
+    // Affected paths exist — ALL must match the rule's globs.
+    // CWD match alone is not sufficient when the command touches
+    // paths outside the allowed prefix.
+    affected_paths.iter().all(|path| {
         let normalized = resolve_and_normalize(path);
-        if expanded_patterns
+        expanded_patterns
             .iter()
             .any(|pat| path_matches(&normalized, pat))
-        {
-            return true;
-        }
-    }
-
-    false
+    })
 }
 
 /// Resolve `..` and `.` components in a path, then normalize.
@@ -208,25 +206,88 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Expand tilde and normalize the non-glob portion of a pattern.
+///
+/// This ensures patterns like `~/dev/../other/*` are resolved to their
+/// canonical form before matching, preventing bypasses via `..` in the
+/// pattern itself (not just in the matched path).
+fn normalize_pattern(pattern: &str) -> String {
+    let expanded = expand_tilde(pattern);
+    // Find and strip glob suffix
+    let (prefix, suffix) = if let Some(p) = expanded.strip_suffix("/**") {
+        (p, "/**")
+    } else if let Some(p) = expanded.strip_suffix("/*") {
+        (p, "/*")
+    } else if let Some(p) = expanded.strip_suffix('*') {
+        (p, "*")
+    } else {
+        // No glob — normalize the whole thing
+        return resolve_and_normalize(&expanded);
+    };
+
+    let prefix = prefix.trim_end_matches('/');
+    if prefix.is_empty() {
+        return expanded; // bare glob
+    }
+    let normalized_prefix = resolve_and_normalize(prefix);
+    format!("{normalized_prefix}{suffix}")
+}
+
+/// Extract the directory prefix from a glob pattern, stripping any
+/// trailing `/**`, `/*`, or `*` suffix.
+///
+/// Non-glob patterns are returned unchanged.
+pub fn extract_glob_prefix(pattern: &str) -> String {
+    if let Some(p) = pattern.strip_suffix("/**") {
+        p.trim_end_matches('/').to_string()
+    } else if let Some(p) = pattern.strip_suffix("/*") {
+        p.trim_end_matches('/').to_string()
+    } else if let Some(p) = pattern.strip_suffix('*') {
+        p.trim_end_matches('/').to_string()
+    } else {
+        pattern.to_string()
+    }
+}
+
+/// Check whether a `parent` glob pattern covers a `child` glob pattern.
+///
+/// Both patterns are expanded (tilde) and normalized to a directory prefix.
+/// The child is covered if its prefix starts with (or equals) the parent's
+/// prefix — i.e., the child is a subtree of the parent.
+///
+/// This is used by the monotonicity validator to determine whether a
+/// user-level path rule structurally covers a project-level path rule.
+pub fn glob_covers(parent: &str, child: &str) -> bool {
+    let parent_prefix = extract_glob_prefix(&expand_tilde(parent));
+    let child_prefix = extract_glob_prefix(&expand_tilde(child));
+
+    let parent_norm = resolve_and_normalize(&parent_prefix);
+    let child_norm = resolve_and_normalize(&child_prefix);
+
+    // Child is within parent if child path starts with parent path
+    child_norm == parent_norm || child_norm.starts_with(&format!("{parent_norm}/"))
+}
+
 /// Check whether a path matches a rule pattern.
 ///
-/// Matching rules:
-/// - Pattern ending in `/*` or `/**`: prefix match (path starts with the
-///   prefix before the `*`). The prefix itself also matches.
-/// - Pattern ending in just `*`: same as `/*`.
-/// - Literal pattern (no `*`): exact match.
+/// All glob suffixes (`/**`, `/*`, trailing `*`) are treated as recursive
+/// prefix matches — there is no semantic difference between them. A bare
+/// `*` or `**` (empty prefix after stripping) matches nothing and is
+/// rejected at validation time; this function fails closed as a safety net.
+///
+/// Literal patterns (no `*`) require exact equality.
 fn path_matches(path: &str, pattern: &str) -> bool {
-    // Handle glob suffix patterns
-    if let Some(prefix) = pattern.strip_suffix("/**") {
+    // All glob suffixes (`/**`, `/*`, trailing `*`) are recursive prefix
+    // matches. We normalize them into a single code path.
+    if let Some(prefix) = pattern
+        .strip_suffix("/**")
+        .or_else(|| pattern.strip_suffix("/*"))
+        .or_else(|| pattern.strip_suffix('*'))
+    {
         let prefix = prefix.trim_end_matches('/');
-        return path == prefix || path.starts_with(&format!("{prefix}/"));
-    }
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        let prefix = prefix.trim_end_matches('/');
-        return path == prefix || path.starts_with(&format!("{prefix}/"));
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        let prefix = prefix.trim_end_matches('/');
+        if prefix.is_empty() {
+            return false; // bare `*`/`**` — rejected in validation, fail-closed here
+        }
         return path == prefix || path.starts_with(&format!("{prefix}/"));
     }
 
