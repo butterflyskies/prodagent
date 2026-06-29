@@ -33,6 +33,7 @@ fn default_layer() -> ConfigLayer {
             remove_commands: vec![],
             opaque_env_ceiling: None,
             path_rules: None,
+            overrides: None,
         },
     }
 }
@@ -1463,4 +1464,214 @@ fn monotonicity_command_override_weakens_with_uniform_defaults() {
     assert_eq!(violations[0].path, "policy.commands.rm");
     assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
     assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}
+
+// ── Overrides: project config must not contain overrides ──────────────────
+
+#[test]
+fn monotonicity_project_overrides_are_rejected() {
+    use prodagent_policy::config::OverrideConfig;
+
+    let user_policy = PolicyConfig::default();
+
+    let project = PolicyOverlay {
+        overrides: Some(OverrideConfig {
+            commands: {
+                let mut m = HashMap::new();
+                m.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+                m
+            },
+            path_rules: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(
+        !violations.is_empty(),
+        "project config with overrides should be a monotonicity violation"
+    );
+    assert!(
+        violations.iter().any(|v| v.path == "policy.overrides"),
+        "violation should reference overrides path"
+    );
+}
+
+#[test]
+fn monotonicity_project_empty_overrides_are_ok() {
+    use prodagent_policy::config::OverrideConfig;
+
+    let user_policy = PolicyConfig::default();
+
+    // Empty overrides section should not trigger a violation
+    let project = PolicyOverlay {
+        overrides: Some(OverrideConfig::default()),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(
+        violations.is_empty(),
+        "empty overrides should not be a violation: {violations:?}"
+    );
+}
+
+// ── Override layer merging ───────────────────────────────────────────────
+
+#[test]
+fn user_overrides_survive_project_merge() {
+    use prodagent_policy::config::OverrideConfig;
+
+    let base = default_layer();
+
+    let user = ConfigLayer {
+        policy: PolicyOverlay {
+            overrides: Some(OverrideConfig {
+                commands: {
+                    let mut m = HashMap::new();
+                    m.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+                    m
+                },
+                path_rules: vec![],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    // Project layer with a restriction on rm
+    let project = ConfigLayer {
+        policy: PolicyOverlay {
+            commands: {
+                let mut m = HashMap::new();
+                m.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+                m
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let config = ProdagentConfig::from_layers(base, Some(user), Some(project));
+
+    // The override should be preserved in the merged config
+    assert!(
+        matches!(
+            config.policy.overrides.commands.get("rm"),
+            Some(CommandPolicy::Flat(PolicyDecision::Allow))
+        ),
+        "user override for rm should survive project merge"
+    );
+
+    // The merged policy should have Deny for rm (from project)
+    assert!(
+        matches!(
+            config.policy.commands.get("rm"),
+            Some(CommandPolicy::Flat(PolicyDecision::Deny))
+        ),
+        "project Deny for rm should be in merged commands"
+    );
+}
+
+// ── Conflict detection model ────────────────────────────────────────────
+
+#[test]
+fn conflict_detected_when_project_stricter() {
+    use prodagent_policy::PolicyEngine;
+
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // User config: rm uses default effect mapping (mutating -> Ask)
+    let user_policy = PolicyConfig::default();
+    let user_engine = PolicyEngine::new(user_policy).unwrap();
+
+    // Merged config: project adds Deny for rm
+    let mut merged_policy = PolicyConfig::default();
+    merged_policy
+        .commands
+        .insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+    let merged_engine = PolicyEngine::new(merged_policy).unwrap();
+
+    let user_result = user_engine.evaluate_command("rm /tmp/foo", kb);
+    let merged_result = merged_engine.evaluate_command("rm /tmp/foo", kb);
+
+    // merged is stricter -> conflict
+    assert!(
+        merged_result.decision > user_result.decision,
+        "merged should be stricter: merged={:?}, user={:?}",
+        merged_result.decision,
+        user_result.decision
+    );
+}
+
+#[test]
+fn no_conflict_when_user_stricter() {
+    use prodagent_policy::PolicyEngine;
+
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // User config: rm is Deny
+    let mut user_policy = PolicyConfig::default();
+    user_policy
+        .commands
+        .insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+    let user_engine = PolicyEngine::new(user_policy).unwrap();
+
+    // Merged config: project keeps rm at Ask (user is stricter)
+    let merged_policy = PolicyConfig::default();
+    let merged_engine = PolicyEngine::new(merged_policy).unwrap();
+
+    // When user is stricter, the merged result will also be strict because
+    // in the real cascade, max(user, project) >= user. But if merged_result
+    // <= user_result, there's no conflict from the project.
+    let user_result = user_engine.evaluate_command("rm /tmp/foo", kb);
+    let merged_result = merged_engine.evaluate_command("rm /tmp/foo", kb);
+
+    // In this test the user config is stricter (Deny vs Ask), so the user
+    // result should be >= merged. In real config loading, the merged would
+    // include the user's Deny too, but this demonstrates the concept.
+    assert!(
+        user_result.decision >= merged_result.decision,
+        "user should be at least as strict: user={:?}, merged={:?}",
+        user_result.decision,
+        merged_result.decision
+    );
+}
+
+#[test]
+fn override_resolves_conflict_on_subsequent_eval() {
+    use prodagent_policy::PolicyEngine;
+
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // Merged config: project denies rm, but user has an override
+    let mut merged_policy = PolicyConfig::default();
+    merged_policy
+        .commands
+        .insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+    merged_policy
+        .overrides
+        .commands
+        .insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+    let merged_engine = PolicyEngine::new(merged_policy).unwrap();
+
+    let result = merged_engine.evaluate_command("rm /tmp/foo", kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "override should resolve the project-vs-user conflict"
+    );
+
+    // User-only evaluation (no project restriction)
+    let user_policy = PolicyConfig::default();
+    let user_engine = PolicyEngine::new(user_policy).unwrap();
+    let user_result = user_engine.evaluate_command("rm /tmp/foo", kb);
+
+    // No conflict: overridden merged result is <= user result
+    assert!(
+        result.decision <= user_result.decision,
+        "overridden result should not be stricter than user: override={:?}, user={:?}",
+        result.decision,
+        user_result.decision,
+    );
 }

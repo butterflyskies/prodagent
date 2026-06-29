@@ -26,7 +26,7 @@ mod loader;
 mod monotonicity;
 mod types;
 
-pub use loader::{load_and_apply, ConfigError, ConfigLoader};
+pub use loader::{load_and_apply, load_split_and_apply, ConfigError, ConfigLoader};
 pub use monotonicity::{validate_monotonicity, MonotonicityViolation};
 pub use types::{ConfigLayer, KnowledgeConfig, PolicyOverlay, ProdagentConfig};
 

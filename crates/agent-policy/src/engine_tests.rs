@@ -1948,3 +1948,242 @@ fn path_rule_allow_overridden_by_escalation_flags() {
         "escalation flags should override path rule Allow: {result:?}"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// User override tests — consent-gated project policy bypasses
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── Override command bypasses merged policy ─────────────────────────────
+
+#[test]
+fn override_command_bypasses_merged_deny() {
+    // Simulate: user config says Allow for rm (via effect default),
+    // project config says Deny for rm, merged = Deny.
+    // User override says Allow → override wins.
+    let config = PolicyConfig::builder()
+        .deny("rm") // merged result: Deny (from project layer)
+        .override_command("rm", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    // The override should bypass the Deny from the merged config
+    let result = engine.evaluate_command("rm /tmp/foo", &KnowledgeBase::default());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "user override should bypass merged Deny: {result:?}"
+    );
+    assert!(
+        result.reason.contains("user override"),
+        "reason should mention override: {result:?}"
+    );
+}
+
+#[test]
+fn override_command_bypasses_merged_ask() {
+    // merged config has Ask for git push, override says Allow
+    let config = PolicyConfig::builder()
+        .command_base("git", PolicyDecision::Ask) // merged
+        .override_command("git", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command("git status", &KnowledgeBase::default());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "user override should bypass merged Ask: {result:?}"
+    );
+}
+
+// ── No override → normal evaluation ────────────────────────────────────
+
+#[test]
+fn no_override_uses_normal_evaluation() {
+    let config = PolicyConfig::builder()
+        .deny("rm") // merged result: Deny
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command("rm /tmp/foo", &KnowledgeBase::default());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "without override, merged Deny should apply: {result:?}"
+    );
+}
+
+// ── Override is idempotent ─────────────────────────────────────────────
+
+#[test]
+fn override_is_idempotent() {
+    let config = PolicyConfig::builder()
+        .deny("rm")
+        .override_command("rm", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    let first = engine.evaluate_command("rm /tmp/foo", &kb);
+    let second = engine.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        first.decision, second.decision,
+        "override must be idempotent"
+    );
+}
+
+// ── Override resolves conflict on next eval ─────────────────────────────
+
+#[test]
+fn override_written_resolves_conflict() {
+    let kb = KnowledgeBase::default();
+
+    // Step 1: without override, project Deny is the merged result
+    let config_no_override = PolicyConfig::builder().deny("rm").build().unwrap();
+    let engine_no_override = PolicyEngine::new(config_no_override).unwrap();
+    let result_before = engine_no_override.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(result_before.decision, PolicyDecision::Deny);
+
+    // Step 2: user-only config would have allowed (effect default for mutating = Ask)
+    let config_user_only = PolicyConfig::default();
+    let engine_user_only = PolicyEngine::new(config_user_only).unwrap();
+    let result_user = engine_user_only.evaluate_command("rm /tmp/foo", &kb);
+    // rm is mutating → Ask by default. The conflict is Deny > Ask.
+    assert!(result_before.decision > result_user.decision);
+
+    // Step 3: with override written, the conflict is resolved
+    let config_with_override = PolicyConfig::builder()
+        .deny("rm") // project's restriction still present
+        .override_command("rm", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine_with_override = PolicyEngine::new(config_with_override).unwrap();
+    let result_after = engine_with_override.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        result_after.decision,
+        PolicyDecision::Allow,
+        "override should resolve the conflict"
+    );
+}
+
+// ── Override path rules ─────────────────────────────────────────────────
+
+#[test]
+fn override_path_rule_scopes_to_path() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .deny("rm") // project denies rm everywhere
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/*".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: Some("rm".to_string()),
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // rm in /tmp — override path rule matches, allows
+    let result = engine.evaluate_command_with_cwd("rm /tmp/foo", kb, Some("/tmp"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "override path rule should allow rm in /tmp: {result:?}"
+    );
+
+    // rm in /etc — override path rule doesn't match, falls through to normal eval (Deny)
+    let result = engine.evaluate_command_with_cwd("rm /etc/foo", kb, Some("/etc"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "override path rule should not match /etc: {result:?}"
+    );
+}
+
+// ── Override composition with regular path rules ────────────────────────
+
+#[test]
+fn override_composition_with_path_rules() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    // Regular path rule: deny rm in /etc
+    // Override: allow rm in /tmp
+    let config = PolicyConfig::builder()
+        .path_rule(PathRule {
+            paths: vec![PathGlob::new("/etc/*".to_string()).unwrap()],
+            decision: PolicyDecision::Deny,
+            command: Some("rm".to_string()),
+        })
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/*".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: Some("rm".to_string()),
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    // /tmp → override fires, Allow
+    let result = engine.evaluate_command_with_cwd("rm /tmp/foo", kb, Some("/tmp"));
+    assert_eq!(result.decision, PolicyDecision::Allow);
+
+    // /etc → no override, regular path rule fires, Deny
+    let result = engine.evaluate_command_with_cwd("rm /etc/shadow", kb, Some("/etc"));
+    assert_eq!(result.decision, PolicyDecision::Deny);
+}
+
+// ── Empty overrides are no-op ───────────────────────────────────────────
+
+#[test]
+fn empty_overrides_are_noop() {
+    use crate::config::OverrideConfig;
+
+    let config = PolicyConfig::builder()
+        .deny("rm")
+        .overrides(OverrideConfig::default())
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    let result = engine.evaluate_command("rm /tmp/foo", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Deny,
+        "empty overrides should not change evaluation"
+    );
+}
+
+// ── Override serialization round-trip ───────────────────────────────────
+
+#[test]
+fn override_config_toml_round_trip() {
+    let toml_str = r#"
+[defaults]
+read_only = "allow"
+mutating = "ask"
+unknown = "ask"
+
+[overrides.commands]
+rm = "allow"
+"#;
+    let config: PolicyConfig = toml::from_str(toml_str).expect("parse");
+    assert!(matches!(
+        config.overrides.commands.get("rm"),
+        Some(CommandPolicy::Flat(PolicyDecision::Allow))
+    ));
+
+    // Round-trip
+    let serialized = toml::to_string(&config).expect("serialize");
+    let deserialized: PolicyConfig = toml::from_str(&serialized).expect("deserialize");
+    assert!(matches!(
+        deserialized.overrides.commands.get("rm"),
+        Some(CommandPolicy::Flat(PolicyDecision::Allow))
+    ));
+}

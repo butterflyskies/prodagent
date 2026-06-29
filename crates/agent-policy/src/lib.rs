@@ -19,7 +19,7 @@ pub mod env_snapshot;
 pub mod path_rules;
 pub mod paths;
 
-pub use config::{PolicyConfig, PolicyConfigBuilder};
+pub use config::{OverrideConfig, PolicyConfig, PolicyConfigBuilder};
 pub use decision::PolicyDecision;
 pub use engine::{PolicyEngine, PolicyResult, SegmentResult};
 pub use env_snapshot::{EnvSnapshot, EnvValueOwned};

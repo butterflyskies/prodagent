@@ -127,6 +127,20 @@ pub fn validate_monotonicity(
         }
     }
 
+    // ── Overrides ─────────────────────────────────────────────────────────
+    // Project configs MUST NOT contain overrides — overrides are a user-only
+    // concept. A project config with overrides would allow untrusted config
+    // to bypass the monotonicity invariant entirely.
+    if let Some(ref overrides) = project_overlay.overrides {
+        if !overrides.is_empty() {
+            violations.push(MonotonicityViolation {
+                path: "policy.overrides".into(),
+                user_decision: PolicyDecision::Deny,
+                project_decision: PolicyDecision::Allow,
+            });
+        }
+    }
+
     // ── Path-scoped rules ─────────────────────────────────────────────────
     // A project config cannot introduce path-scoped rules that are weaker
     // than the user's effective floor. For command-scoped path rules,

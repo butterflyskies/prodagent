@@ -1325,4 +1325,140 @@ mod proofs {
             "eval(merge(U, P)) must be >= eval(U) with mixed path rules"
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #7 — Consent-gated user overrides
+    //
+    // When a user explicitly consents to relax a project restriction
+    // via the consent gate ("Always Allow"), the override is recorded
+    // in user config. The override bypasses the max(user, project)
+    // merge for that specific command/path.
+    //
+    // Four properties:
+    //
+    // 1. **No silent weakening**: if the final decision is more
+    //    permissive than max(user_base, project), a user override
+    //    must exist.
+    //
+    // 2. **User tightening is free**: when the user is stricter than
+    //    the project, the result is at least max(user_base, project)
+    //    without any override needed.
+    //
+    // 3. **Override is idempotent**: same inputs → same output, no
+    //    hidden state, no re-prompting.
+    //
+    // 4. **Override composition with path rules**: the no-silent-
+    //    weakening invariant holds even when path rules contribute
+    //    to the effective project decision.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Model of the override resolution function.
+    ///
+    /// `user_base` — the user's base decision (without overrides)
+    /// `project` — the project's decision
+    /// `user_override` — explicit consent override (if any)
+    ///
+    /// Resolution:
+    /// - If override exists → use the override decision
+    /// - Otherwise → max(user_base, project) (conservative merge)
+    fn resolve(
+        user_base: PolicyDecision,
+        project: PolicyDecision,
+        user_override: Option<PolicyDecision>,
+    ) -> PolicyDecision {
+        match user_override {
+            Some(override_decision) => override_decision,
+            None => user_base.max(project),
+        }
+    }
+
+    /// **Property 1: No silent weakening.**
+    ///
+    /// If the final decision is more permissive than max(user_base, project),
+    /// then a user override must exist. No path from inputs to a relaxed
+    /// output exists without explicit consent.
+    #[kani::proof]
+    fn no_silent_weakening() {
+        let user_base: PolicyDecision = kani::any();
+        let project: PolicyDecision = kani::any();
+        let user_override: Option<PolicyDecision> = kani::any();
+
+        let final_decision = resolve(user_base, project, user_override);
+
+        // If the final decision is more permissive than max(user_base, project),
+        // then a user override must exist
+        if final_decision < user_base.max(project) {
+            assert!(
+                user_override.is_some(),
+                "relaxed decision without override = silent weakening"
+            );
+        }
+    }
+
+    /// **Property 2: User tightening is free.**
+    ///
+    /// Without any override, the result is always at least as strict
+    /// as the stricter of user_base and project. No override record
+    /// is needed for the user to be stricter.
+    #[kani::proof]
+    fn user_tightening_is_free() {
+        let user_base: PolicyDecision = kani::any();
+        let project: PolicyDecision = kani::any();
+
+        let final_decision = resolve(user_base, project, None);
+
+        // Without any override, the result is always at least as strict
+        // as the stricter of user_base and project
+        assert!(
+            final_decision >= user_base.max(project),
+            "without override, result must be >= max(user, project)"
+        );
+    }
+
+    /// **Property 3: Override is idempotent.**
+    ///
+    /// Same inputs, same output — no hidden state, no re-prompting.
+    /// Once recorded, re-evaluation produces the same decision.
+    #[kani::proof]
+    fn override_is_idempotent() {
+        let user_base: PolicyDecision = kani::any();
+        let project: PolicyDecision = kani::any();
+        let override_val: PolicyDecision = kani::any();
+
+        let first = resolve(user_base, project, Some(override_val));
+        let second = resolve(user_base, project, Some(override_val));
+
+        // Same inputs, same output — no hidden state, no re-prompting
+        assert!(first == second, "override must be idempotent");
+    }
+
+    /// **Property 4: Override composition with path rules.**
+    ///
+    /// The no-silent-weakening invariant holds even when path rules
+    /// contribute to the effective project decision. Path-scoped
+    /// project rules resolve via tiered evaluation before entering
+    /// the override resolution.
+    #[kani::proof]
+    fn override_composes_with_path_rules() {
+        let user_base: PolicyDecision = kani::any();
+        let project_global: PolicyDecision = kani::any();
+        let project_path: Option<PolicyDecision> = kani::any();
+        let user_override: Option<PolicyDecision> = kani::any();
+
+        // Path-scoped project rule resolves via tiered evaluation
+        let effective_project = match project_path {
+            Some(p) => p, // path rule overrides global
+            None => project_global,
+        };
+
+        let final_decision = resolve(user_base, effective_project, user_override);
+
+        // The no-silent-weakening invariant holds even with path rules
+        if final_decision < user_base.max(effective_project) {
+            assert!(
+                user_override.is_some(),
+                "relaxed decision with path rules without override = silent weakening"
+            );
+        }
+    }
 }
