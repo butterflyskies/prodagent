@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Default fallback decision for tests that only care about path-rule
+/// matching, not the command-level composition.  Allow is the identity
+/// for `max`, so the path rule's own decision shows through.
+const DEFAULT: PolicyDecision = PolicyDecision::Allow;
+
 // ── resolve_and_normalize ──────────────────────────────────────────────────
 
 #[test]
@@ -125,6 +130,17 @@ fn no_expand_mid_path() {
     assert_eq!(expanded, "/home/~/file");
 }
 
+// ── is_glob_pattern ──────────────────────────────────────────────────────
+
+#[test]
+fn is_glob_pattern_detects_star() {
+    assert!(is_glob_pattern("/tmp/*"));
+    assert!(is_glob_pattern("/tmp/**"));
+    assert!(is_glob_pattern("/tmp/foo*"));
+    assert!(!is_glob_pattern("/tmp/foo"));
+    assert!(!is_glob_pattern("/etc/shadow"));
+}
+
 // ── P1: path traversal bypass ─────────────────────────────────────────────
 
 #[test]
@@ -138,7 +154,13 @@ fn traversal_bypass_blocked() {
 
     // Without .. resolution, this would match. With it, it resolves to
     // /etc/shadow which is outside /tmp/*.
-    let result = evaluate_path_rules(&rules, "cat", None, &["/tmp/safe/../../etc/shadow"]);
+    let result = evaluate_path_rules(
+        &rules,
+        "cat",
+        None,
+        &["/tmp/safe/../../etc/shadow"],
+        DEFAULT,
+    );
     assert!(
         result.is_none(),
         "path traversal via .. must not match /tmp/* rule"
@@ -154,7 +176,7 @@ fn traversal_within_allowed_prefix_still_matches() {
         command: None,
     }];
 
-    let result = evaluate_path_rules(&rules, "cat", None, &["/tmp/a/../b"]);
+    let result = evaluate_path_rules(&rules, "cat", None, &["/tmp/a/../b"], DEFAULT);
     assert!(
         result.is_some(),
         "/tmp/a/../b -> /tmp/b should match /tmp/*"
@@ -162,11 +184,11 @@ fn traversal_within_allowed_prefix_still_matches() {
     assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
 }
 
-// ── evaluate_path_rules ───────────────────────────────────────────────────
+// ── evaluate_path_rules: basic matching ─────────────────────────────────
 
 #[test]
 fn no_rules_returns_none() {
-    let result = evaluate_path_rules(&[], "git", Some("/home/user/dev"), &[]);
+    let result = evaluate_path_rules(&[], "git", Some("/home/user/dev"), &[], DEFAULT);
     assert!(result.is_none());
 }
 
@@ -178,7 +200,13 @@ fn cwd_matches_rule() {
         command: None,
     }];
 
-    let result = evaluate_path_rules(&rules, "git", Some("/home/testuser/dev/my-project"), &[]);
+    let result = evaluate_path_rules(
+        &rules,
+        "git",
+        Some("/home/testuser/dev/my-project"),
+        &[],
+        DEFAULT,
+    );
     assert!(result.is_some(), "CWD under the rule's prefix should match");
     assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
 }
@@ -194,7 +222,7 @@ fn cwd_matches_rule_with_tilde() {
         }];
 
         let cwd = format!("{}/dev/my-project", home.display());
-        let result = evaluate_path_rules(&rules, "git", Some(&cwd), &[]);
+        let result = evaluate_path_rules(&rules, "git", Some(&cwd), &[], DEFAULT);
         assert!(result.is_some(), "tilde-expanded CWD should match");
         assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
     }
@@ -208,7 +236,7 @@ fn affected_path_matches_rule() {
         command: None,
     }];
 
-    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/scratch.txt"]);
+    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/scratch.txt"], DEFAULT);
     assert!(result.is_some());
     assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
 }
@@ -221,7 +249,7 @@ fn no_match_falls_through() {
         command: None,
     }];
 
-    let result = evaluate_path_rules(&rules, "rm", Some("/etc"), &["/etc/shadow"]);
+    let result = evaluate_path_rules(&rules, "rm", Some("/etc"), &["/etc/shadow"], DEFAULT);
     assert!(result.is_none(), "no match should fall through");
 }
 
@@ -234,16 +262,16 @@ fn command_scoped_rule_matches_only_that_command() {
     }];
 
     // git should match
-    let result = evaluate_path_rules(&rules, "git", Some("/tmp/repo"), &[]);
+    let result = evaluate_path_rules(&rules, "git", Some("/tmp/repo"), &[], DEFAULT);
     assert!(result.is_some());
 
     // rm should not match (different command)
-    let result = evaluate_path_rules(&rules, "rm", Some("/tmp/file"), &[]);
+    let result = evaluate_path_rules(&rules, "rm", Some("/tmp/file"), &[], DEFAULT);
     assert!(result.is_none());
 }
 
 #[test]
-fn first_matching_rule_wins() {
+fn first_matching_rule_wins_within_tier() {
     let rules = vec![
         PathRule {
             paths: vec!["/tmp/sensitive/*".to_string()],
@@ -258,11 +286,11 @@ fn first_matching_rule_wins() {
     ];
 
     // /tmp/sensitive/ — first rule wins (deny)
-    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/sensitive/data.txt"]);
+    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/sensitive/data.txt"], DEFAULT);
     assert_eq!(result.unwrap().decision, PolicyDecision::Deny);
 
     // /tmp/other — second rule wins (allow)
-    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/other.txt"]);
+    let result = evaluate_path_rules(&rules, "rm", None, &["/tmp/other.txt"], DEFAULT);
     assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
 }
 
@@ -275,18 +303,18 @@ fn multiple_path_globs_in_rule() {
     }];
 
     // /tmp match
-    let result = evaluate_path_rules(&rules, "git", Some("/tmp/repo"), &[]);
+    let result = evaluate_path_rules(&rules, "git", Some("/tmp/repo"), &[], DEFAULT);
     assert!(result.is_some());
 
     // ~/dev match
     if let Some(home) = dirs::home_dir() {
         let cwd = format!("{}/dev/project", home.display());
-        let result = evaluate_path_rules(&rules, "git", Some(&cwd), &[]);
+        let result = evaluate_path_rules(&rules, "git", Some(&cwd), &[], DEFAULT);
         assert!(result.is_some());
     }
 
     // Neither
-    let result = evaluate_path_rules(&rules, "git", Some("/etc"), &[]);
+    let result = evaluate_path_rules(&rules, "git", Some("/etc"), &[], DEFAULT);
     assert!(result.is_none());
 }
 
@@ -299,12 +327,461 @@ fn cwd_with_dotdot_resolved_before_matching() {
     }];
 
     // CWD with .. that resolves INTO the allowed prefix
-    let result = evaluate_path_rules(&rules, "git", Some("/home/user/dev/a/../b"), &[]);
+    let result = evaluate_path_rules(&rules, "git", Some("/home/user/dev/a/../b"), &[], DEFAULT);
     assert!(result.is_some());
 
     // CWD with .. that resolves OUTSIDE the allowed prefix
-    let result = evaluate_path_rules(&rules, "git", Some("/home/user/dev/../etc"), &[]);
+    let result = evaluate_path_rules(&rules, "git", Some("/home/user/dev/../etc"), &[], DEFAULT);
     assert!(result.is_none());
+}
+
+// ── Per-path evaluation (new model) ─────────────────────────────────────
+
+#[test]
+fn multi_path_deny_wins() {
+    // cp ~/dev/foo /etc/shadow
+    // ~/dev/* Allow, /etc/* Deny → Deny wins
+    let rules = vec![
+        PathRule {
+            paths: vec!["/home/user/dev/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        },
+        PathRule {
+            paths: vec!["/etc/*".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+    ];
+
+    let result = evaluate_path_rules(
+        &rules,
+        "cp",
+        None,
+        &["/home/user/dev/foo", "/etc/shadow"],
+        DEFAULT,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "any-deny-wins across multiple paths"
+    );
+}
+
+#[test]
+fn multi_path_all_allow() {
+    // cp ~/dev/foo ~/dev/bar → both match Allow → Allow
+    let rules = vec![PathRule {
+        paths: vec!["/home/user/dev/*".to_string()],
+        decision: PolicyDecision::Allow,
+        command: None,
+    }];
+
+    let result = evaluate_path_rules(
+        &rules,
+        "cp",
+        None,
+        &["/home/user/dev/foo", "/home/user/dev/bar"],
+        DEFAULT,
+    );
+    assert_eq!(result.unwrap().decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn multi_path_mixed_with_fallback() {
+    // One path matches Allow rule, other matches no rule → uses command_default.
+    // command_default = Ask. Path that matched: max(Allow, Ask) = Ask.
+    // Path that didn't match: Ask (command_default). Overall: max(Ask, Ask) = Ask.
+    let rules = vec![PathRule {
+        paths: vec!["/home/user/dev/*".to_string()],
+        decision: PolicyDecision::Allow,
+        command: None,
+    }];
+
+    let result = evaluate_path_rules(
+        &rules,
+        "cp",
+        None,
+        &["/home/user/dev/foo", "/tmp/file"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Ask,
+        "path Allow composed with command Ask → Ask; unmatched path → Ask; max=Ask"
+    );
+}
+
+#[test]
+fn per_path_independent_evaluation() {
+    // Old model: ALL paths must match a single rule. This test verifies the
+    // new model where each path is evaluated independently.
+    //
+    // Rule 1: /tmp/sensitive/* → Deny
+    // Rule 2: /tmp/* → Allow
+    //
+    // cp /tmp/sensitive/data /tmp/other →
+    //   /tmp/sensitive/data → Rule 1: max(Deny, Allow) = Deny
+    //   /tmp/other → Rule 2: max(Allow, Allow) = Allow
+    //   max(Deny, Allow) = Deny
+    let rules = vec![
+        PathRule {
+            paths: vec!["/tmp/sensitive/*".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+        PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        },
+    ];
+
+    let result = evaluate_path_rules(
+        &rules,
+        "cp",
+        None,
+        &["/tmp/sensitive/data", "/tmp/other"],
+        DEFAULT,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "each path independently matched: sensitive→Deny, other→Allow, max=Deny"
+    );
+}
+
+// ── Tiered evaluation model ───────────────────────────────────────────────
+
+#[test]
+fn cmd_path_overrides_everything() {
+    // Command+path rules (tier 1) override unscoped path rules AND command default.
+    let rules = vec![
+        // Unscoped: /etc/** → Deny
+        PathRule {
+            paths: vec!["/etc/**".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+        // Command+path: cat /etc/os-release → Allow
+        PathRule {
+            paths: vec!["/etc/os-release".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("cat".to_string()),
+        },
+    ];
+
+    // cat /etc/os-release → command+path Allow wins (tier 1)
+    let result = evaluate_path_rules(
+        &rules,
+        "cat",
+        None,
+        &["/etc/os-release"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "command+path Allow overrides unscoped Deny and command Ask"
+    );
+}
+
+#[test]
+fn tier2_path_and_command_compose_via_max() {
+    // When no command+path rule matches, path-only and command-only
+    // compose via max (strictest wins).
+    let rules = vec![PathRule {
+        paths: vec!["/tmp/*".to_string()],
+        decision: PolicyDecision::Allow,
+        command: None,
+    }];
+
+    // Path-only Allow, command-only Ask → max(Allow, Ask) = Ask
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/scratch.txt"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Ask,
+        "max(path=Allow, cmd=Ask) = Ask"
+    );
+
+    // Path-only Allow, command-only Allow → max(Allow, Allow) = Allow
+    let result = evaluate_path_rules(
+        &rules,
+        "ls",
+        None,
+        &["/tmp/scratch.txt"],
+        PolicyDecision::Allow,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "max(path=Allow, cmd=Allow) = Allow"
+    );
+
+    // Path-only Allow, command-only Deny → max(Allow, Deny) = Deny
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/scratch.txt"],
+        PolicyDecision::Deny,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "max(path=Allow, cmd=Deny) = Deny"
+    );
+}
+
+#[test]
+fn no_path_rule_uses_command_default() {
+    // When no path rule matches, evaluate_path_rules returns None.
+    let rules = vec![PathRule {
+        paths: vec!["/tmp/*".to_string()],
+        decision: PolicyDecision::Allow,
+        command: None,
+    }];
+
+    let result = evaluate_path_rules(&rules, "rm", None, &["/etc/shadow"], PolicyDecision::Deny);
+    assert!(
+        result.is_none(),
+        "no path rule match → returns None (caller uses command_default)"
+    );
+}
+
+#[test]
+fn exact_path_beats_glob_in_unscoped() {
+    // Exact match has higher specificity than glob within unscoped rules.
+    let rules = vec![
+        // Glob: /etc/** → Deny (listed first, but less specific)
+        PathRule {
+            paths: vec!["/etc/**".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+        // Exact: /etc/fake-file → Allow (listed second, but more specific)
+        PathRule {
+            paths: vec!["/etc/fake-file".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        },
+    ];
+
+    // /etc/fake-file → exact match wins over glob → Allow
+    let result = evaluate_path_rules(&rules, "cat", None, &["/etc/fake-file"], DEFAULT);
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "exact match /etc/fake-file must beat glob /etc/**"
+    );
+
+    // /etc/shadow → no exact match, glob fires → Deny
+    let result = evaluate_path_rules(&rules, "cat", None, &["/etc/shadow"], DEFAULT);
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "/etc/shadow matches only the glob → Deny"
+    );
+}
+
+#[test]
+fn cwd_uses_tiered_evaluation() {
+    // CWD-only evaluation also uses the tiered model.
+    let rules = vec![
+        PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Ask,
+            command: None,
+        },
+        PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("git".to_string()),
+        },
+    ];
+
+    // git in /tmp → command+path Allow wins (tier 1)
+    let result = evaluate_path_rules(&rules, "git", Some("/tmp/repo"), &[], DEFAULT);
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "CWD: command+path rule wins"
+    );
+
+    // rm in /tmp → no command+path rule → tier 2: max(path=Ask, cmd=DEFAULT=Allow) = Ask
+    let result = evaluate_path_rules(&rules, "rm", Some("/tmp/repo"), &[], DEFAULT);
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Ask,
+        "CWD: unscoped Ask composes with command default"
+    );
+}
+
+// ── Spec test cases (from 🦋) ──────────────────────────────────────────────
+
+/// Build the canonical test rule set from the spec.
+///
+/// Rules:
+/// - path: /etc/** → deny
+/// - path: /etc/fake-file → allow
+/// - command: cat, path: /etc/os-release → allow
+/// - command: rm, path: /tmp/** → allow
+///
+/// Command-level defaults (passed as command_default):
+/// - cat → Allow (read-only effect default)
+/// - rm  → Ask  (mutating effect default)
+fn spec_rules() -> Vec<PathRule> {
+    vec![
+        PathRule {
+            paths: vec!["/etc/**".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+        PathRule {
+            paths: vec!["/etc/fake-file".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        },
+        PathRule {
+            paths: vec!["/etc/os-release".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("cat".to_string()),
+        },
+        PathRule {
+            paths: vec!["/tmp/**".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("rm".to_string()),
+        },
+    ]
+}
+
+#[test]
+fn spec_cat_etc_os_release() {
+    // $ cat /etc/os-release → allow (command+path rule)
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "cat",
+        None,
+        &["/etc/os-release"],
+        PolicyDecision::Allow, // cat = read-only → Allow
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "cat /etc/os-release: command+path rule → Allow"
+    );
+}
+
+#[test]
+fn spec_cat_etc_os_release_and_passwd() {
+    // $ cat /etc/os-release /etc/passwd → deny
+    //   os-release: command+path → Allow
+    //   passwd: no cat+path rule → tier 2: max(path=/etc/**→Deny, cmd=Allow) = Deny
+    //   max(Allow, Deny) = Deny
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "cat",
+        None,
+        &["/etc/os-release", "/etc/passwd"],
+        PolicyDecision::Allow,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "cat /etc/os-release /etc/passwd: os-release=Allow, passwd=Deny, max=Deny"
+    );
+}
+
+#[test]
+fn spec_rm_tmp_blep() {
+    // $ rm /tmp/blep → allow (command+path rule: rm + /tmp/**)
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/blep"],
+        PolicyDecision::Ask, // rm = mutating → Ask
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Allow,
+        "rm /tmp/blep: command+path rule → Allow"
+    );
+}
+
+#[test]
+fn spec_rm_tmp_blep_and_etc_os_release() {
+    // $ rm /tmp/blep /etc/os-release → deny
+    //   blep: rm+/tmp/** → Allow (command+path)
+    //   os-release: no rm+path rule → tier 2: max(path=/etc/**→Deny, cmd=rm→Ask) = Deny
+    //   max(Allow, Deny) = Deny
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/blep", "/etc/os-release"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "rm /tmp/blep /etc/os-release: blep=Allow, os-release=Deny, max=Deny"
+    );
+}
+
+#[test]
+fn spec_rm_tmp_blep_and_etc_shadow() {
+    // $ rm /tmp/blep /etc/shadow → deny
+    //   blep: rm+/tmp/** → Allow (command+path)
+    //   shadow: no rm+path rule → tier 2: max(path=/etc/**→Deny, cmd=rm→Ask) = Deny
+    //   max(Allow, Deny) = Deny
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/blep", "/etc/shadow"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Deny,
+        "rm /tmp/blep /etc/shadow: blep=Allow, shadow=Deny, max=Deny"
+    );
+}
+
+#[test]
+fn spec_rm_tmp_blep_and_etc_fake_file() {
+    // $ rm /tmp/blep /etc/fake-file → ask
+    //   blep: rm+/tmp/** → Allow (command+path)
+    //   fake-file: no rm+path rule → tier 2:
+    //     path: exact /etc/fake-file → Allow (beats glob /etc/**→Deny)
+    //     cmd: rm → Ask
+    //     max(Allow, Ask) = Ask
+    //   max(Allow, Ask) = Ask
+    let rules = spec_rules();
+    let result = evaluate_path_rules(
+        &rules,
+        "rm",
+        None,
+        &["/tmp/blep", "/etc/fake-file"],
+        PolicyDecision::Ask,
+    );
+    assert_eq!(
+        result.unwrap().decision,
+        PolicyDecision::Ask,
+        "rm /tmp/blep /etc/fake-file: blep=Allow, fake-file=max(Allow,Ask)=Ask, max=Ask"
+    );
 }
 
 // ── Serialization round-trip ──────────────────────────────────────────────

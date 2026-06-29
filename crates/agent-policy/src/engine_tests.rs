@@ -1743,7 +1743,10 @@ fn path_rule_allows_in_matched_cwd() {
         .unwrap();
 
     let engine = PolicyEngine::new(config).unwrap();
-    let kb = KnowledgeBase::default();
+    // Use real KB so `ls` is classified as ReadOnly (default=Allow),
+    // not Unknown (default=Ask). The unscoped path rule's Allow
+    // composes with the command default via max(Allow, Allow) = Allow.
+    let kb = agent_command_knowledge::default_knowledge_base();
 
     // CWD in /tmp → path rule fires → Allow
     let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/scratch"));
@@ -1905,7 +1908,9 @@ fn path_rule_order_first_match_wins() {
         .unwrap();
 
     let engine = PolicyEngine::new(config).unwrap();
-    let kb = KnowledgeBase::default();
+    // Use real KB so `ls` is ReadOnly (default=Allow), making the
+    // tier-2 composition max(path_Allow, cmd_Allow) = Allow.
+    let kb = agent_command_knowledge::default_knowledge_base();
 
     // /tmp/sensitive → first rule wins (deny)
     let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/sensitive/data"));

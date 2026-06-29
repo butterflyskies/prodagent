@@ -234,15 +234,18 @@ impl PolicyEngine {
                         .map(|p| p.as_str())
                         .collect();
 
+                    let inner_command_decision =
+                        self.evaluate(parsed.command.as_str(), &inner_info);
                     let mut d = if let Some(path_result) = path_rules::evaluate_path_rules(
                         &self.config.path_rules,
                         parsed.command.as_str(),
                         cwd,
                         &inner_affected_strs,
+                        inner_command_decision,
                     ) {
                         path_result.decision
                     } else {
-                        self.evaluate(parsed.command.as_str(), &inner_info)
+                        inner_command_decision
                     };
 
                     // Apply env gates with the accumulated snapshot
@@ -466,17 +469,18 @@ impl PolicyEngine {
         let affected_path_strs: Vec<&str> =
             info.affected_paths.iter().map(|p| p.as_str()).collect();
 
+        let command_decision = self.evaluate(&base_command, &info);
         let (mut decision, path_rule_matched) = if let Some(path_result) =
             path_rules::evaluate_path_rules(
                 &self.config.path_rules,
                 &base_command,
                 cwd,
                 &affected_path_strs,
+                command_decision,
             ) {
             (path_result.decision, true)
         } else {
-            // No path rule matched — fall through to per-command / effect-class
-            (self.evaluate(&base_command, &info), false)
+            (command_decision, false)
         };
 
         // Apply env gates after classification and per-command overrides (gates can only escalate)

@@ -562,4 +562,211 @@ mod proofs {
         let silent = gate_decision(false, action, val, cond, ceiling);
         assert!(fired >= silent);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #4 — Per-path evaluation with deny-wins aggregation
+    //
+    // Path-scoped rules evaluate each affected path independently
+    // through a tiered evaluation:
+    //
+    //   Tier 1: Command+path rule matches → use its decision (done).
+    //   Tier 2: No command+path match → evaluate path-only and
+    //           command-only independently, take max (strictest).
+    //   Tier 3: No path rule matched → command-level default.
+    //
+    // Across all paths the strictest decision wins. The security
+    // invariant: if ANY path's per-path decision is Deny, the
+    // aggregate is Deny — a dangerous path cannot be hidden among
+    // safe ones in a multi-path command.
+    //
+    // The proofs model the per-path tiered lookup as a function
+    // from symbolic booleans (does the path match each tier?) to
+    // a decision, then verify the max-fold aggregation.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Model of the per-path tiered evaluation.
+    ///
+    /// For a single path:
+    /// - If a command+path rule matches → use its decision
+    /// - Else if a path-only rule matches → max(path_decision, command_default)
+    /// - Else → command_default
+    fn per_path_decision(
+        cmd_path_matches: bool,
+        cmd_path_decision: PolicyDecision,
+        path_only_matches: bool,
+        path_only_decision: PolicyDecision,
+        command_default: PolicyDecision,
+    ) -> PolicyDecision {
+        if cmd_path_matches {
+            cmd_path_decision
+        } else if path_only_matches {
+            path_only_decision.max(command_default)
+        } else {
+            command_default
+        }
+    }
+
+    /// If any per-path decision is Deny, the max-fold aggregate is Deny.
+    ///
+    /// Models a 3-path command where each path independently evaluates
+    /// through the tiered hierarchy. Proves the core security property:
+    /// deny is absorbing across the path aggregation.
+    #[kani::proof]
+    fn path_deny_absorbing_in_aggregate() {
+        // 3 paths, each with independent tier matches
+        let cp1: bool = kani::any();
+        let cp1_d: PolicyDecision = kani::any();
+        let po1: bool = kani::any();
+        let po1_d: PolicyDecision = kani::any();
+
+        let cp2: bool = kani::any();
+        let cp2_d: PolicyDecision = kani::any();
+        let po2: bool = kani::any();
+        let po2_d: PolicyDecision = kani::any();
+
+        let cp3: bool = kani::any();
+        let cp3_d: PolicyDecision = kani::any();
+        let po3: bool = kani::any();
+        let po3_d: PolicyDecision = kani::any();
+
+        let default: PolicyDecision = kani::any();
+
+        let d1 = per_path_decision(cp1, cp1_d, po1, po1_d, default);
+        let d2 = per_path_decision(cp2, cp2_d, po2, po2_d, default);
+        let d3 = per_path_decision(cp3, cp3_d, po3, po3_d, default);
+
+        let aggregate = d1.max(d2).max(d3);
+
+        // Core invariant: if any per-path decision is Deny, aggregate is Deny
+        if d1 == PolicyDecision::Deny || d2 == PolicyDecision::Deny || d3 == PolicyDecision::Deny {
+            assert!(
+                aggregate == PolicyDecision::Deny,
+                "deny in any path must produce deny in aggregate"
+            );
+        }
+    }
+
+    /// The aggregate is always >= every individual per-path decision.
+    ///
+    /// Monotonicity of the max-fold: the aggregate never relaxes below
+    /// any single path's decision.
+    #[kani::proof]
+    fn path_aggregate_never_relaxes() {
+        let cp1: bool = kani::any();
+        let cp1_d: PolicyDecision = kani::any();
+        let po1: bool = kani::any();
+        let po1_d: PolicyDecision = kani::any();
+
+        let cp2: bool = kani::any();
+        let cp2_d: PolicyDecision = kani::any();
+        let po2: bool = kani::any();
+        let po2_d: PolicyDecision = kani::any();
+
+        let default: PolicyDecision = kani::any();
+
+        let d1 = per_path_decision(cp1, cp1_d, po1, po1_d, default);
+        let d2 = per_path_decision(cp2, cp2_d, po2, po2_d, default);
+
+        let aggregate = d1.max(d2);
+
+        assert!(aggregate >= d1, "aggregate must be >= path 1 decision");
+        assert!(aggregate >= d2, "aggregate must be >= path 2 decision");
+    }
+
+    /// Command+path rules are the highest specificity tier: when one
+    /// matches, neither path-only rules nor the command default can
+    /// override it for that path.
+    #[kani::proof]
+    fn cmd_path_is_highest_specificity() {
+        let cp_decision: PolicyDecision = kani::any();
+        let po_decision: PolicyDecision = kani::any();
+        let default: PolicyDecision = kani::any();
+
+        // When command+path matches, result equals cp_decision
+        // regardless of path-only and default.
+        let result_both = per_path_decision(true, cp_decision, true, po_decision, default);
+        let result_cp_only = per_path_decision(true, cp_decision, false, po_decision, default);
+
+        assert!(
+            result_both == cp_decision,
+            "command+path must win even when path-only also matches"
+        );
+        assert!(
+            result_cp_only == cp_decision,
+            "command+path must win when path-only does not match"
+        );
+    }
+
+    /// Tier 2 (path-only match) is at least as strict as either
+    /// the path-only decision or the command default alone.
+    ///
+    /// This is the max composition property: when tier 2 fires,
+    /// the result is `max(path_decision, command_default) >= both`.
+    #[kani::proof]
+    fn tier2_is_at_least_as_strict_as_components() {
+        let po_decision: PolicyDecision = kani::any();
+        let default: PolicyDecision = kani::any();
+
+        // Tier 2 fires when command+path doesn't match but path-only does
+        let result = per_path_decision(false, PolicyDecision::Allow, true, po_decision, default);
+
+        assert!(
+            result >= po_decision,
+            "tier 2 must be >= path-only decision"
+        );
+        assert!(result >= default, "tier 2 must be >= command default");
+    }
+
+    /// Adding more paths to a multi-path command can only maintain or
+    /// increase the aggregate strictness — never relax it.
+    ///
+    /// This is the inductive step for N-path commands: if the aggregate
+    /// of N paths is `current`, adding path N+1 can only produce
+    /// `current.max(d_new) >= current`.
+    #[kani::proof]
+    fn adding_path_only_escalates() {
+        let current_aggregate: PolicyDecision = kani::any();
+
+        let cp_match: bool = kani::any();
+        let cp_d: PolicyDecision = kani::any();
+        let po_match: bool = kani::any();
+        let po_d: PolicyDecision = kani::any();
+        let default: PolicyDecision = kani::any();
+
+        let new_path_decision = per_path_decision(cp_match, cp_d, po_match, po_d, default);
+        let new_aggregate = current_aggregate.max(new_path_decision);
+
+        assert!(
+            new_aggregate >= current_aggregate,
+            "adding a path must not relax the aggregate"
+        );
+    }
+
+    /// The tiered evaluation is a total function: for every
+    /// combination of match booleans, every path gets a decision.
+    ///
+    /// The result always comes from one of the three sources:
+    /// the command+path decision, the path-only decision (possibly
+    /// raised by command_default), or the command_default alone.
+    #[kani::proof]
+    fn evaluation_is_total() {
+        let cp_match: bool = kani::any();
+        let cp_d: PolicyDecision = kani::any();
+        let po_match: bool = kani::any();
+        let po_d: PolicyDecision = kani::any();
+        let default: PolicyDecision = kani::any();
+
+        let result = per_path_decision(cp_match, cp_d, po_match, po_d, default);
+
+        // Result must be derived from the inputs — it's either:
+        // cp_d, max(po_d, default), or default
+        let possible_cp = cp_d;
+        let possible_tier2 = po_d.max(default);
+        let possible_tier3 = default;
+
+        assert!(
+            result == possible_cp || result == possible_tier2 || result == possible_tier3,
+            "result must come from one of the three tiers"
+        );
+    }
 }
