@@ -1725,3 +1725,180 @@ fn variable_expansion_fires_set_gate_for_opaque() {
         "FOO=$VAR: opaque fires Set gate at max restriction: {result:?}"
     );
 }
+
+// ── Path-scoped policy rules ──────────────────────────────────────────────
+
+#[test]
+fn path_rule_allows_in_matched_cwd() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // CWD in /tmp → path rule fires → Allow
+    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/scratch"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "path rule should allow when CWD matches: {result:?}"
+    );
+}
+
+#[test]
+fn path_rule_falls_through_on_no_match() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // CWD NOT in /tmp → no match → falls through to effect-class default
+    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/etc"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "should fall through to effect-class default: {result:?}"
+    );
+}
+
+#[test]
+fn path_rule_command_scoped() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("git".to_string()),
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // git in /tmp → command-scoped rule matches → Allow
+    let result = engine.evaluate_command_with_cwd("git status", &kb, Some("/tmp/repo"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "git-scoped path rule should fire in /tmp: {result:?}"
+    );
+}
+
+#[test]
+fn no_cwd_means_only_affected_paths_checked() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // No CWD and no matching affected paths → no match → default
+    let result = engine.evaluate_command_with_cwd("ls", &kb, None);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "without CWD and no affected paths, should fall through: {result:?}"
+    );
+}
+
+#[test]
+fn path_rule_traversal_bypass_blocked() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // CWD with traversal that escapes /tmp → should NOT match
+    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/safe/../../etc/shadow"));
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "traversal via .. must not match /tmp/* rule: {result:?}"
+    );
+}
+
+#[test]
+fn path_rule_without_cwd_backward_compatible() {
+    // Engine without CWD (old API) should work exactly as before
+    let config = PolicyConfig::builder()
+        .mutating_default(PolicyDecision::Ask)
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    let result = engine.evaluate_command("ls", &kb);
+    assert_eq!(result.decision, PolicyDecision::Ask);
+}
+
+#[test]
+fn path_rule_order_first_match_wins() {
+    use crate::path_rules::PathRule;
+
+    let config = PolicyConfig::builder()
+        .path_rule(PathRule {
+            paths: vec!["/tmp/sensitive/*".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        })
+        .path_rule(PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = KnowledgeBase::default();
+
+    // /tmp/sensitive → first rule wins (deny)
+    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/sensitive/data"));
+    assert_eq!(result.decision, PolicyDecision::Deny);
+
+    // /tmp/other → second rule wins (allow)
+    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/other"));
+    assert_eq!(result.decision, PolicyDecision::Allow);
+}

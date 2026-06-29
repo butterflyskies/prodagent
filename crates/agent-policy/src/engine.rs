@@ -9,6 +9,7 @@ use agent_shell_parser::parse::{
 use crate::config::{CommandPolicy, PolicyConfig};
 use crate::decision::PolicyDecision;
 use crate::env_snapshot::{EnvSnapshot, EnvValueOwned};
+use crate::path_rules;
 use crate::paths::AffectedPaths;
 
 /// Per-segment breakdown within a compound command evaluation.
@@ -72,7 +73,24 @@ impl PolicyEngine {
     /// Handles compound commands, wrappers, escalation flags, and redirections.
     /// This is the primary entry point — callers pass an unparsed command string
     /// and receive a final authorization decision with explanation.
+    ///
+    /// Equivalent to [`evaluate_command_with_cwd`] with `cwd: None`.
     pub fn evaluate_command(&self, command: &str, kb: &KnowledgeBase) -> PolicyResult {
+        self.evaluate_command_with_cwd(command, kb, None)
+    }
+
+    /// Evaluate a raw command string with an optional current working directory.
+    ///
+    /// When `cwd` is provided and path-scoped rules are configured, the CWD
+    /// (and the command's affected paths) are checked against the path rules.
+    /// First matching path rule wins, overriding the per-command and
+    /// effect-class defaults.
+    pub fn evaluate_command_with_cwd(
+        &self,
+        command: &str,
+        kb: &KnowledgeBase,
+        cwd: Option<&str>,
+    ) -> PolicyResult {
         let pipeline = match parse::parse_with_substitutions(command) {
             Ok(p) => p,
             Err(_) => {
@@ -98,7 +116,7 @@ impl PolicyEngine {
             return match pipeline.segments.first() {
                 Some(segment) => {
                     let result =
-                        self.evaluate_segment(segment, kb, &merged_config, &[], &initial_env);
+                        self.evaluate_segment(segment, kb, &merged_config, &[], &initial_env, cwd);
                     let seg = SegmentResult {
                         label: segment.command.trim().to_string(),
                         decision: result.decision,
@@ -118,8 +136,14 @@ impl PolicyEngine {
 
         // Compound or error case: evaluate full pipeline, strictest wins
         let mut segments = Vec::new();
-        let mut strictest =
-            self.evaluate_pipeline(&pipeline, kb, &merged_config, &mut segments, &initial_env);
+        let mut strictest = self.evaluate_pipeline(
+            &pipeline,
+            kb,
+            &merged_config,
+            &mut segments,
+            &initial_env,
+            cwd,
+        );
         if has_parse_errors {
             strictest = strictest.max(PolicyDecision::Ask);
         }
@@ -151,6 +175,7 @@ impl PolicyEngine {
     /// `env` is the accumulated environment snapshot from outer wrappers and
     /// inline assignments. Each wrapper may mutate the snapshot before passing
     /// it to the inner command.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_wrapper_core(
         &self,
         base_command: &str,
@@ -159,6 +184,7 @@ impl PolicyEngine {
         merged_config: &CommandConfig,
         depth: u8,
         env: &EnvSnapshot,
+        cwd: Option<&str>,
     ) -> PolicyResult {
         if depth > 8 {
             return PolicyResult::simple(
@@ -197,10 +223,27 @@ impl PolicyEngine {
                         merged_config,
                         depth + 1,
                         &inner_env,
+                        cwd,
                     );
                     (inner_result.decision, inner_result.affected_paths)
                 } else {
-                    let mut d = self.evaluate(parsed.command.as_str(), &inner_info);
+                    // Check path-scoped rules for the inner command
+                    let inner_affected_strs: Vec<&str> = inner_info
+                        .affected_paths
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect();
+
+                    let mut d = if let Some(path_result) = path_rules::evaluate_path_rules(
+                        &self.config.path_rules,
+                        parsed.command.as_str(),
+                        cwd,
+                        &inner_affected_strs,
+                    ) {
+                        path_result.decision
+                    } else {
+                        self.evaluate(parsed.command.as_str(), &inner_info)
+                    };
 
                     // Apply env gates with the accumulated snapshot
                     if let Some(gate_decision) = apply_env_gates(
@@ -281,12 +324,13 @@ impl PolicyEngine {
         merged_config: &CommandConfig,
         segments: &mut Vec<SegmentResult>,
         env: &EnvSnapshot,
+        cwd: Option<&str>,
     ) -> PolicyDecision {
         let mut strictest = PolicyDecision::Allow;
 
         for sub in &pipeline.structural_substitutions {
             let sub_decision =
-                self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments, env);
+                self.evaluate_pipeline(&sub.pipeline, kb, merged_config, segments, env, cwd);
             let label = pipeline_label(&sub.pipeline, "structural-subst");
             // The nested pipeline's own leaf segments (with their paths) were
             // already pushed by the recursive call; this synthetic marker
@@ -313,6 +357,7 @@ impl PolicyEngine {
                     merged_config,
                     segments,
                     &current_env,
+                    cwd,
                 );
                 let label = pipeline_label(&sub.pipeline, "subst");
                 segments.push(SegmentResult {
@@ -327,8 +372,14 @@ impl PolicyEngine {
                 }
             }
 
-            let result =
-                self.evaluate_segment(segment, kb, merged_config, &sub_decisions, &current_env);
+            let result = self.evaluate_segment(
+                segment,
+                kb,
+                merged_config,
+                &sub_decisions,
+                &current_env,
+                cwd,
+            );
             let label = segment.command.trim().to_string();
             segments.push(SegmentResult {
                 label,
@@ -375,6 +426,7 @@ impl PolicyEngine {
         merged_config: &CommandConfig,
         sub_decisions: &[PolicyDecision],
         base_env: &EnvSnapshot,
+        cwd: Option<&str>,
     ) -> PolicyResult {
         let words = &segment.words;
         let base_command = base_command_from_words(words);
@@ -404,13 +456,29 @@ impl PolicyEngine {
         // Wrapper handling — use pre-built merged config
         if info.wrapper.is_some() {
             let mut result =
-                self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0, &env);
+                self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0, &env, cwd);
             maybe_escalate_for_redirection(&mut result, segment);
             return result;
         }
 
+        // ── Path-scoped rules (checked before per-command and effect-class) ──
+        // Collect affected paths as string slices for the path rule evaluator.
+        let affected_path_strs: Vec<&str> =
+            info.affected_paths.iter().map(|p| p.as_str()).collect();
+
+        let mut decision = if let Some(path_result) = path_rules::evaluate_path_rules(
+            &self.config.path_rules,
+            &base_command,
+            cwd,
+            &affected_path_strs,
+        ) {
+            path_result.decision
+        } else {
+            // No path rule matched — fall through to per-command / effect-class
+            self.evaluate(&base_command, &info)
+        };
+
         // Apply env gates after classification and per-command overrides (gates can only escalate)
-        let mut decision = self.evaluate(&base_command, &info);
         if let Some(gate_decision) =
             apply_env_gates(&info.env_gates, &env, self.config.opaque_env_ceiling)
         {

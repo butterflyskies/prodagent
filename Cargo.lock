@@ -508,6 +508,7 @@ dependencies = [
  "agent-command-knowledge",
  "agent-shell-parser",
  "camino",
+ "dirs",
  "prodagent-types",
  "proptest",
  "serde",

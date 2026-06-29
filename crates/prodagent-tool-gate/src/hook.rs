@@ -58,8 +58,8 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     let policy_config = load_and_apply(&loader, &mut kb)?;
     let engine = PolicyEngine::new(policy_config).map_err(|e| anyhow::anyhow!(e))?;
 
-    // Evaluate command through the policy engine
-    let result = engine.evaluate_command(command, &kb);
+    // Evaluate command through the policy engine, passing CWD for path-scoped rules
+    let result = engine.evaluate_command_with_cwd(command, &kb, input.cwd.as_deref());
 
     // Apply --escalate-deny: convert Deny → Ask
     let mut decision = result.decision;

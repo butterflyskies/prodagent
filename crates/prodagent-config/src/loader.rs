@@ -153,6 +153,7 @@ impl ConfigLoader {
                 .policy
                 .opaque_env_ceiling
                 .unwrap_or(PolicyDecision::Ask),
+            path_rules: base_layer.policy.path_rules.clone().unwrap_or_default(),
         };
 
         // Validate user-level policy

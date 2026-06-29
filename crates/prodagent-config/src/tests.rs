@@ -32,6 +32,7 @@ fn default_layer() -> ConfigLayer {
             commands: HashMap::new(),
             remove_commands: vec![],
             opaque_env_ceiling: None,
+            path_rules: None,
         },
     }
 }
@@ -885,4 +886,234 @@ fn knowledge_remove_accumulates_across_layers() {
     // Both removals should be accumulated
     assert!(config.knowledge.remove_commands.contains(&"rm".into()));
     assert!(config.knowledge.remove_commands.contains(&"git".into()));
+}
+
+// ── 11. Path-scoped rules ─────────────────────────────────────────────────
+
+#[test]
+fn monotonicity_path_rule_tightens_is_ok() {
+    use prodagent_policy::path_rules::PathRule;
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project adds a path rule that tightens to Deny — monotonic
+    let project = PolicyOverlay {
+        path_rules: Some(vec![PathRule {
+            paths: vec!["/sensitive/*".to_string()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        }]),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(violations.is_empty(), "tightening path rule should be ok");
+}
+
+#[test]
+fn monotonicity_path_rule_weakens_is_violation() {
+    use prodagent_policy::path_rules::PathRule;
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Ask,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project tries to add a path rule that weakens to Allow
+    let project = PolicyOverlay {
+        path_rules: Some(vec![PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        }]),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(violations.len(), 1, "weakening path rule should be caught");
+    assert!(violations[0].path.contains("path_rules"));
+}
+
+#[test]
+fn monotonicity_path_rule_weakens_command_is_violation() {
+    use prodagent_policy::path_rules::PathRule;
+
+    let mut commands = HashMap::new();
+    commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults::default(),
+        commands,
+        ..PolicyConfig::default()
+    };
+
+    // Project tries to use a path-scoped rule to Allow rm in /tmp
+    let project = PolicyOverlay {
+        path_rules: Some(vec![PathRule {
+            paths: vec!["/tmp/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: Some("rm".to_string()),
+        }]),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "path rule weakening a user-denied command should be caught"
+    );
+    assert!(violations[0].path.contains("command=rm"));
+}
+
+#[test]
+fn path_rules_overlay_prepends() {
+    use prodagent_policy::path_rules::PathRule;
+
+    let defaults = default_layer();
+    let user = ConfigLayer {
+        policy: PolicyOverlay {
+            path_rules: Some(vec![PathRule {
+                paths: vec!["/tmp/*".to_string()],
+                decision: PolicyDecision::Ask,
+                command: None,
+            }]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let project = ConfigLayer {
+        policy: PolicyOverlay {
+            path_rules: Some(vec![PathRule {
+                paths: vec!["/tmp/scratch/*".to_string()],
+                decision: PolicyDecision::Deny,
+                command: None,
+            }]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let config = ProdagentConfig::from_layers(defaults, Some(user), Some(project));
+    assert_eq!(config.policy.path_rules.len(), 2);
+    // Project rules are prepended (higher priority)
+    assert_eq!(
+        config.policy.path_rules[0].paths,
+        vec!["/tmp/scratch/*".to_string()]
+    );
+    assert_eq!(
+        config.policy.path_rules[1].paths,
+        vec!["/tmp/*".to_string()]
+    );
+}
+
+#[test]
+fn toml_path_rules_round_trip() {
+    let toml_str = r#"
+[policy.defaults]
+read_only = "allow"
+
+[[policy.path_rules]]
+paths = ["~/dev/*", "/tmp/*"]
+decision = "allow"
+
+[[policy.path_rules]]
+paths = ["/etc/*"]
+decision = "deny"
+command = "rm"
+"#;
+
+    let layer: ConfigLayer = toml::from_str(toml_str).expect("TOML should parse");
+    let rules = layer.policy.path_rules.expect("path_rules should be Some");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].paths, vec!["~/dev/*", "/tmp/*"]);
+    assert_eq!(rules[0].decision, PolicyDecision::Allow);
+    assert_eq!(rules[0].command, None);
+    assert_eq!(rules[1].paths, vec!["/etc/*"]);
+    assert_eq!(rules[1].decision, PolicyDecision::Deny);
+    assert_eq!(rules[1].command, Some("rm".to_string()));
+}
+
+#[test]
+fn loader_path_rules_from_toml() {
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let user_path = dir.path().join("config.toml");
+    std::fs::write(
+        &user_path,
+        r#"
+[[policy.path_rules]]
+paths = ["/tmp/*"]
+decision = "allow"
+"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::new()
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+        .load()
+        .expect("should load");
+
+    assert_eq!(config.policy.path_rules.len(), 1);
+    assert_eq!(config.policy.path_rules[0].paths, vec!["/tmp/*"]);
+    assert_eq!(config.policy.path_rules[0].decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn loader_rejects_monotonicity_violation_path_rules() {
+    use crate::loader::ConfigError;
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // User config sets defaults to Ask
+    let user_path = dir.path().join("user.toml");
+    std::fs::write(
+        &user_path,
+        r#"
+[policy.defaults]
+read_only = "ask"
+"#,
+    )
+    .unwrap();
+
+    // Project tries to weaken via a path rule (Allow when user floor is Ask)
+    let project_path = dir.path().join("project.toml");
+    std::fs::write(
+        &project_path,
+        r#"
+[[policy.path_rules]]
+paths = ["/tmp/*"]
+decision = "allow"
+"#,
+    )
+    .unwrap();
+
+    let result = ConfigLoader::new()
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+        .project_config(camino::Utf8PathBuf::from_path_buf(project_path).unwrap())
+        .load();
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ConfigError::Monotonicity(violations) => {
+            assert_eq!(violations.len(), 1);
+            assert!(violations[0].path.contains("path_rules"));
+        }
+        other => panic!("expected Monotonicity error, got: {other}"),
+    }
 }

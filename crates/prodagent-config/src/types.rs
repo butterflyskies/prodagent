@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use agent_command_knowledge::merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};
 use prodagent_policy::config::{CommandPolicy, EffectDefaults, PolicyConfig};
+use prodagent_policy::path_rules::PathRule;
 use prodagent_policy::PolicyDecision;
 use serde::{Deserialize, Serialize};
 
@@ -91,6 +92,14 @@ pub struct PolicyOverlay {
     /// See [`PolicyConfig::opaque_env_ceiling`] for details.
     #[serde(default)]
     pub opaque_env_ceiling: Option<PolicyDecision>,
+
+    /// Path-scoped policy rules for Bash commands.
+    ///
+    /// When present, these rules are prepended to the base path rules
+    /// (higher-priority — evaluated first). This lets user/project configs
+    /// override defaults while preserving lower-layer rules as fallbacks.
+    #[serde(default)]
+    pub path_rules: Option<Vec<PathRule>>,
 }
 
 /// Optional overrides for effect-class defaults. `None` means "inherit."
@@ -121,6 +130,7 @@ impl PolicyOverlay {
             && self.commands.is_empty()
             && self.remove_commands.is_empty()
             && self.opaque_env_ceiling.is_none()
+            && self.path_rules.is_none()
     }
 
     /// Apply this overlay onto a base [`PolicyConfig`], mutating it in place.
@@ -129,6 +139,7 @@ impl PolicyOverlay {
     /// 1. Remove commands listed in `remove_commands`.
     /// 2. Override effect defaults (only `Some` values).
     /// 3. Merge per-command overrides (overlay wins on conflict).
+    /// 4. Merge path-scoped rules (overlay rules prepended — evaluated first).
     pub fn apply_to(self, base: &mut PolicyConfig) {
         // 1. Removals first.
         for key in &self.remove_commands {
@@ -154,6 +165,13 @@ impl PolicyOverlay {
         // 4. Per-command overrides — overlay wins.
         for (key, policy) in self.commands {
             base.commands.insert(key, policy);
+        }
+
+        // 5. Path-scoped rules — overlay rules prepended (higher-priority).
+        if let Some(overlay_rules) = self.path_rules {
+            let mut merged = overlay_rules;
+            merged.append(&mut base.path_rules);
+            base.path_rules = merged;
         }
     }
 }
@@ -204,7 +222,11 @@ impl ProdagentConfig {
                     .unwrap_or(PolicyDecision::Ask),
             },
             commands: defaults.policy.commands,
-            ..PolicyConfig::default()
+            opaque_env_ceiling: defaults
+                .policy
+                .opaque_env_ceiling
+                .unwrap_or(PolicyDecision::Ask),
+            path_rules: defaults.policy.path_rules.unwrap_or_default(),
         };
 
         // Merge user layer

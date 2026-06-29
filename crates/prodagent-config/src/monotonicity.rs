@@ -12,6 +12,7 @@
 use std::fmt;
 
 use prodagent_policy::config::{CommandPolicy, PolicyConfig};
+use prodagent_policy::path_rules::PathRule;
 use prodagent_policy::PolicyDecision;
 
 use crate::types::PolicyOverlay;
@@ -126,7 +127,59 @@ pub fn validate_monotonicity(
         }
     }
 
+    // ── Path-scoped rules ─────────────────────────────────────────────────
+    // A project config cannot introduce path-scoped rules that are weaker
+    // than the user's effective floor. For command-scoped path rules,
+    // compare against the user's decision for that command. For unscoped
+    // path rules, compare against the weakest effect default (conservative:
+    // the rule could match any command).
+    if let Some(ref path_rules) = project_overlay.path_rules {
+        for (i, rule) in path_rules.iter().enumerate() {
+            let user_floor = path_rule_floor(rule, user_policy);
+
+            // Also check against user-level path rules: if the user has
+            // a path rule for the same command, the project cannot weaken
+            // that path rule's decision.
+            let user_path_floor = user_policy
+                .path_rules
+                .iter()
+                .find(|r| r.command == rule.command && r.paths == rule.paths)
+                .map(|r| r.decision)
+                .unwrap_or(user_floor);
+
+            let effective_floor = user_floor.max(user_path_floor);
+
+            if rule.decision < effective_floor {
+                let label = match &rule.command {
+                    Some(cmd) => format!(
+                        "policy.path_rules[{i}] (command={cmd}, paths={:?})",
+                        rule.paths
+                    ),
+                    None => format!("policy.path_rules[{i}] (paths={:?})", rule.paths),
+                };
+                violations.push(MonotonicityViolation {
+                    path: label,
+                    user_decision: effective_floor,
+                    project_decision: rule.decision,
+                });
+            }
+        }
+    }
+
     violations
+}
+
+/// Determine the user-level floor for a path-scoped rule.
+///
+/// For command-scoped rules, the floor is the user's decision for that
+/// command. For unscoped rules (matching any command), the floor is the
+/// weakest effect default — conservative, since the rule could match any
+/// command class.
+fn path_rule_floor(rule: &PathRule, user_policy: &PolicyConfig) -> PolicyDecision {
+    match &rule.command {
+        Some(cmd) => resolve_command_decision(user_policy, cmd),
+        None => weakest_effect_default(&user_policy.defaults),
+    }
 }
 
 /// Resolve the effective decision for a command under a policy config.
