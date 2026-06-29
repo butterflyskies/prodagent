@@ -173,18 +173,40 @@ pub fn validate_monotonicity(
 
 /// Determine the user-level floor for a path-scoped rule.
 ///
-/// For command-scoped rules, the floor is the user's decision for that
-/// command. For unscoped rules (matching any command), the floor is the
-/// **strongest** effect default — because the rule fires for all commands
-/// regardless of effect class, and must not weaken the strictest class.
+/// For command-scoped rules, the floor is either the user's explicit
+/// per-command override or (when no override exists) the **strongest**
+/// effect default. We use strongest because the command's effect class
+/// is unknown at validation time — the rule could fire for a command in
+/// any class, and the floor must hold for the most restrictive one.
 ///
-/// Using the weakest (most permissive) default here would allow a project
-/// config to bypass `mutating: Ask` by adding an unscoped `Allow` path
-/// rule when `read_only: Allow` — the `.min()` floor would be `Allow`,
-/// hiding the `Ask` for mutating commands.
+/// The Kani proof `merge_monotonicity_command_scoped_path_rules` in
+/// `prodagent-proofs` (Invariant #6b) proves that the precise per-effect-
+/// class floor is sufficient. Using `strongest_effect_default` is a
+/// conservative overapproximation that is also correct — it's tighter
+/// than per-effect-class, so any config that passes this check also
+/// satisfies the per-effect-class invariant. The trade-off: a project
+/// cannot add a permissive path rule for a read-only command when a
+/// stricter default exists for mutating/unknown commands. Threading the
+/// knowledge base through would enable the precise check.
+///
+/// For unscoped rules (no `command` field), the same strongest-default
+/// floor applies — the rule fires for all commands regardless of class.
 fn path_rule_floor(rule: &PathRule, user_policy: &PolicyConfig) -> PolicyDecision {
     match &rule.command {
-        Some(cmd) => resolve_command_decision(user_policy, cmd),
+        Some(cmd) => {
+            // If the user explicitly set a per-command policy, use it as
+            // the floor — it's the most specific signal of user intent.
+            match user_policy.commands.get(cmd.as_str()) {
+                Some(CommandPolicy::Flat(d)) => *d,
+                Some(CommandPolicy::Detailed(detail)) => detail
+                    .base
+                    .unwrap_or(strongest_effect_default(&user_policy.defaults)),
+                // No per-command override: fall back to strongest effect
+                // default. See Invariant #6b proofs for the soundness
+                // argument.
+                None => strongest_effect_default(&user_policy.defaults),
+            }
+        }
         None => strongest_effect_default(&user_policy.defaults),
     }
 }

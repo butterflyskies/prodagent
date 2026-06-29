@@ -1198,3 +1198,49 @@ fn monotonicity_unscoped_path_rule_weakens_mutating_via_mixed_defaults() {
     assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
     assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
 }
+
+#[test]
+fn monotonicity_command_scoped_path_rule_weakens_via_mixed_defaults() {
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
+
+    // User has the typical mixed defaults: Allow for read-only, Ask for
+    // mutating/unknown. No per-command override for "rm".
+    //
+    // A project adds a command-scoped Allow path rule for "rm". With the
+    // old (incorrect) weakest_effect_default floor, Allow >= Allow would
+    // pass. But "rm" is mutating → the user's actual floor is Ask, and
+    // the path rule bypasses it at tier 1 (decision used directly, no
+    // max(command_default) composition).
+    //
+    // The fix uses strongest_effect_default as a conservative floor when
+    // no per-command override exists. See Invariant #6b in prodagent-proofs.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let project = PolicyOverlay {
+        path_rules: Some(vec![PathRule {
+            paths: vec![PathGlob::try_from("/project/*").unwrap()],
+            decision: PolicyDecision::Allow,
+            command: Some("rm".to_string()),
+        }]),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "command-scoped Allow path rule must not bypass mutating: Ask — \
+         the floor for command-scoped rules without a per-command override \
+         is the strongest effect default"
+    );
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}

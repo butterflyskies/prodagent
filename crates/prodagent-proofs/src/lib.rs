@@ -1023,15 +1023,19 @@ mod proofs {
     // regardless of effect class. Command-scoped rules, however, only
     // fire for one command — which belongs to exactly one effect class.
     //
-    // The current validator uses `resolve_command_decision` for the
-    // floor, which falls back to `weakest_effect_default` when there
-    // is no per-command override. This is too permissive: it could
-    // allow a command-scoped rule to relax below the user's default
-    // for that command's actual effect class.
+    // The precise floor is the user's default for the command's effect
+    // class — not the global weakest. The implementation in
+    // `path_rule_floor()` (monotonicity.rs) uses strongest_effect_default
+    // as a conservative overapproximation, since the effect class is
+    // unknown at validation time without the knowledge base. This is
+    // tighter than per-effect-class but always correct.
     //
-    // The fix: for command-scoped rules without a per-command override,
-    // the validation floor should be the user's default for the
-    // command's effect class — not the global weakest.
+    // These harnesses prove the TIGHTER property: the per-effect-class
+    // floor is sufficient. Any config that passes the implemented
+    // strongest_effect_default check also passes this, so the proofs
+    // cover a wider class of valid configs than the implementation
+    // admits. Threading the KB to enable the precise check is a future
+    // enhancement (no correctness impact — only expressiveness).
     //
     // Structural argument: the floor depends on effect class, not
     // command identity. Two commands in the same effect class share
