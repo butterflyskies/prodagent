@@ -1430,3 +1430,37 @@ fn monotonicity_detailed_base_weakens_via_mixed_defaults() {
     assert_eq!(violations[0].user_decision, PolicyDecision::Deny);
     assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
 }
+
+#[test]
+fn monotonicity_command_override_weakens_with_uniform_defaults() {
+    // Edge case: all defaults are the same (weakest == strongest).
+    // The fix doesn't change behavior here, but this test guards
+    // against regressions in strongest_effect_default itself.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Ask,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "uniform Ask defaults: project rm: Allow must still be caught"
+    );
+    assert_eq!(violations[0].path, "policy.commands.rm");
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}

@@ -1110,9 +1110,9 @@ mod proofs {
 
         // VALIDATION: per-effect-class floor.
         // The project path rule's decision must be >= the user's default
-        // for the command's effect class. This is tighter than
-        // weakest_effect_default and exactly right: the rule only fires
-        // for commands in this class, so the floor is this class's default.
+        // for the command's effect class. The implementation uses
+        // strongest_effect_default (a conservative overapproximation).
+        // This proof validates the precise per-effect-class floor.
         kani::assume(cmd_path_decision >= user_effect_default);
 
         // ── apply_to merge ──
@@ -1152,6 +1152,13 @@ mod proofs {
     /// passes the (weaker) `weakest_effect_default` check. The converse
     /// is not true — the per-effect-class floor catches violations
     /// that `weakest_effect_default` misses.
+    ///
+    /// **Note (issue #80):** The implementation now uses
+    /// `strongest_effect_default` as the floor in both
+    /// `resolve_command_decision` and `path_rule_floor`. This proof
+    /// establishes the historical relationship for reference — the
+    /// `strongest_effect_default` floor is trivially >= per-effect-class
+    /// since `max >= any_element`.
     #[kani::proof]
     fn effect_class_floor_at_least_weakest() {
         let user_ro: PolicyDecision = kani::any();
@@ -1188,6 +1195,13 @@ mod proofs {
     /// is `Allow`, which would validate a command-scoped `rm` rule
     /// with `Allow`. But the correct floor for `rm` is `Ask` (its
     /// effect class), and the per-effect-class check catches it.
+    ///
+    /// **Note (issue #80):** `weakest_effect_default` has been removed
+    /// from the implementation. `resolve_command_decision` and
+    /// `resolve_subcommand_decision` now use `strongest_effect_default`,
+    /// which is a sound conservative overapproximation. This proof
+    /// remains valid as historical documentation of the gap that
+    /// motivated the fix.
     #[kani::proof]
     fn weakest_equals_read_only_for_monotonic_config() {
         let user_ro: PolicyDecision = kani::any();
