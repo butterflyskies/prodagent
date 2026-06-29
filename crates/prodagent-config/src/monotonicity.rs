@@ -12,6 +12,7 @@
 use std::fmt;
 
 use prodagent_policy::config::{CommandPolicy, PolicyConfig};
+use prodagent_policy::path_rules::{glob_covers, PathRule};
 use prodagent_policy::PolicyDecision;
 
 use crate::types::PolicyOverlay;
@@ -126,7 +127,88 @@ pub fn validate_monotonicity(
         }
     }
 
+    // ── Path-scoped rules ─────────────────────────────────────────────────
+    // A project config cannot introduce path-scoped rules that are weaker
+    // than the user's effective floor. For command-scoped path rules,
+    // compare against the user's decision for that command. For unscoped
+    // path rules, compare against the strongest (most restrictive) effect
+    // default — the rule fires for all commands regardless of effect class.
+    if let Some(ref path_rules) = project_overlay.path_rules {
+        for (i, rule) in path_rules.iter().enumerate() {
+            let user_floor = path_rule_floor(rule, user_policy);
+
+            // Check against user-level path rules with structural coverage:
+            // find all user rules that could match a subset of what the
+            // project rule matches, and take the most restrictive as the
+            // floor.
+            let user_path_floor = user_policy
+                .path_rules
+                .iter()
+                .filter(|r| user_rule_covers_project(r, rule))
+                .map(|r| r.decision)
+                .max() // most restrictive covering rule
+                .unwrap_or(user_floor);
+
+            let effective_floor = user_floor.max(user_path_floor);
+
+            if rule.decision < effective_floor {
+                let label = match &rule.command {
+                    Some(cmd) => format!(
+                        "policy.path_rules[{i}] (command={cmd}, paths={:?})",
+                        rule.paths
+                    ),
+                    None => format!("policy.path_rules[{i}] (paths={:?})", rule.paths),
+                };
+                violations.push(MonotonicityViolation {
+                    path: label,
+                    user_decision: effective_floor,
+                    project_decision: rule.decision,
+                });
+            }
+        }
+    }
+
     violations
+}
+
+/// Determine the user-level floor for a path-scoped rule.
+///
+/// For command-scoped rules, the floor is either the user's explicit
+/// per-command override or (when no override exists) the **strongest**
+/// effect default. We use strongest because the command's effect class
+/// is unknown at validation time — the rule could fire for a command in
+/// any class, and the floor must hold for the most restrictive one.
+///
+/// The Kani proof `merge_monotonicity_command_scoped_path_rules` in
+/// `prodagent-proofs` (Invariant #6b) proves that the precise per-effect-
+/// class floor is sufficient. Using `strongest_effect_default` is a
+/// conservative overapproximation that is also correct — it's tighter
+/// than per-effect-class, so any config that passes this check also
+/// satisfies the per-effect-class invariant. The trade-off: a project
+/// cannot add a permissive path rule for a read-only command when a
+/// stricter default exists for mutating/unknown commands. Threading the
+/// knowledge base through would enable the precise check.
+///
+/// For unscoped rules (no `command` field), the same strongest-default
+/// floor applies — the rule fires for all commands regardless of class.
+fn path_rule_floor(rule: &PathRule, user_policy: &PolicyConfig) -> PolicyDecision {
+    match &rule.command {
+        Some(cmd) => {
+            // If the user explicitly set a per-command policy, use it as
+            // the floor — it's the most specific signal of user intent.
+            match user_policy.commands.get(cmd.as_str()) {
+                Some(CommandPolicy::Flat(d)) => *d,
+                Some(CommandPolicy::Detailed(detail)) => detail
+                    .base
+                    .unwrap_or(strongest_effect_default(&user_policy.defaults)),
+                // No per-command override: fall back to strongest effect
+                // default. See Invariant #6b proofs for the soundness
+                // argument.
+                None => strongest_effect_default(&user_policy.defaults),
+            }
+        }
+        None => strongest_effect_default(&user_policy.defaults),
+    }
 }
 
 /// Resolve the effective decision for a command under a policy config.
@@ -156,6 +238,15 @@ fn weakest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -
         .read_only
         .min(defaults.mutating)
         .min(defaults.unknown)
+}
+
+/// The strongest (most restrictive) effect default — used as the floor for
+/// unscoped path rules, which fire for commands of any effect class.
+fn strongest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -> PolicyDecision {
+    defaults
+        .read_only
+        .max(defaults.mutating)
+        .max(defaults.unknown)
 }
 
 /// Check a project command policy against the user's decision for that command.
@@ -204,6 +295,30 @@ fn check_command_policy(
             }
         }
     }
+}
+
+/// Check whether a user path rule structurally covers a project path rule.
+///
+/// A user rule covers a project rule when:
+/// 1. The user rule's command scope is equal or broader (`None` covers all)
+/// 2. At least one of the project rule's path globs is within the scope
+///    of at least one of the user rule's path globs
+fn user_rule_covers_project(user_rule: &PathRule, proj_rule: &PathRule) -> bool {
+    // Command scope: user None covers anything; user Some(x) only covers Some(x)
+    if let Some(ref user_cmd) = user_rule.command {
+        match &proj_rule.command {
+            Some(proj_cmd) if proj_cmd == user_cmd => {}
+            _ => return false,
+        }
+    }
+
+    // Path coverage: any project glob within any user glob
+    proj_rule.paths.iter().any(|proj_pat| {
+        user_rule
+            .paths
+            .iter()
+            .any(|user_pat| glob_covers(user_pat, proj_pat))
+    })
 }
 
 /// Resolve the user's effective decision for a specific subcommand.

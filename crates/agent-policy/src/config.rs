@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::decision::PolicyDecision;
+use crate::path_rules::PathRule;
 
 /// Policy configuration — effect-class defaults and per-command overrides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +37,20 @@ pub struct PolicyConfig {
     /// values.
     #[serde(default = "default_opaque_env_ceiling")]
     pub opaque_env_ceiling: PolicyDecision,
+
+    /// Ordered path-scoped policy rules for Bash commands.
+    ///
+    /// Evaluated before the `commands` HashMap lookup: first matching rule
+    /// wins. This enables "allow here, ask everywhere else" semantics where
+    /// a path-scoped Allow rule sits above a broader Ask for the same command.
+    ///
+    /// Rules without a `command` field apply to all commands. Rules with a
+    /// `command` field only fire for that specific base command.
+    ///
+    /// Path globs support `~` expansion, `*`/`**` suffixes, and `..`
+    /// components are resolved before matching to prevent traversal bypasses.
+    #[serde(default)]
+    pub path_rules: Vec<PathRule>,
 }
 
 fn default_opaque_env_ceiling() -> PolicyDecision {
@@ -48,6 +63,7 @@ impl Default for PolicyConfig {
             defaults: EffectDefaults::default(),
             commands: HashMap::new(),
             opaque_env_ceiling: default_opaque_env_ceiling(),
+            path_rules: Vec::new(),
         }
     }
 }
@@ -88,6 +104,17 @@ impl PolicyConfig {
                 "non-monotonic policy defaults: mutating ({:?}) is stricter than unknown ({:?})",
                 self.defaults.mutating, self.defaults.unknown
             ));
+        }
+
+        // Reject path rules with empty paths (would never fire).
+        // Individual pattern validation (empty strings, bare globs) is handled
+        // by the PathGlob constructor — invalid patterns can't be represented.
+        for (i, rule) in self.path_rules.iter().enumerate() {
+            if rule.paths.is_empty() {
+                return Err(format!(
+                    "path_rules[{i}]: empty paths list (rule would never fire)"
+                ));
+            }
         }
 
         // Reject Detailed entries that are no-ops (no base override + no subcommands)
@@ -145,6 +172,7 @@ pub struct PolicyConfigBuilder {
     defaults: EffectDefaults,
     commands: HashMap<String, CommandPolicy>,
     opaque_env_ceiling: PolicyDecision,
+    path_rules: Vec<PathRule>,
 }
 
 impl Default for PolicyConfigBuilder {
@@ -153,6 +181,7 @@ impl Default for PolicyConfigBuilder {
             defaults: EffectDefaults::default(),
             commands: HashMap::new(),
             opaque_env_ceiling: default_opaque_env_ceiling(),
+            path_rules: Vec::new(),
         }
     }
 }
@@ -285,6 +314,17 @@ impl PolicyConfigBuilder {
         self
     }
 
+    // ── Path rules ──────────────────────────────────────────────────────
+
+    /// Add a path-scoped policy rule.
+    ///
+    /// Rules are evaluated in the order they are added, before the
+    /// `commands` HashMap lookup.
+    pub fn path_rule(mut self, rule: PathRule) -> Self {
+        self.path_rules.push(rule);
+        self
+    }
+
     // ── Build ──────────────────────────────────────────────────────────
 
     /// Consume the builder and return a validated [`PolicyConfig`].
@@ -296,6 +336,7 @@ impl PolicyConfigBuilder {
             defaults: self.defaults,
             commands: self.commands,
             opaque_env_ceiling: self.opaque_env_ceiling,
+            path_rules: self.path_rules,
         };
         config.validate()?;
         Ok(config)
