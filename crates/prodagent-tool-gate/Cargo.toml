@@ -1,7 +1,7 @@
 [package]
 name = "prodagent-tool-gate"
 version.workspace = true
-description = "PreToolUse hook binary — gates Bash commands via prodagent's policy engine"
+description = "PreToolUse hook binary — gates Bash commands and file tools via prodagent's policy engine"
 readme = "../../README.md"
 edition.workspace = true
 license.workspace = true

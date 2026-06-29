@@ -46,6 +46,7 @@ fn default_layer() -> ConfigLayer {
             opaque_env_ceiling: None,
             path_rules: None,
             overrides: None,
+            file_ops: None,
         },
     }
 }
@@ -1291,6 +1292,232 @@ fn monotonicity_command_scoped_path_rule_weakens_via_mixed_defaults() {
     );
     assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
     assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
+}
+
+
+// ── 11. File-ops policy ──────────────────────────────────────────────────
+
+#[test]
+fn toml_file_ops_round_trip() {
+    let toml_str = r#"
+[[policy.file_ops.path_rules]]
+path = "~/dev/*"
+decision = "allow"
+
+[[policy.file_ops.path_rules]]
+path = "/etc/*"
+decision = "deny"
+"#;
+
+    let layer: ConfigLayer = toml::from_str(toml_str).expect("TOML should parse");
+    let file_ops = layer.policy.file_ops.expect("file_ops should be present");
+    assert_eq!(file_ops.path_rules.len(), 2);
+    assert_eq!(file_ops.path_rules[0].path, "~/dev/*");
+    assert_eq!(file_ops.path_rules[0].decision, PolicyDecision::Allow);
+    assert_eq!(file_ops.path_rules[1].path, "/etc/*");
+    assert_eq!(file_ops.path_rules[1].decision, PolicyDecision::Deny);
+}
+
+#[test]
+fn toml_file_ops_with_tool_scoping() {
+    use prodagent_policy::file_ops::FileToolKind;
+
+    let toml_str = r#"
+[[policy.file_ops.path_rules]]
+path = "/etc/*"
+decision = "allow"
+tools = ["read"]
+
+[[policy.file_ops.path_rules]]
+path = "/etc/*"
+decision = "deny"
+tools = ["write", "edit"]
+"#;
+
+    let layer: ConfigLayer = toml::from_str(toml_str).expect("TOML should parse");
+    let file_ops = layer.policy.file_ops.expect("file_ops should be present");
+    assert_eq!(file_ops.path_rules.len(), 2);
+    assert_eq!(file_ops.path_rules[0].tools, Some(vec![FileToolKind::Read]));
+    assert_eq!(
+        file_ops.path_rules[1].tools,
+        Some(vec![FileToolKind::Write, FileToolKind::Edit])
+    );
+}
+
+#[test]
+fn file_ops_overlay_prepends_rules() {
+    use prodagent_policy::file_ops::{FileOpsPolicy, FilePathRule};
+
+    let defaults = default_layer();
+    let user = ConfigLayer {
+        policy: PolicyOverlay {
+            file_ops: Some(FileOpsPolicy {
+                path_rules: vec![FilePathRule {
+                    path: "~/dev/*".into(),
+                    decision: PolicyDecision::Allow,
+                    tools: None,
+                }],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let project = ConfigLayer {
+        policy: PolicyOverlay {
+            file_ops: Some(FileOpsPolicy {
+                path_rules: vec![FilePathRule {
+                    path: "~/dev/sensitive/*".into(),
+                    decision: PolicyDecision::Deny,
+                    tools: None,
+                }],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let config = ProdagentConfig::from_layers(defaults, Some(user), Some(project));
+
+    // Project rules should be prepended (evaluated first)
+    assert_eq!(config.policy.file_ops.path_rules.len(), 2);
+    assert_eq!(
+        config.policy.file_ops.path_rules[0].path,
+        "~/dev/sensitive/*"
+    );
+    assert_eq!(
+        config.policy.file_ops.path_rules[0].decision,
+        PolicyDecision::Deny
+    );
+    assert_eq!(config.policy.file_ops.path_rules[1].path, "~/dev/*");
+    assert_eq!(
+        config.policy.file_ops.path_rules[1].decision,
+        PolicyDecision::Allow
+    );
+}
+
+#[test]
+fn monotonicity_project_weakens_file_ops_is_violation() {
+    use prodagent_policy::file_ops::{FileOpsPolicy, FilePathRule};
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project tries to allow writes to /etc/* — weaker than mutating default (Ask)
+    let project = PolicyOverlay {
+        file_ops: Some(FileOpsPolicy {
+            path_rules: vec![FilePathRule {
+                path: "/etc/*".into(),
+                decision: PolicyDecision::Allow,
+                tools: None,
+            }],
+        }),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(violations.len(), 1);
+    assert!(unwrap_relaxation(&violations[0]).0.contains("file_ops"));
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
+}
+
+#[test]
+fn monotonicity_project_tightens_file_ops_is_ok() {
+    use prodagent_policy::file_ops::{FileOpsPolicy, FilePathRule};
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project denies writes to /etc/* — tighter than mutating default (Ask)
+    let project = PolicyOverlay {
+        file_ops: Some(FileOpsPolicy {
+            path_rules: vec![FilePathRule {
+                path: "/etc/*".into(),
+                decision: PolicyDecision::Deny,
+                tools: None,
+            }],
+        }),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(violations.is_empty(), "tightening should be allowed");
+}
+
+#[test]
+fn monotonicity_read_scoped_file_ops_allows_at_read_floor() {
+    use prodagent_policy::file_ops::{FileOpsPolicy, FilePathRule, FileToolKind};
+
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project allows reads from /etc/* — same as read_only default (Allow)
+    let project = PolicyOverlay {
+        file_ops: Some(FileOpsPolicy {
+            path_rules: vec![FilePathRule {
+                path: "/etc/*".into(),
+                decision: PolicyDecision::Allow,
+                tools: Some(vec![FileToolKind::Read]),
+            }],
+        }),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(
+        violations.is_empty(),
+        "allow read at Allow default is not weakening"
+    );
+}
+
+#[test]
+fn loader_with_file_ops_config() {
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let user_path = dir.path().join("config.toml");
+    std::fs::write(
+        &user_path,
+        r#"
+[[policy.file_ops.path_rules]]
+path = "/tmp/*"
+decision = "allow"
+"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::new()
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+        .load()
+        .expect("should load");
+
+    assert_eq!(config.policy.file_ops.path_rules.len(), 1);
+    assert_eq!(config.policy.file_ops.path_rules[0].path, "/tmp/*");
+    assert_eq!(
+        config.policy.file_ops.path_rules[0].decision,
+        PolicyDecision::Allow
+    );
 }
 
 // ── 12. Per-command override floor (issue #80) ─────────────────────────────

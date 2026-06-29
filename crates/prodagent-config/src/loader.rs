@@ -166,6 +166,7 @@ impl ConfigLoader {
                 .unwrap_or(PolicyDecision::Ask),
             path_rules: base_layer.policy.path_rules.clone().unwrap_or_default(),
             overrides: base_layer.policy.overrides.clone().unwrap_or_default(),
+            file_ops: base_layer.policy.file_ops.clone().unwrap_or_default(),
         };
 
         // Validate user-level policy

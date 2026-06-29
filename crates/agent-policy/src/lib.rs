@@ -16,6 +16,7 @@ pub mod config;
 pub mod decision;
 pub mod engine;
 pub mod env_snapshot;
+pub mod file_ops;
 pub mod path_rules;
 pub mod paths;
 
@@ -23,5 +24,6 @@ pub use config::{OverrideConfig, PolicyConfig, PolicyConfigBuilder};
 pub use decision::PolicyDecision;
 pub use engine::{derive_wrapper_specs, PolicyEngine, PolicyResult, SegmentResult};
 pub use env_snapshot::{EnvSnapshot, EnvValueOwned};
+pub use file_ops::{evaluate_file_tool, FileOpResult, FileOpsPolicy, FilePathRule, FileToolKind};
 pub use path_rules::{evaluate_path_rules, PathGlob, PathGlobError, PathRule, PathRuleResult};
 pub use paths::AffectedPaths;

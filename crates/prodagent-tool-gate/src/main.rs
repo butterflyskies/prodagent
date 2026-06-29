@@ -10,6 +10,7 @@
 use clap::Parser;
 
 mod decision_log;
+mod file_ops;
 mod hook;
 
 #[derive(Parser)]

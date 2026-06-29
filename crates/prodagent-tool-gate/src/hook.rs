@@ -3,10 +3,12 @@
 use agent_command_knowledge::{default_knowledge_base, KnowledgeBase};
 use agent_shell_parser::hook::{parse_input, PreToolUseInput};
 use prodagent_config::{load_split_and_apply, ConfigLoader};
+use prodagent_policy::file_ops::FileToolKind;
 use prodagent_policy::{derive_wrapper_specs, PolicyDecision, PolicyEngine};
 use serde::Serialize;
 
 use crate::decision_log;
+use crate::file_ops;
 
 /// JSON output wrapper matching Claude Code's hook protocol.
 #[derive(Serialize)]
@@ -92,11 +94,21 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     // Parse hook input from stdin
     let input: PreToolUseInput = parse_input()?;
 
-    // Only evaluate Bash commands — exit silently (no opinion) for anything else
-    if input.tool_name != "Bash" {
-        return Ok(());
+    // Route to the appropriate evaluator based on tool type
+    if let Some(file_tool) = FileToolKind::from_tool_name(&input.tool_name) {
+        return run_file_tool(file_tool, &input, escalate_deny);
     }
 
+    if input.tool_name == "Bash" {
+        return run_bash(&input, escalate_deny);
+    }
+
+    // Unknown tool — no opinion (exit silently)
+    Ok(())
+}
+
+/// Evaluate a Bash command through the shell parser and policy engine.
+fn run_bash(input: &PreToolUseInput, escalate_deny: bool) -> anyhow::Result<()> {
     // Extract the command string from tool_input
     let command = match input.tool_input.get("command").and_then(|v| v.as_str()) {
         Some(cmd) if !cmd.is_empty() => cmd,
@@ -170,6 +182,40 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     }
 
     // Emit JSON to stdout
+    serde_json::to_writer(std::io::stdout(), &output)?;
+
+    Ok(())
+}
+
+/// Evaluate a file tool (Write, Edit, Read) through path-based policy.
+fn run_file_tool(
+    tool: FileToolKind,
+    input: &PreToolUseInput,
+    escalate_deny: bool,
+) -> anyhow::Result<()> {
+    // Load config via three-tier cascade
+    let loader = ConfigLoader::from_environment();
+    let config = loader.load()?;
+
+    // Evaluate file tool against policy
+    let result = match file_ops::evaluate(tool, &input.tool_input, &config.policy) {
+        Some(r) => r,
+        None => return Ok(()), // No file_path — no opinion
+    };
+
+    // Apply --escalate-deny: convert Deny → Ask
+    let mut decision = result.decision;
+    let mut reason = result.reason;
+    if escalate_deny && decision == PolicyDecision::Deny {
+        decision = PolicyDecision::Ask;
+        reason = format!("{reason} (escalated from deny)");
+    }
+
+    // Log the decision
+    decision_log::log_decision(&input.tool_name, &result.path, decision, &reason);
+
+    // Emit JSON to stdout
+    let output = HookOutput::new(decision, reason);
     serde_json::to_writer(std::io::stdout(), &output)?;
 
     Ok(())
