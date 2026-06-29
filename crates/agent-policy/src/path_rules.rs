@@ -43,10 +43,143 @@
 //!   config cannot use a path-scoped rule to Allow something the user-level
 //!   policy would Ask or Deny. Within a single layer, specificity wins.
 
+use std::fmt;
+use std::ops::Deref;
+
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use crate::decision::PolicyDecision;
+
+// ── PathGlob newtype ─────────────────────────────────────────────────────
+
+/// A validated path glob pattern for path-scoped policy rules.
+///
+/// Wraps a `String` that has been validated on construction:
+/// - Non-empty
+/// - Not a bare `*` or `**` (would match all paths — a universal bypass)
+///
+/// Invalid patterns are rejected at construction time via [`PathGlob::new`]
+/// or `TryFrom<String>`, and during deserialization. This makes invalid
+/// glob patterns unrepresentable in [`PathRule`].
+///
+/// `~` expansion and `..` normalization are handled at match time by
+/// [`normalize_pattern`] and [`resolve_and_normalize`] — `PathGlob` stores
+/// the original pattern string so that TOML round-trips are lossless.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct PathGlob(String);
+
+/// Error returned when constructing an invalid [`PathGlob`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathGlobError {
+    /// The pattern string is empty.
+    Empty,
+    /// The pattern is a bare `*` or `**` — would match all paths.
+    BareGlob(String),
+}
+
+impl fmt::Display for PathGlobError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PathGlobError::Empty => write!(f, "empty path glob pattern"),
+            PathGlobError::BareGlob(s) => write!(
+                f,
+                "bare glob pattern \"{s}\" would match all paths; \
+                 use an explicit path prefix (e.g. \"/tmp/*\")"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PathGlobError {}
+
+impl PathGlob {
+    /// Construct a new `PathGlob`, validating the pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PathGlobError::Empty`] if the string is empty or whitespace-only.
+    /// Returns [`PathGlobError::BareGlob`] if the pattern is `*` or `**`.
+    pub fn new(s: String) -> Result<Self, PathGlobError> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(PathGlobError::Empty);
+        }
+        if trimmed == "*" || trimmed == "**" {
+            return Err(PathGlobError::BareGlob(s));
+        }
+        Ok(Self(s))
+    }
+
+    /// The raw pattern string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the `PathGlob` and return the inner string.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for PathGlob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for PathGlob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Deref for PathGlob {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for PathGlob {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PathGlob {
+    type Error = PathGlobError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+impl TryFrom<&str> for PathGlob {
+    type Error = PathGlobError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s.to_string())
+    }
+}
+
+impl Serialize for PathGlob {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PathGlob {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        PathGlob::new(s).map_err(serde::de::Error::custom)
+    }
+}
+
+// ── PathRule ─────────────────────────────────────────────────────────────
 
 /// A single path-scoped policy rule for Bash command authorization.
 ///
@@ -57,12 +190,15 @@ use crate::decision::PolicyDecision;
 pub struct PathRule {
     /// Path glob patterns where this rule applies.
     ///
+    /// Each pattern is validated on construction — empty strings and bare
+    /// `*`/`**` patterns are rejected by [`PathGlob`].
+    ///
     /// Supports:
     /// - `~/dev/*` — anything under ~/dev/
     /// - `/tmp/**` — recursive match under /tmp/
     /// - Literal path (no glob) — exact match
-    /// - `~` is expanded to the user's home directory
-    pub paths: Vec<String>,
+    /// - `~` is expanded to the user's home directory at match time
+    pub paths: Vec<PathGlob>,
 
     /// The decision to apply when a path matches.
     pub decision: PolicyDecision,

@@ -892,7 +892,7 @@ fn knowledge_remove_accumulates_across_layers() {
 
 #[test]
 fn monotonicity_path_rule_tightens_is_ok() {
-    use prodagent_policy::path_rules::PathRule;
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
 
     let user_policy = PolicyConfig {
         defaults: EffectDefaults {
@@ -907,7 +907,7 @@ fn monotonicity_path_rule_tightens_is_ok() {
     // Project adds a path rule that tightens to Deny — monotonic
     let project = PolicyOverlay {
         path_rules: Some(vec![PathRule {
-            paths: vec!["/sensitive/*".to_string()],
+            paths: vec![PathGlob::try_from("/sensitive/*").unwrap()],
             decision: PolicyDecision::Deny,
             command: None,
         }]),
@@ -920,7 +920,7 @@ fn monotonicity_path_rule_tightens_is_ok() {
 
 #[test]
 fn monotonicity_path_rule_weakens_is_violation() {
-    use prodagent_policy::path_rules::PathRule;
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
 
     let user_policy = PolicyConfig {
         defaults: EffectDefaults {
@@ -935,7 +935,7 @@ fn monotonicity_path_rule_weakens_is_violation() {
     // Project tries to add a path rule that weakens to Allow
     let project = PolicyOverlay {
         path_rules: Some(vec![PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         }]),
@@ -959,7 +959,7 @@ fn monotonicity_path_rule_weakens_is_violation() {
 
 #[test]
 fn monotonicity_path_rule_weakens_command_is_violation() {
-    use prodagent_policy::path_rules::PathRule;
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
 
     let mut commands = HashMap::new();
     commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
@@ -973,7 +973,7 @@ fn monotonicity_path_rule_weakens_command_is_violation() {
     // Project tries to use a path-scoped rule to Allow rm in /tmp
     let project = PolicyOverlay {
         path_rules: Some(vec![PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: Some("rm".to_string()),
         }]),
@@ -1001,13 +1001,13 @@ fn monotonicity_path_rule_weakens_command_is_violation() {
 
 #[test]
 fn path_rules_overlay_prepends() {
-    use prodagent_policy::path_rules::PathRule;
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
 
     let defaults = default_layer();
     let user = ConfigLayer {
         policy: PolicyOverlay {
             path_rules: Some(vec![PathRule {
-                paths: vec!["/tmp/*".to_string()],
+                paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
                 decision: PolicyDecision::Ask,
                 command: None,
             }]),
@@ -1018,7 +1018,7 @@ fn path_rules_overlay_prepends() {
     let project = ConfigLayer {
         policy: PolicyOverlay {
             path_rules: Some(vec![PathRule {
-                paths: vec!["/tmp/scratch/*".to_string()],
+                paths: vec![PathGlob::try_from("/tmp/scratch/*").unwrap()],
                 decision: PolicyDecision::Deny,
                 command: None,
             }]),
@@ -1032,11 +1032,11 @@ fn path_rules_overlay_prepends() {
     // Project rules are prepended (higher priority)
     assert_eq!(
         config.policy.path_rules[0].paths,
-        vec!["/tmp/scratch/*".to_string()]
+        vec![PathGlob::try_from("/tmp/scratch/*").unwrap()]
     );
     assert_eq!(
         config.policy.path_rules[1].paths,
-        vec!["/tmp/*".to_string()]
+        vec![PathGlob::try_from("/tmp/*").unwrap()]
     );
 
     // Verify decision values survived the merge
@@ -1054,6 +1054,8 @@ fn path_rules_overlay_prepends() {
 
 #[test]
 fn toml_path_rules_round_trip() {
+    use prodagent_policy::path_rules::PathGlob;
+
     let toml_str = r#"
 [policy.defaults]
 read_only = "allow"
@@ -1071,10 +1073,16 @@ command = "rm"
     let layer: ConfigLayer = toml::from_str(toml_str).expect("TOML should parse");
     let rules = layer.policy.path_rules.expect("path_rules should be Some");
     assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0].paths, vec!["~/dev/*", "/tmp/*"]);
+    assert_eq!(
+        rules[0].paths,
+        vec![
+            PathGlob::try_from("~/dev/*").unwrap(),
+            PathGlob::try_from("/tmp/*").unwrap()
+        ]
+    );
     assert_eq!(rules[0].decision, PolicyDecision::Allow);
     assert_eq!(rules[0].command, None);
-    assert_eq!(rules[1].paths, vec!["/etc/*"]);
+    assert_eq!(rules[1].paths, vec![PathGlob::try_from("/etc/*").unwrap()]);
     assert_eq!(rules[1].decision, PolicyDecision::Deny);
     assert_eq!(rules[1].command, Some("rm".to_string()));
 }
@@ -1101,7 +1109,10 @@ decision = "allow"
         .expect("should load");
 
     assert_eq!(config.policy.path_rules.len(), 1);
-    assert_eq!(config.policy.path_rules[0].paths, vec!["/tmp/*"]);
+    assert_eq!(
+        config.policy.path_rules[0].paths,
+        vec![prodagent_policy::PathGlob::try_from("/tmp/*").unwrap()]
+    );
     assert_eq!(config.policy.path_rules[0].decision, PolicyDecision::Allow);
 }
 
@@ -1152,7 +1163,7 @@ decision = "allow"
 
 #[test]
 fn monotonicity_unscoped_path_rule_weakens_mutating_via_mixed_defaults() {
-    use prodagent_policy::path_rules::PathRule;
+    use prodagent_policy::path_rules::{PathGlob, PathRule};
 
     // User has read_only: Allow, mutating: Ask — the typical default config.
     // A project adds an unscoped Allow path rule. With the old (incorrect)
@@ -1170,7 +1181,7 @@ fn monotonicity_unscoped_path_rule_weakens_mutating_via_mixed_defaults() {
 
     let project = PolicyOverlay {
         path_rules: Some(vec![PathRule {
-            paths: vec!["/project/*".to_string()],
+            paths: vec![PathGlob::try_from("/project/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         }]),

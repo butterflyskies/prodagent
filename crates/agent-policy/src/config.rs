@@ -106,21 +106,14 @@ impl PolicyConfig {
             ));
         }
 
-        // Reject path rules with empty paths (would never fire) or bare globs
+        // Reject path rules with empty paths (would never fire).
+        // Individual pattern validation (empty strings, bare globs) is handled
+        // by the PathGlob constructor — invalid patterns can't be represented.
         for (i, rule) in self.path_rules.iter().enumerate() {
             if rule.paths.is_empty() {
                 return Err(format!(
                     "path_rules[{i}]: empty paths list (rule would never fire)"
                 ));
-            }
-            for pat in &rule.paths {
-                let stripped = pat.trim();
-                if stripped == "*" || stripped == "**" {
-                    return Err(format!(
-                        "path_rules[{i}]: bare glob pattern \"{pat}\" would match all paths; \
-                         use an explicit path prefix (e.g. \"/tmp/*\")"
-                    ));
-                }
             }
         }
 

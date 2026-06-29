@@ -1730,12 +1730,12 @@ fn variable_expansion_fires_set_gate_for_opaque() {
 
 #[test]
 fn path_rule_allows_in_matched_cwd() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1759,12 +1759,12 @@ fn path_rule_allows_in_matched_cwd() {
 
 #[test]
 fn path_rule_falls_through_on_no_match() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1785,12 +1785,12 @@ fn path_rule_falls_through_on_no_match() {
 
 #[test]
 fn path_rule_command_scoped() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: Some("git".to_string()),
         })
@@ -1811,12 +1811,12 @@ fn path_rule_command_scoped() {
 
 #[test]
 fn no_cwd_means_only_affected_paths_checked() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1837,12 +1837,12 @@ fn no_cwd_means_only_affected_paths_checked() {
 
 #[test]
 fn path_rule_traversal_bypass_blocked() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1863,14 +1863,14 @@ fn path_rule_traversal_bypass_blocked() {
 
 #[test]
 fn path_rule_without_cwd_backward_compatible() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     // Path rules present but old API (no CWD) — should fall through
     // to effect-class defaults, not panic or match spuriously.
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1891,16 +1891,16 @@ fn path_rule_without_cwd_backward_compatible() {
 
 #[test]
 fn path_rule_order_first_match_wins() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     let config = PolicyConfig::builder()
         .path_rule(PathRule {
-            paths: vec!["/tmp/sensitive/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/sensitive/*").unwrap()],
             decision: PolicyDecision::Deny,
             command: None,
         })
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })
@@ -1923,14 +1923,14 @@ fn path_rule_order_first_match_wins() {
 
 #[test]
 fn path_rule_allow_overridden_by_escalation_flags() {
-    use crate::path_rules::PathRule;
+    use crate::path_rules::{PathGlob, PathRule};
 
     // Path rule allows git in /tmp, but `git push --force` has escalation
     // flags that should bump the decision to at least Ask.
     let config = PolicyConfig::builder()
         .mutating_default(PolicyDecision::Ask)
         .path_rule(PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![PathGlob::try_from("/tmp/*").unwrap()],
             decision: PolicyDecision::Allow,
             command: None,
         })

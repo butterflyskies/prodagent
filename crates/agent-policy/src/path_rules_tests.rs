@@ -1,4 +1,4 @@
-//! Unit tests for path-scoped policy rules.
+//! Unit tests for path-scoped policy rules and [`PathGlob`].
 
 use super::*;
 
@@ -7,7 +7,121 @@ use super::*;
 /// for `max`, so the path rule's own decision shows through.
 const DEFAULT: PolicyDecision = PolicyDecision::Allow;
 
-// ── resolve_and_normalize ──────────────────────────────────────────────────
+/// Construct a [`PathGlob`] from a string literal — panics on invalid patterns.
+fn pg(s: &str) -> PathGlob {
+    PathGlob::new(s.to_string()).expect("test pattern should be valid")
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PathGlob construction
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn path_glob_valid_patterns() {
+    assert!(PathGlob::new("/tmp/*".into()).is_ok());
+    assert!(PathGlob::new("/tmp/**".into()).is_ok());
+    assert!(PathGlob::new("~/dev/*".into()).is_ok());
+    assert!(PathGlob::new("/etc/shadow".into()).is_ok());
+    assert!(PathGlob::new("/home/user/dev/project".into()).is_ok());
+    assert!(PathGlob::new("/tmp/foo*".into()).is_ok());
+}
+
+#[test]
+fn path_glob_rejects_empty() {
+    assert_eq!(PathGlob::new(String::new()), Err(PathGlobError::Empty));
+    assert_eq!(PathGlob::new("   ".into()), Err(PathGlobError::Empty));
+}
+
+#[test]
+fn path_glob_rejects_bare_star() {
+    assert!(matches!(
+        PathGlob::new("*".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    assert!(matches!(
+        PathGlob::new("**".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    // Trimmed bare globs also rejected
+    assert!(matches!(
+        PathGlob::new("  *  ".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    assert!(matches!(
+        PathGlob::new("  **  ".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+}
+
+#[test]
+fn path_glob_deref() {
+    let g = pg("/tmp/*");
+    let s: &str = &g;
+    assert_eq!(s, "/tmp/*");
+    assert_eq!(g.as_str(), "/tmp/*");
+    assert_eq!(g.as_ref() as &str, "/tmp/*");
+}
+
+#[test]
+fn path_glob_debug_shows_string() {
+    let g = pg("/tmp/*");
+    assert_eq!(format!("{g:?}"), "\"/tmp/*\"");
+}
+
+#[test]
+fn path_glob_display() {
+    let g = pg("/tmp/*");
+    assert_eq!(format!("{g}"), "/tmp/*");
+}
+
+#[test]
+fn path_glob_try_from_string() {
+    let g: Result<PathGlob, _> = "/tmp/*".to_string().try_into();
+    assert!(g.is_ok());
+    let g: Result<PathGlob, _> = "".to_string().try_into();
+    assert!(g.is_err());
+}
+
+#[test]
+fn path_glob_try_from_str() {
+    let g: Result<PathGlob, _> = PathGlob::try_from("/tmp/*");
+    assert!(g.is_ok());
+    let g: Result<PathGlob, _> = PathGlob::try_from("*");
+    assert!(g.is_err());
+}
+
+#[test]
+fn path_glob_into_inner() {
+    let g = pg("~/dev/*");
+    assert_eq!(g.into_inner(), "~/dev/*");
+}
+
+// ── PathGlob serde ─────────────────────────────────────────────────────────
+
+#[test]
+fn path_glob_serde_round_trip() {
+    let g = pg("/tmp/*");
+    let json = serde_json::to_string(&g).expect("serialize");
+    assert_eq!(json, "\"/tmp/*\"");
+    let deserialized: PathGlob = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(deserialized, g);
+}
+
+#[test]
+fn path_glob_deserialize_rejects_invalid() {
+    let result: Result<PathGlob, _> = serde_json::from_str("\"\"");
+    assert!(result.is_err(), "empty string should fail deserialization");
+
+    let result: Result<PathGlob, _> = serde_json::from_str("\"*\"");
+    assert!(result.is_err(), "bare * should fail deserialization");
+
+    let result: Result<PathGlob, _> = serde_json::from_str("\"**\"");
+    assert!(result.is_err(), "bare ** should fail deserialization");
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// resolve_and_normalize
+// ══════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn resolve_dotdot_in_absolute_path() {
@@ -147,7 +261,7 @@ fn is_glob_pattern_detects_star() {
 fn traversal_bypass_blocked() {
     // The P1 from PR #76: /tmp/safe/../../etc/shadow should NOT match /tmp/*
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -171,7 +285,7 @@ fn traversal_bypass_blocked() {
 fn traversal_within_allowed_prefix_still_matches() {
     // /tmp/a/../b resolves to /tmp/b, which IS under /tmp/*
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -195,7 +309,7 @@ fn no_rules_returns_none() {
 #[test]
 fn cwd_matches_rule() {
     let rules = vec![PathRule {
-        paths: vec!["/home/testuser/dev/*".to_string()],
+        paths: vec![pg("/home/testuser/dev/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -216,7 +330,7 @@ fn cwd_matches_rule_with_tilde() {
     // Tilde expansion: only runs when HOME is set
     if let Some(home) = dirs::home_dir() {
         let rules = vec![PathRule {
-            paths: vec!["~/dev/*".to_string()],
+            paths: vec![pg("~/dev/*")],
             decision: PolicyDecision::Allow,
             command: None,
         }];
@@ -231,7 +345,7 @@ fn cwd_matches_rule_with_tilde() {
 #[test]
 fn affected_path_matches_rule() {
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -244,7 +358,7 @@ fn affected_path_matches_rule() {
 #[test]
 fn no_match_falls_through() {
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -256,7 +370,7 @@ fn no_match_falls_through() {
 #[test]
 fn command_scoped_rule_matches_only_that_command() {
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: Some("git".to_string()),
     }];
@@ -274,12 +388,12 @@ fn command_scoped_rule_matches_only_that_command() {
 fn first_matching_rule_wins_within_tier() {
     let rules = vec![
         PathRule {
-            paths: vec!["/tmp/sensitive/*".to_string()],
+            paths: vec![pg("/tmp/sensitive/*")],
             decision: PolicyDecision::Deny,
             command: None,
         },
         PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![pg("/tmp/*")],
             decision: PolicyDecision::Allow,
             command: None,
         },
@@ -297,7 +411,7 @@ fn first_matching_rule_wins_within_tier() {
 #[test]
 fn multiple_path_globs_in_rule() {
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string(), "~/dev/*".to_string()],
+        paths: vec![pg("/tmp/*"), pg("~/dev/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -321,7 +435,7 @@ fn multiple_path_globs_in_rule() {
 #[test]
 fn cwd_with_dotdot_resolved_before_matching() {
     let rules = vec![PathRule {
-        paths: vec!["/home/user/dev/*".to_string()],
+        paths: vec![pg("/home/user/dev/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -343,12 +457,12 @@ fn multi_path_deny_wins() {
     // ~/dev/* Allow, /etc/* Deny → Deny wins
     let rules = vec![
         PathRule {
-            paths: vec!["/home/user/dev/*".to_string()],
+            paths: vec![pg("/home/user/dev/*")],
             decision: PolicyDecision::Allow,
             command: None,
         },
         PathRule {
-            paths: vec!["/etc/*".to_string()],
+            paths: vec![pg("/etc/*")],
             decision: PolicyDecision::Deny,
             command: None,
         },
@@ -372,7 +486,7 @@ fn multi_path_deny_wins() {
 fn multi_path_all_allow() {
     // cp ~/dev/foo ~/dev/bar → both match Allow → Allow
     let rules = vec![PathRule {
-        paths: vec!["/home/user/dev/*".to_string()],
+        paths: vec![pg("/home/user/dev/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -393,7 +507,7 @@ fn multi_path_mixed_with_fallback() {
     // command_default = Ask. Path that matched: max(Allow, Ask) = Ask.
     // Path that didn't match: Ask (command_default). Overall: max(Ask, Ask) = Ask.
     let rules = vec![PathRule {
-        paths: vec!["/home/user/dev/*".to_string()],
+        paths: vec![pg("/home/user/dev/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -426,12 +540,12 @@ fn per_path_independent_evaluation() {
     //   max(Deny, Allow) = Deny
     let rules = vec![
         PathRule {
-            paths: vec!["/tmp/sensitive/*".to_string()],
+            paths: vec![pg("/tmp/sensitive/*")],
             decision: PolicyDecision::Deny,
             command: None,
         },
         PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![pg("/tmp/*")],
             decision: PolicyDecision::Allow,
             command: None,
         },
@@ -459,13 +573,13 @@ fn cmd_path_overrides_everything() {
     let rules = vec![
         // Unscoped: /etc/** → Deny
         PathRule {
-            paths: vec!["/etc/**".to_string()],
+            paths: vec![pg("/etc/**")],
             decision: PolicyDecision::Deny,
             command: None,
         },
         // Command+path: cat /etc/os-release → Allow
         PathRule {
-            paths: vec!["/etc/os-release".to_string()],
+            paths: vec![pg("/etc/os-release")],
             decision: PolicyDecision::Allow,
             command: Some("cat".to_string()),
         },
@@ -491,7 +605,7 @@ fn tier2_path_and_command_compose_via_max() {
     // When no command+path rule matches, path-only and command-only
     // compose via max (strictest wins).
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -543,7 +657,7 @@ fn tier2_path_and_command_compose_via_max() {
 fn no_path_rule_uses_command_default() {
     // When no path rule matches, evaluate_path_rules returns None.
     let rules = vec![PathRule {
-        paths: vec!["/tmp/*".to_string()],
+        paths: vec![pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: None,
     }];
@@ -561,13 +675,13 @@ fn exact_path_beats_glob_in_unscoped() {
     let rules = vec![
         // Glob: /etc/** → Deny (listed first, but less specific)
         PathRule {
-            paths: vec!["/etc/**".to_string()],
+            paths: vec![pg("/etc/**")],
             decision: PolicyDecision::Deny,
             command: None,
         },
         // Exact: /etc/fake-file → Allow (listed second, but more specific)
         PathRule {
-            paths: vec!["/etc/fake-file".to_string()],
+            paths: vec![pg("/etc/fake-file")],
             decision: PolicyDecision::Allow,
             command: None,
         },
@@ -595,12 +709,12 @@ fn cwd_uses_tiered_evaluation() {
     // CWD-only evaluation also uses the tiered model.
     let rules = vec![
         PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![pg("/tmp/*")],
             decision: PolicyDecision::Ask,
             command: None,
         },
         PathRule {
-            paths: vec!["/tmp/*".to_string()],
+            paths: vec![pg("/tmp/*")],
             decision: PolicyDecision::Allow,
             command: Some("git".to_string()),
         },
@@ -639,22 +753,22 @@ fn cwd_uses_tiered_evaluation() {
 fn spec_rules() -> Vec<PathRule> {
     vec![
         PathRule {
-            paths: vec!["/etc/**".to_string()],
+            paths: vec![pg("/etc/**")],
             decision: PolicyDecision::Deny,
             command: None,
         },
         PathRule {
-            paths: vec!["/etc/fake-file".to_string()],
+            paths: vec![pg("/etc/fake-file")],
             decision: PolicyDecision::Allow,
             command: None,
         },
         PathRule {
-            paths: vec!["/etc/os-release".to_string()],
+            paths: vec![pg("/etc/os-release")],
             decision: PolicyDecision::Allow,
             command: Some("cat".to_string()),
         },
         PathRule {
-            paths: vec!["/tmp/**".to_string()],
+            paths: vec![pg("/tmp/**")],
             decision: PolicyDecision::Allow,
             command: Some("rm".to_string()),
         },
@@ -789,7 +903,7 @@ fn spec_rm_tmp_blep_and_etc_fake_file() {
 #[test]
 fn path_rule_toml_round_trip() {
     let rule = PathRule {
-        paths: vec!["~/dev/*".to_string(), "/tmp/*".to_string()],
+        paths: vec![pg("~/dev/*"), pg("/tmp/*")],
         decision: PolicyDecision::Allow,
         command: Some("git".to_string()),
     };
@@ -808,5 +922,25 @@ decision = "allow"
     let rule: PathRule = toml::from_str(toml_str).expect("parse");
     assert_eq!(rule.command, None);
     assert_eq!(rule.decision, PolicyDecision::Allow);
-    assert_eq!(rule.paths, vec!["~/dev/*"]);
+    assert_eq!(rule.paths, vec![pg("~/dev/*")]);
+}
+
+#[test]
+fn path_rule_toml_rejects_bare_glob() {
+    let toml_str = r#"
+paths = ["*"]
+decision = "allow"
+"#;
+    let result: Result<PathRule, _> = toml::from_str(toml_str);
+    assert!(result.is_err(), "bare glob should fail deserialization");
+}
+
+#[test]
+fn path_rule_toml_rejects_empty_pattern() {
+    let toml_str = r#"
+paths = [""]
+decision = "allow"
+"#;
+    let result: Result<PathRule, _> = toml::from_str(toml_str);
+    assert!(result.is_err(), "empty pattern should fail deserialization");
 }

@@ -23,5 +23,5 @@ pub use config::{PolicyConfig, PolicyConfigBuilder};
 pub use decision::PolicyDecision;
 pub use engine::{PolicyEngine, PolicyResult, SegmentResult};
 pub use env_snapshot::{EnvSnapshot, EnvValueOwned};
-pub use path_rules::{evaluate_path_rules, PathRule, PathRuleResult};
+pub use path_rules::{evaluate_path_rules, PathGlob, PathGlobError, PathRule, PathRuleResult};
 pub use paths::AffectedPaths;
