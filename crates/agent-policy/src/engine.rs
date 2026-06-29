@@ -466,16 +466,17 @@ impl PolicyEngine {
         let affected_path_strs: Vec<&str> =
             info.affected_paths.iter().map(|p| p.as_str()).collect();
 
-        let mut decision = if let Some(path_result) = path_rules::evaluate_path_rules(
-            &self.config.path_rules,
-            &base_command,
-            cwd,
-            &affected_path_strs,
-        ) {
-            path_result.decision
+        let (mut decision, path_rule_matched) = if let Some(path_result) =
+            path_rules::evaluate_path_rules(
+                &self.config.path_rules,
+                &base_command,
+                cwd,
+                &affected_path_strs,
+            ) {
+            (path_result.decision, true)
         } else {
             // No path rule matched — fall through to per-command / effect-class
-            self.evaluate(&base_command, &info)
+            (self.evaluate(&base_command, &info), false)
         };
 
         // Apply env gates after classification and per-command overrides (gates can only escalate)
@@ -485,11 +486,17 @@ impl PolicyEngine {
             decision = decision.max(gate_decision);
         }
 
-        let mut result = PolicyResult::simple(
-            decision,
-            format!("{base_command}: effect={:?}", info.effect),
-        )
-        .with_paths(AffectedPaths::new(info.affected_paths.clone()));
+        let reason = if path_rule_matched {
+            format!(
+                "{base_command}: effect={:?} (path rule matched)",
+                info.effect
+            )
+        } else {
+            format!("{base_command}: effect={:?}", info.effect)
+        };
+
+        let mut result = PolicyResult::simple(decision, reason)
+            .with_paths(AffectedPaths::new(info.affected_paths.clone()));
 
         if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
             result.decision = PolicyDecision::Ask;

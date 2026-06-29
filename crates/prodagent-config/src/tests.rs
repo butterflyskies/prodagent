@@ -1117,3 +1117,41 @@ decision = "allow"
         other => panic!("expected Monotonicity error, got: {other}"),
     }
 }
+
+#[test]
+fn monotonicity_unscoped_path_rule_weakens_mutating_via_mixed_defaults() {
+    use prodagent_policy::path_rules::PathRule;
+
+    // User has read_only: Allow, mutating: Ask — the typical default config.
+    // A project adds an unscoped Allow path rule. With the old (incorrect)
+    // weakest_effect_default floor, Allow >= Allow would pass. With the
+    // correct strongest_effect_default floor, Allow < Ask is a violation.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let project = PolicyOverlay {
+        path_rules: Some(vec![PathRule {
+            paths: vec!["/project/*".to_string()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        }]),
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "unscoped Allow path rule must not bypass mutating: Ask — \
+         the floor for unscoped rules is the strongest effect default"
+    );
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}

@@ -131,8 +131,8 @@ pub fn validate_monotonicity(
     // A project config cannot introduce path-scoped rules that are weaker
     // than the user's effective floor. For command-scoped path rules,
     // compare against the user's decision for that command. For unscoped
-    // path rules, compare against the weakest effect default (conservative:
-    // the rule could match any command).
+    // path rules, compare against the strongest (most restrictive) effect
+    // default — the rule fires for all commands regardless of effect class.
     if let Some(ref path_rules) = project_overlay.path_rules {
         for (i, rule) in path_rules.iter().enumerate() {
             let user_floor = path_rule_floor(rule, user_policy);
@@ -173,12 +173,17 @@ pub fn validate_monotonicity(
 ///
 /// For command-scoped rules, the floor is the user's decision for that
 /// command. For unscoped rules (matching any command), the floor is the
-/// weakest effect default — conservative, since the rule could match any
-/// command class.
+/// **strongest** effect default — because the rule fires for all commands
+/// regardless of effect class, and must not weaken the strictest class.
+///
+/// Using the weakest (most permissive) default here would allow a project
+/// config to bypass `mutating: Ask` by adding an unscoped `Allow` path
+/// rule when `read_only: Allow` — the `.min()` floor would be `Allow`,
+/// hiding the `Ask` for mutating commands.
 fn path_rule_floor(rule: &PathRule, user_policy: &PolicyConfig) -> PolicyDecision {
     match &rule.command {
         Some(cmd) => resolve_command_decision(user_policy, cmd),
-        None => weakest_effect_default(&user_policy.defaults),
+        None => strongest_effect_default(&user_policy.defaults),
     }
 }
 
@@ -209,6 +214,15 @@ fn weakest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -
         .read_only
         .min(defaults.mutating)
         .min(defaults.unknown)
+}
+
+/// The strongest (most restrictive) effect default — used as the floor for
+/// unscoped path rules, which fire for commands of any effect class.
+fn strongest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -> PolicyDecision {
+    defaults
+        .read_only
+        .max(defaults.mutating)
+        .max(defaults.unknown)
 }
 
 /// Check a project command policy against the user's decision for that command.

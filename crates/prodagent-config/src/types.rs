@@ -167,7 +167,7 @@ impl PolicyOverlay {
             base.commands.insert(key, policy);
         }
 
-        // 5. Path-scoped rules — overlay rules prepended (higher-priority).
+        // 5. Path-scoped rules — prepended (higher priority, evaluated first).
         if let Some(overlay_rules) = self.path_rules {
             let mut merged = overlay_rules;
             merged.append(&mut base.path_rules);
