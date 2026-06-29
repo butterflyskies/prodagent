@@ -769,4 +769,246 @@ mod proofs {
             "result must come from one of the three tiers"
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #5 — Composition: env gate × path rule
+    //
+    // When both a path-scoped rule and an env gate fire on the same
+    // command segment, the engine's final output is at least as strict
+    // as the strictest of the two individual decisions. The `max()`
+    // composition in the engine only escalates, never relaxes.
+    //
+    // Models the full `evaluate_segment` pipeline:
+    //
+    //   1. `per_path_decision` → path-tier result (tiered specificity)
+    //   2. `decision.max(gate_decision)` → env gate composition
+    //   3. escalation flag check → floor at `Ask`
+    //
+    // The key property: neither the path rule nor the env gate can
+    // "cancel out" the other. The sequential max-composition only
+    // escalates. Kani verifies this exhaustively over all combinations
+    // of path tier configs, gate states, and escalation flags.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// When both a path rule and an env gate fire on the same segment,
+    /// the engine output is `>= max(path_tier_result, gate_decision)`.
+    ///
+    /// Models the sequential composition in `evaluate_segment`
+    /// (engine.rs:467–508):
+    /// ```text
+    /// let mut decision = path_tier_result;          // from evaluate_path_rules
+    /// if let Some(gate_decision) = apply_env_gates(...) {
+    ///     decision = decision.max(gate_decision);   // env gate escalation
+    /// }
+    /// if has_escalation_flags && decision < Ask {
+    ///     decision = Ask;                           // escalation flag floor
+    /// }
+    /// ```
+    ///
+    /// Also covers the identical pattern in `resolve_wrapper_core`
+    /// (engine.rs:239–262) where the same path + gate + escalation
+    /// pipeline runs for wrapped inner commands.
+    #[kani::proof]
+    fn env_gate_path_rule_composition() {
+        // Command-level default (from evaluate())
+        let command_default: PolicyDecision = kani::any();
+
+        // Path rule tier inputs
+        let cmd_path_matches: bool = kani::any();
+        let cmd_path_decision: PolicyDecision = kani::any();
+        let path_only_matches: bool = kani::any();
+        let path_only_decision: PolicyDecision = kani::any();
+
+        // Env gate
+        let gate_fires: bool = kani::any();
+        let gate_decision: PolicyDecision = kani::any();
+
+        // Escalation flags
+        let has_escalation_flags: bool = kani::any();
+
+        // ── Step 1: per-path tiered evaluation ──
+        let path_tier_result = per_path_decision(
+            cmd_path_matches,
+            cmd_path_decision,
+            path_only_matches,
+            path_only_decision,
+            command_default,
+        );
+
+        // ── Step 2: env gate composition ──
+        let mut decision = path_tier_result;
+        if gate_fires {
+            decision = decision.max(gate_decision);
+        }
+
+        // ── Step 3: escalation flag floor ──
+        if has_escalation_flags && decision < PolicyDecision::Ask {
+            decision = PolicyDecision::Ask;
+        }
+
+        // ── Properties ──
+
+        // P1: env gates only escalate — never weaken path result
+        assert!(
+            decision >= path_tier_result,
+            "env gate must not weaken path rule decision"
+        );
+
+        // P2: when gate fires, output >= gate decision
+        if gate_fires {
+            assert!(
+                decision >= gate_decision,
+                "path rule must not cancel env gate"
+            );
+        }
+
+        // P3: composition — when both contribute, output >= max(both)
+        if gate_fires {
+            assert!(
+                decision >= path_tier_result.max(gate_decision),
+                "engine output must be >= max(path, gate)"
+            );
+        }
+
+        // P4: escalation flags guarantee at least Ask
+        if has_escalation_flags {
+            assert!(
+                decision >= PolicyDecision::Ask,
+                "escalation flags must guarantee at least Ask"
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #6 — End-to-end merge monotonicity
+    //
+    // For any valid user config U and project overlay P where
+    // `validate_monotonicity(U, P)` passes, applying P to U (via
+    // `apply_to`) never produces a more permissive evaluation than
+    // U alone:
+    //
+    //     eval(merge(U, P)) >= eval(U)
+    //
+    // Models the three-tier config cascade for:
+    //   - Effect-class defaults (read_only, mutating, unknown)
+    //   - Opaque env ceiling
+    //   - Unscoped path rules (applies to all commands)
+    //
+    // The user config is assumed valid (monotonic defaults:
+    // read_only <= mutating <= unknown). The project overlay
+    // specifies optional overrides. The monotonicity validator
+    // ensures each override >= the user's corresponding value.
+    //
+    // The proof ties together `validate_monotonicity`, `apply_to`,
+    // and the tiered evaluation to verify that the merged result
+    // never relaxes below the user's floor — project configs can
+    // only escalate, never relax.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// `eval(merge(U, P)) >= eval(U)` for any effect class when
+    /// `validate_monotonicity(U, P)` passes.
+    ///
+    /// Models:
+    ///   - `validate_monotonicity`: per-field `proj >= user` checks
+    ///     (monotonicity.rs:55–172)
+    ///   - `apply_to`: `proj.unwrap_or(user)` for each field,
+    ///     path rules prepended (types.rs:144–178)
+    ///   - `eval`: effect-class default lookup, composed with path
+    ///     rule via `max(path_decision, command_default)`
+    ///
+    /// Covers the strongest-default floor for unscoped path rules:
+    /// when a project adds a path rule with no `command` scope, its
+    /// decision must be `>= max(user_ro, user_mut, user_unk)`.
+    /// This ensures the path rule cannot relax below ANY effect
+    /// class, since it fires for all commands regardless of class.
+    #[kani::proof]
+    fn merge_monotonicity_end_to_end() {
+        // ── User config ──
+        let user_ro: PolicyDecision = kani::any();
+        let user_mut: PolicyDecision = kani::any();
+        let user_unk: PolicyDecision = kani::any();
+        let user_ceiling: PolicyDecision = kani::any();
+
+        // User config validity: monotonic defaults (read_only <= mutating <= unknown).
+        // Non-monotonic configs are rejected by PolicyConfig::validate().
+        kani::assume(user_ro <= user_mut);
+        kani::assume(user_mut <= user_unk);
+
+        // ── Project overlay (Option models "not specified") ──
+        let proj_ro: Option<PolicyDecision> = kani::any();
+        let proj_mut: Option<PolicyDecision> = kani::any();
+        let proj_unk: Option<PolicyDecision> = kani::any();
+        let proj_ceiling: Option<PolicyDecision> = kani::any();
+
+        // Project path rule (unscoped — applies to all commands)
+        let has_proj_path_rule: bool = kani::any();
+        let proj_path_decision: PolicyDecision = kani::any();
+
+        // ── Precondition: validate_monotonicity passes ──
+
+        // Effect defaults: each override >= user's value
+        if let Some(p) = proj_ro {
+            kani::assume(p >= user_ro);
+        }
+        if let Some(p) = proj_mut {
+            kani::assume(p >= user_mut);
+        }
+        if let Some(p) = proj_unk {
+            kani::assume(p >= user_unk);
+        }
+        if let Some(p) = proj_ceiling {
+            kani::assume(p >= user_ceiling);
+        }
+
+        // Unscoped path rules: decision >= strongest_effect_default(user).
+        // path_rule_floor() returns strongest when command is None
+        // (monotonicity.rs:185–189).
+        let strongest_user = user_ro.max(user_mut).max(user_unk);
+        if has_proj_path_rule {
+            kani::assume(proj_path_decision >= strongest_user);
+        }
+
+        // ── apply_to merge (types.rs:144–178) ──
+        let merged_ro = proj_ro.unwrap_or(user_ro);
+        let merged_mut = proj_mut.unwrap_or(user_mut);
+        let merged_unk = proj_unk.unwrap_or(user_unk);
+        let merged_ceiling = proj_ceiling.unwrap_or(user_ceiling);
+
+        // ── Evaluation for a symbolic effect class ──
+        let effect: u8 = kani::any();
+        kani::assume(effect < 3);
+
+        let user_eval = match effect {
+            0 => user_ro,
+            1 => user_mut,
+            _ => user_unk,
+        };
+        let merged_command_default = match effect {
+            0 => merged_ro,
+            1 => merged_mut,
+            _ => merged_unk,
+        };
+
+        // When project path rule fires: eval = max(path_decision, command_default).
+        // This models per_path_decision tier 2 (path-only match) where the
+        // path rule composes with the command default via max.
+        // When no path rule: eval = command_default (tier 3 fallback).
+        let merged_eval = if has_proj_path_rule {
+            proj_path_decision.max(merged_command_default)
+        } else {
+            merged_command_default
+        };
+
+        // ── The invariant ──
+        assert!(
+            merged_eval >= user_eval,
+            "eval(merge(U, P)) must be >= eval(U) for any effect class"
+        );
+
+        // Ceiling monotonicity (opaque env values)
+        assert!(
+            merged_ceiling >= user_ceiling,
+            "merged opaque_env_ceiling must not relax"
+        );
+    }
 }
