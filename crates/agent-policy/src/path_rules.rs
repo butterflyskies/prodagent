@@ -74,7 +74,7 @@ pub struct PathGlob(String);
 pub enum PathGlobError {
     /// The pattern string is empty.
     Empty,
-    /// The pattern is a bare `*` or `**` — would match all paths.
+    /// The pattern is a bare glob (`*`, `**`, `/*`, `/**`) — would match all paths.
     BareGlob(String),
 }
 
@@ -99,13 +99,14 @@ impl PathGlob {
     /// # Errors
     ///
     /// Returns [`PathGlobError::Empty`] if the string is empty or whitespace-only.
-    /// Returns [`PathGlobError::BareGlob`] if the pattern is `*` or `**`.
+    /// Returns [`PathGlobError::BareGlob`] if the pattern is a bare glob (`*`,
+    /// `**`, `/*`, `/**`) that would match all paths.
     pub fn new(s: String) -> Result<Self, PathGlobError> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return Err(PathGlobError::Empty);
         }
-        if trimmed == "*" || trimmed == "**" {
+        if matches!(trimmed, "*" | "**" | "/*" | "/**") {
             return Err(PathGlobError::BareGlob(s));
         }
         Ok(Self(s))

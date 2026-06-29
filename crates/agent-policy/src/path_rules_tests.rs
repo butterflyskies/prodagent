@@ -54,6 +54,28 @@ fn path_glob_rejects_bare_star() {
 }
 
 #[test]
+fn path_glob_rejects_root_bare_globs() {
+    // /* and /** are root-level universal globs — match everything under /
+    assert!(matches!(
+        PathGlob::new("/*".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    assert!(matches!(
+        PathGlob::new("/**".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    // Trimmed variants
+    assert!(matches!(
+        PathGlob::new("  /*  ".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+    assert!(matches!(
+        PathGlob::new("  /**  ".into()),
+        Err(PathGlobError::BareGlob(_))
+    ));
+}
+
+#[test]
 fn path_glob_deref() {
     let g = pg("/tmp/*");
     let s: &str = &g;
@@ -117,6 +139,12 @@ fn path_glob_deserialize_rejects_invalid() {
 
     let result: Result<PathGlob, _> = serde_json::from_str("\"**\"");
     assert!(result.is_err(), "bare ** should fail deserialization");
+
+    let result: Result<PathGlob, _> = serde_json::from_str("\"/*\"");
+    assert!(result.is_err(), "root /* should fail deserialization");
+
+    let result: Result<PathGlob, _> = serde_json::from_str("\"/**\"");
+    assert!(result.is_err(), "root /** should fail deserialization");
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -936,6 +964,23 @@ decision = "allow"
 }
 
 #[test]
+fn path_rule_toml_rejects_root_bare_globs() {
+    for pat in ["/*", "/**"] {
+        let toml_str = format!(
+            r#"
+paths = ["{pat}"]
+decision = "allow"
+"#
+        );
+        let result: Result<PathRule, _> = toml::from_str(&toml_str);
+        assert!(
+            result.is_err(),
+            "root bare glob {pat:?} should fail deserialization"
+        );
+    }
+}
+
+#[test]
 fn path_rule_toml_rejects_empty_pattern() {
     let toml_str = r#"
 paths = [""]
@@ -943,4 +988,61 @@ decision = "allow"
 "#;
     let result: Result<PathRule, _> = toml::from_str(toml_str);
     assert!(result.is_err(), "empty pattern should fail deserialization");
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Property-based tests for PathGlob invariants
+// ══════════════════════════════════════════════════════════════════════════
+
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// If `PathGlob::new` accepts a string, it must be non-empty after
+        /// trimming and not a bare glob pattern.
+        #[test]
+        fn valid_glob_is_nonempty_and_not_bare(s in ".*") {
+            if let Ok(g) = PathGlob::new(s.clone()) {
+                let trimmed = s.trim();
+                prop_assert!(!trimmed.is_empty(), "accepted empty string");
+                prop_assert!(
+                    !matches!(trimmed, "*" | "**" | "/*" | "/**"),
+                    "accepted bare glob: {trimmed:?}"
+                );
+                // Inner string is preserved exactly
+                prop_assert_eq!(g.as_str(), &s);
+            }
+        }
+
+        /// Serde round-trip preserves a valid PathGlob exactly.
+        #[test]
+        fn serde_json_round_trip(s in "[/~][a-z0-9/_.*-]{1,50}") {
+            if let Ok(g) = PathGlob::new(s) {
+                let json = serde_json::to_string(&g).unwrap();
+                let back: PathGlob = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(back, g);
+            }
+        }
+
+        /// Display returns the original pattern string.
+        #[test]
+        fn display_matches_inner(s in "[/~][a-z0-9/_.*-]{1,50}") {
+            if let Ok(g) = PathGlob::new(s.clone()) {
+                prop_assert_eq!(format!("{g}"), s);
+            }
+        }
+
+        /// Deref, as_str, and AsRef all agree.
+        #[test]
+        fn deref_asref_consistency(s in "[/~][a-z0-9/_.*-]{1,50}") {
+            if let Ok(g) = PathGlob::new(s) {
+                let deref: &str = &g;
+                let as_str = g.as_str();
+                let as_ref: &str = g.as_ref();
+                prop_assert_eq!(deref, as_str);
+                prop_assert_eq!(deref, as_ref);
+            }
+        }
+    }
 }
