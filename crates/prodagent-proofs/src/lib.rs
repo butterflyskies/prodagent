@@ -1011,4 +1011,300 @@ mod proofs {
             "merged opaque_env_ceiling must not relax"
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Invariant #6b — Command-scoped path rule monotonicity
+    //
+    // Extends Invariant #6 to cover path rules scoped to a specific
+    // command (e.g., `command = "git"` with `paths = ["~/dev/*"]`).
+    //
+    // The gap in #6: unscoped path rules use strongest_effect_default
+    // as the validation floor because they fire for ALL commands
+    // regardless of effect class. Command-scoped rules, however, only
+    // fire for one command — which belongs to exactly one effect class.
+    //
+    // The current validator uses `resolve_command_decision` for the
+    // floor, which falls back to `weakest_effect_default` when there
+    // is no per-command override. This is too permissive: it could
+    // allow a command-scoped rule to relax below the user's default
+    // for that command's actual effect class.
+    //
+    // The fix: for command-scoped rules without a per-command override,
+    // the validation floor should be the user's default for the
+    // command's effect class — not the global weakest.
+    //
+    // Structural argument: the floor depends on effect class, not
+    // command identity. Two commands in the same effect class share
+    // the same default. So checking one representative command per
+    // class covers all commands in that class. Since there are only
+    // three effect classes (ReadOnly, Mutating, Unknown), Kani
+    // exhaustively verifies all three.
+    //
+    // Evaluation model: command-scoped rules match as tier 1
+    // (command+path) in `per_path_decision`, where the decision is
+    // used directly — NOT composed via `max(command_default)` like
+    // tier 2 (path-only). This makes the validation floor critical:
+    // the rule's decision IS the evaluation result for matching paths.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// `eval(merge(U, P)) >= eval(U)` for command-scoped path rules
+    /// when the validation floor is the user's per-effect-class default.
+    ///
+    /// Models:
+    ///   - `validate_monotonicity` with per-effect-class floor:
+    ///     `proj_path_decision >= user_default[effect_class]`
+    ///   - `apply_to` merge for effect defaults
+    ///   - `per_path_decision` tier 1 (cmd+path match): decision
+    ///     used directly, without `max(command_default)`
+    ///   - Fallback to tier 3 (no match): command default
+    ///
+    /// The symbolic effect class (0=ReadOnly, 1=Mutating, 2=Unknown)
+    /// means Kani exhaustively checks all three classes. By the
+    /// structural argument, this covers all possible commands.
+    #[kani::proof]
+    fn merge_monotonicity_command_scoped_path_rules() {
+        // ── User config ──
+        let user_ro: PolicyDecision = kani::any();
+        let user_mut: PolicyDecision = kani::any();
+        let user_unk: PolicyDecision = kani::any();
+
+        // User config validity: monotonic defaults
+        kani::assume(user_ro <= user_mut);
+        kani::assume(user_mut <= user_unk);
+
+        // ── Project overlay (effect defaults) ──
+        let proj_ro: Option<PolicyDecision> = kani::any();
+        let proj_mut: Option<PolicyDecision> = kani::any();
+        let proj_unk: Option<PolicyDecision> = kani::any();
+
+        // Precondition: each override >= user's value
+        if let Some(p) = proj_ro {
+            kani::assume(p >= user_ro);
+        }
+        if let Some(p) = proj_mut {
+            kani::assume(p >= user_mut);
+        }
+        if let Some(p) = proj_unk {
+            kani::assume(p >= user_unk);
+        }
+
+        // ── Symbolic effect class ──
+        // The command targeted by the path rule belongs to exactly one
+        // effect class. We don't need to know the command name — just
+        // which class it falls into.
+        let effect: u8 = kani::any();
+        kani::assume(effect < 3);
+
+        let user_effect_default = match effect {
+            0 => user_ro,
+            1 => user_mut,
+            _ => user_unk,
+        };
+
+        // ── Command-scoped path rule ──
+        let cmd_path_decision: PolicyDecision = kani::any();
+
+        // VALIDATION: per-effect-class floor.
+        // The project path rule's decision must be >= the user's default
+        // for the command's effect class. This is tighter than
+        // weakest_effect_default and exactly right: the rule only fires
+        // for commands in this class, so the floor is this class's default.
+        kani::assume(cmd_path_decision >= user_effect_default);
+
+        // ── apply_to merge ──
+        let merged_default = match effect {
+            0 => proj_ro.unwrap_or(user_ro),
+            1 => proj_mut.unwrap_or(user_mut),
+            _ => proj_unk.unwrap_or(user_unk),
+        };
+
+        // ── Evaluation ──
+        // Whether the rule's path patterns match the command's affected paths.
+        let rule_matches_path: bool = kani::any();
+
+        let merged_eval = if rule_matches_path {
+            // Tier 1: command+path match — decision used directly.
+            // This is the critical case: no max(command_default) composition.
+            cmd_path_decision
+        } else {
+            // Tier 3: rule doesn't match — fall back to command default.
+            merged_default
+        };
+
+        let user_eval = user_effect_default;
+
+        // ── The invariant ──
+        assert!(
+            merged_eval >= user_eval,
+            "eval(merge(U, P)) must be >= eval(U) for command-scoped path rules"
+        );
+    }
+
+    /// The per-effect-class floor is >= `weakest_effect_default` for
+    /// any valid (monotonic) user config.
+    ///
+    /// This proves the improved floor is a valid tightening: any
+    /// path rule decision that passes the per-effect-class check also
+    /// passes the (weaker) `weakest_effect_default` check. The converse
+    /// is not true — the per-effect-class floor catches violations
+    /// that `weakest_effect_default` misses.
+    #[kani::proof]
+    fn effect_class_floor_at_least_weakest() {
+        let user_ro: PolicyDecision = kani::any();
+        let user_mut: PolicyDecision = kani::any();
+        let user_unk: PolicyDecision = kani::any();
+
+        // Valid monotonic config
+        kani::assume(user_ro <= user_mut);
+        kani::assume(user_mut <= user_unk);
+
+        let weakest = user_ro.min(user_mut).min(user_unk);
+
+        let effect: u8 = kani::any();
+        kani::assume(effect < 3);
+
+        let effect_class_floor = match effect {
+            0 => user_ro,
+            1 => user_mut,
+            _ => user_unk,
+        };
+
+        assert!(
+            effect_class_floor >= weakest,
+            "per-effect-class floor must be >= weakest_effect_default"
+        );
+    }
+
+    /// With monotonic defaults, `weakest_effect_default` equals the
+    /// `read_only` default — the most permissive class.
+    ///
+    /// When defaults differ across classes, the per-effect-class floor
+    /// is strictly tighter for Mutating and Unknown commands. Example:
+    /// user has `read_only: Allow, mutating: Ask`. The weakest floor
+    /// is `Allow`, which would validate a command-scoped `rm` rule
+    /// with `Allow`. But the correct floor for `rm` is `Ask` (its
+    /// effect class), and the per-effect-class check catches it.
+    #[kani::proof]
+    fn weakest_equals_read_only_for_monotonic_config() {
+        let user_ro: PolicyDecision = kani::any();
+        let user_mut: PolicyDecision = kani::any();
+        let user_unk: PolicyDecision = kani::any();
+
+        kani::assume(user_ro <= user_mut);
+        kani::assume(user_mut <= user_unk);
+
+        let weakest = user_ro.min(user_mut).min(user_unk);
+
+        // With monotonic ordering, read_only is always the weakest
+        assert!(
+            weakest == user_ro,
+            "weakest_effect_default == read_only for monotonic configs"
+        );
+
+        // When defaults differ, per-effect-class floors are strictly tighter
+        if user_ro < user_mut {
+            assert!(user_mut > weakest);
+        }
+        if user_ro < user_unk {
+            assert!(user_unk > weakest);
+        }
+    }
+
+    /// Monotonicity holds when command-scoped and unscoped path rules
+    /// interact in the same merged config.
+    ///
+    /// Models the full `per_path_decision` tier system:
+    ///   - Tier 1 (cmd+path): command-scoped rule matches, decision directly
+    ///   - Tier 2 (path-only): unscoped rule matches, `max(decision, default)`
+    ///   - Tier 3 (fallback): no match, command default
+    ///
+    /// The validation floors differ by scope:
+    ///   - Command-scoped: `>= user_default[effect_class]` (Invariant #6b)
+    ///   - Unscoped: `>= strongest_effect_default(user)` (Invariant #6)
+    ///
+    /// Tier 1 takes precedence over tier 2 — the more specific
+    /// command-scoped rule wins when both could match.
+    #[kani::proof]
+    fn merge_monotonicity_mixed_path_rules() {
+        // ── User config ──
+        let user_ro: PolicyDecision = kani::any();
+        let user_mut: PolicyDecision = kani::any();
+        let user_unk: PolicyDecision = kani::any();
+
+        kani::assume(user_ro <= user_mut);
+        kani::assume(user_mut <= user_unk);
+
+        // ── Project overlay (effect defaults) ──
+        let proj_ro: Option<PolicyDecision> = kani::any();
+        let proj_mut: Option<PolicyDecision> = kani::any();
+        let proj_unk: Option<PolicyDecision> = kani::any();
+
+        if let Some(p) = proj_ro {
+            kani::assume(p >= user_ro);
+        }
+        if let Some(p) = proj_mut {
+            kani::assume(p >= user_mut);
+        }
+        if let Some(p) = proj_unk {
+            kani::assume(p >= user_unk);
+        }
+
+        // ── Symbolic effect class ──
+        let effect: u8 = kani::any();
+        kani::assume(effect < 3);
+
+        let user_default = match effect {
+            0 => user_ro,
+            1 => user_mut,
+            _ => user_unk,
+        };
+        let merged_default = match effect {
+            0 => proj_ro.unwrap_or(user_ro),
+            1 => proj_mut.unwrap_or(user_mut),
+            _ => proj_unk.unwrap_or(user_unk),
+        };
+
+        // ── Command-scoped path rule ──
+        let has_cmd_rule: bool = kani::any();
+        let cmd_rule_decision: PolicyDecision = kani::any();
+        if has_cmd_rule {
+            // Per-effect-class floor (Invariant #6b)
+            kani::assume(cmd_rule_decision >= user_default);
+        }
+
+        // ── Unscoped path rule ──
+        let has_unscoped_rule: bool = kani::any();
+        let unscoped_decision: PolicyDecision = kani::any();
+        let strongest_user = user_ro.max(user_mut).max(user_unk);
+        if has_unscoped_rule {
+            // Strongest-default floor (Invariant #6)
+            kani::assume(unscoped_decision >= strongest_user);
+        }
+
+        // ── Path matching ──
+        let cmd_path_matches: bool = kani::any();
+        let unscoped_matches: bool = kani::any();
+
+        // Can only match if rule exists
+        kani::assume(!cmd_path_matches || has_cmd_rule);
+        kani::assume(!unscoped_matches || has_unscoped_rule);
+
+        // ── Evaluation via per_path_decision ──
+        let merged_eval = if cmd_path_matches {
+            // Tier 1: command+path (most specific)
+            cmd_rule_decision
+        } else if unscoped_matches {
+            // Tier 2: path-only, composed with command default
+            unscoped_decision.max(merged_default)
+        } else {
+            // Tier 3: no path match, command default
+            merged_default
+        };
+
+        // ── The invariant ──
+        assert!(
+            merged_eval >= user_default,
+            "eval(merge(U, P)) must be >= eval(U) with mixed path rules"
+        );
+    }
 }
