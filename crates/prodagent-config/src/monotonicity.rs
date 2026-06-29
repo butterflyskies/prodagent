@@ -215,33 +215,27 @@ fn path_rule_floor(rule: &PathRule, user_policy: &PolicyConfig) -> PolicyDecisio
 ///
 /// Checks per-command overrides first, then falls back to effect defaults.
 /// Since we don't know the command's effect class at config validation time,
-/// we use the *weakest* (most permissive) effect default as the floor —
-/// this is conservative: if the project is weaker than even the weakest
-/// default, it's definitely a violation.
+/// we use the *strongest* (most restrictive) effect default as the floor —
+/// this ensures a project cannot exploit the gap between a permissive
+/// read-only default and a stricter mutating/unknown default when no
+/// per-command override exists. See Invariant #6b proofs for the soundness
+/// argument.
 fn resolve_command_decision(policy: &PolicyConfig, cmd_name: &str) -> PolicyDecision {
     match policy.commands.get(cmd_name) {
         Some(CommandPolicy::Flat(d)) => *d,
         Some(CommandPolicy::Detailed(detail)) => {
-            // Use the base decision if set; otherwise fall back to weakest default.
+            // Use the base decision if set; otherwise fall back to strongest default.
             detail
                 .base
-                .unwrap_or(weakest_effect_default(&policy.defaults))
+                .unwrap_or(strongest_effect_default(&policy.defaults))
         }
-        None => weakest_effect_default(&policy.defaults),
+        None => strongest_effect_default(&policy.defaults),
     }
 }
 
-/// The weakest (most permissive) effect default — used as the conservative
-/// floor when we can't determine a command's effect class.
-fn weakest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -> PolicyDecision {
-    defaults
-        .read_only
-        .min(defaults.mutating)
-        .min(defaults.unknown)
-}
-
 /// The strongest (most restrictive) effect default — used as the floor for
-/// unscoped path rules, which fire for commands of any effect class.
+/// per-command overrides and path rules when the command's effect class is
+/// unknown at validation time.
 fn strongest_effect_default(defaults: &prodagent_policy::config::EffectDefaults) -> PolicyDecision {
     defaults
         .read_only
@@ -322,6 +316,9 @@ fn user_rule_covers_project(user_rule: &PathRule, proj_rule: &PathRule) -> bool 
 }
 
 /// Resolve the user's effective decision for a specific subcommand.
+///
+/// Same floor logic as [`resolve_command_decision`]: when no per-command
+/// override exists, the strongest effect default is the correct floor.
 fn resolve_subcommand_decision(
     policy: &PolicyConfig,
     cmd_name: &str,
@@ -335,8 +332,8 @@ fn resolve_subcommand_decision(
             }
             detail
                 .base
-                .unwrap_or(weakest_effect_default(&policy.defaults))
+                .unwrap_or(strongest_effect_default(&policy.defaults))
         }
-        None => weakest_effect_default(&policy.defaults),
+        None => strongest_effect_default(&policy.defaults),
     }
 }
