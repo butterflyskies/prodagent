@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/butterflyskies/prodagent"
@@ -22,11 +22,11 @@ dirs = "6"
 figment = { version = "0.10", features = ["toml"] }
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
-prodagent-types = { path = "crates/prodagent-types", version = "^0.8" }
-agent-shell-parser = { path = "crates/agent-shell-parser", version = "^0.8" }
-agent-command-knowledge = { path = "crates/agent-command-knowledge", version = "^0.8" }
-prodagent-policy = { path = "crates/agent-policy", version = "^0.8" }
-prodagent-config = { path = "crates/prodagent-config", version = "^0.8" }
+prodagent-types = { path = "crates/prodagent-types", version = "^0.9" }
+agent-shell-parser = { path = "crates/agent-shell-parser", version = "^0.9" }
+agent-command-knowledge = { path = "crates/agent-command-knowledge", version = "^0.9" }
+prodagent-policy = { path = "crates/agent-policy", version = "^0.9" }
+prodagent-config = { path = "crates/prodagent-config", version = "^0.9" }
 time = { version = "0.3", features = ["formatting", "macros"] }
 
 [profile.release]
