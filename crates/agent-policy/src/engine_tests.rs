@@ -428,29 +428,33 @@ use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
 use rstest::rstest;
 
 #[rstest]
-#[case::equals_matching_allows(
-    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Allow,
-    Some(("FOO", "bar")), Some(PolicyDecision::Allow),
-)]
-#[case::equals_nonmatching_no_effect(
-    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny,
-    Some(("FOO", "baz")), None,
-)]
-#[case::not_equals_matching(
-    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
-    Some(("FOO", "baz")), Some(PolicyDecision::Deny),
-)]
-#[case::not_equals_same_value_no_effect(
-    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
-    Some(("FOO", "bar")), None,
-)]
+// Unset var: absence != any concrete value, so NotEquals matches.
 #[case::not_equals_unset_matches(
     "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Ask,
     None, Some(PolicyDecision::Ask),
 )]
+#[case::equals_matching_allows(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Allow,
+    Some("bar"), Some(PolicyDecision::Allow),
+)]
+#[case::equals_nonmatching_no_effect(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny,
+    Some("baz"), None,
+)]
+#[case::not_equals_matching(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
+    Some("baz"), Some(PolicyDecision::Deny),
+)]
+#[case::not_equals_same_value_no_effect(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
+    Some("bar"), None,
+)]
 #[case::set_matching(
-    "VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow,
-    Some(("VIRTUAL_ENV", "/venv")), Some(PolicyDecision::Allow),
+    "VIRTUAL_ENV",
+    EnvCondition::Set,
+    EnvGateAction::Allow,
+    Some("/venv"),
+    Some(PolicyDecision::Allow)
 )]
 #[case::set_not_set_no_effect("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow, None, None)]
 #[case::unset_matching(
@@ -461,28 +465,37 @@ use rstest::rstest;
     Some(PolicyDecision::Deny)
 )]
 #[case::unset_when_set_no_effect(
-    "VIRTUAL_ENV", EnvCondition::Unset, EnvGateAction::Deny,
-    Some(("VIRTUAL_ENV", "/venv")), None,
+    "VIRTUAL_ENV",
+    EnvCondition::Unset,
+    EnvGateAction::Deny,
+    Some("/venv"),
+    None
 )]
 #[case::equals_matching_asks(
     "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Ask,
-    Some(("FOO", "bar")), Some(PolicyDecision::Ask),
+    Some("bar"), Some(PolicyDecision::Ask),
 )]
 #[case::equals_matching_denies(
     "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny,
-    Some(("FOO", "bar")), Some(PolicyDecision::Deny),
+    Some("bar"), Some(PolicyDecision::Deny),
 )]
 #[case::not_equals_allows(
     "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Allow,
-    Some(("FOO", "baz")), Some(PolicyDecision::Allow),
+    Some("baz"), Some(PolicyDecision::Allow),
 )]
 #[case::set_asks(
-    "FOO", EnvCondition::Set, EnvGateAction::Ask,
-    Some(("FOO", "anything")), Some(PolicyDecision::Ask),
+    "FOO",
+    EnvCondition::Set,
+    EnvGateAction::Ask,
+    Some("anything"),
+    Some(PolicyDecision::Ask)
 )]
 #[case::set_denies(
-    "FOO", EnvCondition::Set, EnvGateAction::Deny,
-    Some(("FOO", "anything")), Some(PolicyDecision::Deny),
+    "FOO",
+    EnvCondition::Set,
+    EnvGateAction::Deny,
+    Some("anything"),
+    Some(PolicyDecision::Deny)
 )]
 #[case::unset_allows(
     "FOO",
@@ -502,7 +515,7 @@ fn env_gate_condition_action_matrix(
     #[case] var: &str,
     #[case] condition: EnvCondition,
     #[case] decision: EnvGateAction,
-    #[case] env_setup: Option<(&str, &str)>,
+    #[case] env_value: Option<&str>,
     #[case] expected: Option<PolicyDecision>,
 ) {
     let gates = vec![EnvGate {
@@ -511,8 +524,8 @@ fn env_gate_condition_action_matrix(
         decision,
     }];
     let mut env = EnvSnapshot::clean();
-    if let Some((key, value)) = env_setup {
-        env.set(key, value);
+    if let Some(value) = env_value {
+        env.set(var, value);
     }
     assert_eq!(
         super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
@@ -806,6 +819,7 @@ fn opaque_env_ceiling_does_not_affect_concrete_values() {
     Some(EnvValueOwned::Known("anything".to_string())),
     true,
 )]
+// Security sentinel (fail-closed): Unknown = opaque present var, so Set fires.
 #[case::set_with_unknown(EnvCondition::Set, Some(EnvValueOwned::Unknown), true)]
 #[case::set_with_none(EnvCondition::Set, None, false)]
 #[case::unset_with_none(EnvCondition::Unset, None, true)]
@@ -814,6 +828,7 @@ fn opaque_env_ceiling_does_not_affect_concrete_values() {
     Some(EnvValueOwned::Known("anything".to_string())),
     false,
 )]
+// Security sentinel (fail-closed): Unknown = present but opaque, Unset must NOT match.
 #[case::unset_with_unknown(EnvCondition::Unset, Some(EnvValueOwned::Unknown), false)]
 fn evaluate_condition_matrix(
     #[case] condition: EnvCondition,
@@ -822,7 +837,8 @@ fn evaluate_condition_matrix(
 ) {
     assert_eq!(
         super::evaluate_condition(&condition, value.as_ref()),
-        expected
+        expected,
+        "evaluate_condition({condition:?}, {value:?})"
     );
 }
 
@@ -1018,6 +1034,7 @@ use agent_shell_parser::parse::ResolvedEnvPolicy;
     &["sudo", "--preserve-env=FOO", "--preserve-env=BAR", "cmd"],
     ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]),
 )]
+// -E and --preserve-env=FOO both present: -E (FullPreserve) wins.
 #[case::full_preserve_takes_priority(
     &["sudo", "-E", "--preserve-env=FOO", "cmd"],
     ResolvedEnvPolicy::FullPreserve,
