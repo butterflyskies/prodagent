@@ -109,12 +109,19 @@ fn segment_is_blocked(#[case] cmd: &str) {
 #[case::normal_command("ls -la")]
 #[case::time_ls("time ls")]
 #[case::xargs_ls("xargs ls -la")]
+// Allowed subcommands stay allowed when git is invoked by absolute path —
+// path normalization must not over-block.
 #[case::permitted_by_path("/usr/bin/git config user.name")]
 fn segment_is_allowed(#[case] cmd: &str) {
     assert!(!is_blocked_segment(cmd), "expected allowed: {cmd}");
 }
 
 // --- Invocation forms that must resolve to specific git commands ---
+//
+// These pin basename normalization and escape handling: invoking git by
+// path or with a backslash escape must hit the same block as plain `git`.
+// Asserting the specific blocked command (not just is_some) ensures these
+// resolve to `git commit` rather than tripping a generic unanalyzable block.
 
 fn blocked_as(cmd: &str) -> Option<&'static str> {
     check_segment(&words(cmd)).map(|b| b.command)
@@ -123,6 +130,7 @@ fn blocked_as(cmd: &str) -> Option<&'static str> {
 #[rstest]
 #[case::absolute_path("/usr/bin/git commit -m test", "git commit")]
 #[case::relative_path("./git commit -m test", "git commit")]
+// \git suppresses shell alias/function lookup but still runs git
 #[case::backslash_escaped(r"\git commit -m test", "git commit")]
 fn blocked_as_command(#[case] cmd: &str, #[case] expected: &str) {
     assert_eq!(blocked_as(cmd), Some(expected), "command: {cmd}");
