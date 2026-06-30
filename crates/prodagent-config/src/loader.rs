@@ -123,6 +123,17 @@ impl ConfigLoader {
     /// - The merged policy fails internal validation
     /// - The project layer violates monotonicity
     pub fn load(&self) -> Result<ProdagentConfig, ConfigError> {
+        let (_, config) = self.load_split()?;
+        Ok(config)
+    }
+
+    /// Load and return both the user-only policy and the fully merged config.
+    ///
+    /// Used by the hook's conflict detection: comparing the user-only evaluation
+    /// against the merged evaluation reveals project-vs-user conflicts.
+    ///
+    /// Returns `(user_only_policy, merged_config)`.
+    pub fn load_split(&self) -> Result<(PolicyConfig, ProdagentConfig), ConfigError> {
         // Extract defaults + user layer
         let base_figment = self.figment();
         let base_layer: ConfigLayer = base_figment
@@ -154,6 +165,7 @@ impl ConfigLoader {
                 .opaque_env_ceiling
                 .unwrap_or(PolicyDecision::Ask),
             path_rules: base_layer.policy.path_rules.clone().unwrap_or_default(),
+            overrides: base_layer.policy.overrides.clone().unwrap_or_default(),
         };
 
         // Validate user-level policy
@@ -186,9 +198,6 @@ impl ConfigLoader {
         }
 
         // Build the final merged config
-        // We split base_layer into "defaults only" and "user only" for the
-        // from_layers call, but since figment already merged them, we pass
-        // the merged base as "defaults" with no separate user layer.
         let config = ProdagentConfig::from_layers(base_layer, None, project_layer);
 
         // Final validation of the fully merged policy
@@ -197,7 +206,7 @@ impl ConfigLoader {
             .validate()
             .map_err(ConfigError::PolicyValidation)?;
 
-        Ok(config)
+        Ok((user_policy, config))
     }
 
     /// Load configuration from the standard filesystem locations.
@@ -266,4 +275,21 @@ pub fn load_and_apply(
     let config = loader.load()?;
     kb.merge(config.knowledge);
     Ok(config.policy)
+}
+
+/// Load split configs and apply the knowledge overlay.
+///
+/// Returns `(user_only_policy, merged_policy)`. The `user_only_policy` has
+/// the knowledge overlay applied to a clone of the KB so both policies see
+/// the same command knowledge.
+///
+/// Used by the hook for conflict detection: comparing evaluations under
+/// `user_only_policy` vs `merged_policy` reveals project-vs-user conflicts.
+pub fn load_split_and_apply(
+    loader: &ConfigLoader,
+    kb: &mut KnowledgeBase,
+) -> Result<(PolicyConfig, PolicyConfig), ConfigError> {
+    let (user_policy, config) = loader.load_split()?;
+    kb.merge(config.knowledge);
+    Ok((user_policy, config.policy))
 }

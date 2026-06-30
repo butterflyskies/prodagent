@@ -457,11 +457,23 @@ impl PolicyEngine {
         let env = build_env_with_substitution_results(words, sub_decisions, base_env);
 
         // Wrapper handling — use pre-built merged config
+        // Wrappers are resolved through the normal pipeline (which evaluates
+        // the inner command, where overrides can fire on the inner command).
+        // Overrides on the wrapper itself are skipped — a flat override for
+        // `sudo` must not bypass `resolve_wrapper_core`.
         if info.wrapper.is_some() {
             let mut result =
                 self.resolve_wrapper_core(&base_command, words, kb, merged_config, 0, &env, cwd);
             maybe_escalate_for_redirection(&mut result, segment);
             return result;
+        }
+
+        // ── User overrides (explicit consent, non-wrapper commands only) ──
+        // Check if the user has an override that bypasses project restrictions
+        // for this command+path combination.
+        if let Some(override_result) = self.check_override(&base_command, &info, cwd, &env, segment)
+        {
+            return override_result;
         }
 
         // ── Path-scoped rules (checked before per-command and effect-class) ──
@@ -511,6 +523,96 @@ impl PolicyEngine {
         result
     }
 
+    // ── Override checking ───────────────────────────────────────────────
+
+    /// Check user overrides for a command segment.
+    ///
+    /// Overrides bypass the `max(user, project)` merge and path rules, but
+    /// KB-level safety rails still apply:
+    /// - **Env gates** — escalation-only gates from the knowledge base fire
+    ///   even on overridden commands (they represent safety invariants, not
+    ///   project policy).
+    /// - **Escalation flags** — commands flagged for escalation are bumped to
+    ///   at least Ask regardless of the override decision.
+    /// - **Redirection escalation** — output redirections still escalate.
+    ///
+    /// The override check mirrors the normal evaluation tiers but uses the
+    /// `overrides` config section instead of the main config.
+    fn check_override(
+        &self,
+        base_command: &str,
+        info: &CommandInfo,
+        cwd: Option<&str>,
+        env: &EnvSnapshot,
+        segment: &ShellSegment,
+    ) -> Option<PolicyResult> {
+        if self.config.overrides.is_empty() {
+            return None;
+        }
+
+        // Defensive guard: overrides must not fire on wrapper commands.
+        // The caller (evaluate_segment) returns early for wrappers before
+        // reaching this point, but an explicit guard ensures the invariant
+        // holds even if the call order changes.
+        if info.wrapper.is_some() {
+            return None;
+        }
+
+        // Check override path rules first (most specific)
+        let affected_path_strs: Vec<&str> =
+            info.affected_paths.iter().map(|p| p.as_str()).collect();
+
+        // For override path rules, the command_default is the override command
+        // decision (if any), otherwise the normal evaluation result. But since
+        // overrides take highest priority, we use Allow as the default — an
+        // override path rule's decision IS the final answer.
+        let override_cmd_decision = self.override_command_decision(base_command, info);
+
+        if let Some(path_result) = path_rules::evaluate_path_rules(
+            &self.config.overrides.path_rules,
+            base_command,
+            cwd,
+            &affected_path_strs,
+            override_cmd_decision.unwrap_or_else(|| self.effect_default(info.effect)),
+        ) {
+            let mut result = PolicyResult::simple(
+                path_result.decision,
+                format!(
+                    "{base_command}: effect={:?} (user override, path rule)",
+                    info.effect
+                ),
+            )
+            .with_paths(AffectedPaths::new(info.affected_paths.clone()));
+            apply_override_safety_rails(
+                &mut result,
+                info,
+                env,
+                segment,
+                self.config.opaque_env_ceiling,
+            );
+            return Some(result);
+        }
+
+        // Check override command decision
+        if let Some(decision) = override_cmd_decision {
+            let mut result = PolicyResult::simple(
+                decision,
+                format!("{base_command}: effect={:?} (user override)", info.effect),
+            )
+            .with_paths(AffectedPaths::new(info.affected_paths.clone()));
+            apply_override_safety_rails(
+                &mut result,
+                info,
+                env,
+                segment,
+                self.config.opaque_env_ceiling,
+            );
+            return Some(result);
+        }
+
+        None
+    }
+
     // ── Low-level API: pre-classified command → decision ───────────────
 
     /// Evaluate a classified command against policy.
@@ -525,20 +627,19 @@ impl PolicyEngine {
         self.effect_default(info.effect)
     }
 
+    /// Check user overrides for a command. Overrides bypass project
+    /// restrictions — they represent explicit user consent via the
+    /// consent gate.
+    fn override_command_decision(
+        &self,
+        base_command: &str,
+        info: &CommandInfo,
+    ) -> Option<PolicyDecision> {
+        lookup_command_policy(&self.config.overrides.commands, base_command, info)
+    }
+
     fn command_override(&self, base_command: &str, info: &CommandInfo) -> Option<PolicyDecision> {
-        match self.config.commands.get(base_command)? {
-            CommandPolicy::Flat(decision) => Some(*decision),
-            CommandPolicy::Detailed(detail) => {
-                // If there's a matching subcommand override, use it
-                if let Some(sub) = &info.subcommand {
-                    if let Some(decision) = detail.subcommands.get(sub.as_str()) {
-                        return Some(*decision);
-                    }
-                }
-                // Otherwise fall back to the base override if present
-                detail.base
-            }
-        }
+        lookup_command_policy(&self.config.commands, base_command, info)
     }
 
     fn effect_default(&self, effect: Effect) -> PolicyDecision {
@@ -546,6 +647,54 @@ impl PolicyEngine {
             Effect::ReadOnly => self.config.defaults.read_only,
             Effect::Mutating => self.config.defaults.mutating,
             Effect::Unknown => self.config.defaults.unknown,
+        }
+    }
+}
+
+/// Apply KB-level safety rails to an override result.
+///
+/// Even when a user override bypasses the `max(user, project)` merge,
+/// these safety rails still apply:
+/// - **Env gates** — escalation-only gates from the knowledge base
+/// - **Escalation flags** — bump to at least Ask
+/// - **Redirection escalation** — output redirections escalate
+fn apply_override_safety_rails(
+    result: &mut PolicyResult,
+    info: &CommandInfo,
+    env: &EnvSnapshot,
+    segment: &ShellSegment,
+    opaque_env_ceiling: PolicyDecision,
+) {
+    if let Some(gate_decision) = apply_env_gates(&info.env_gates, env, opaque_env_ceiling) {
+        result.decision = result.decision.max(gate_decision);
+    }
+    if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
+        result.decision = PolicyDecision::Ask;
+        result.reason = format!("{} (escalated: escalation flags)", result.reason);
+    }
+    maybe_escalate_for_redirection(result, segment);
+}
+
+/// Look up a command policy from a command map.
+///
+/// Shared by both the regular `commands` map and the `overrides.commands`
+/// map — same structure, same lookup logic.
+fn lookup_command_policy(
+    commands: &std::collections::HashMap<String, CommandPolicy>,
+    base_command: &str,
+    info: &CommandInfo,
+) -> Option<PolicyDecision> {
+    match commands.get(base_command)? {
+        CommandPolicy::Flat(decision) => Some(*decision),
+        CommandPolicy::Detailed(detail) => {
+            // If there's a matching subcommand override, use it
+            if let Some(sub) = &info.subcommand {
+                if let Some(decision) = detail.subcommands.get(sub.as_str()) {
+                    return Some(*decision);
+                }
+            }
+            // Otherwise fall back to the base override if present
+            detail.base
         }
     }
 }
@@ -648,7 +797,7 @@ fn is_benign_redirection(redir: &Redirection) -> bool {
 /// This is the bridge that closes the drift gap: the KB is the single source
 /// of truth for "what is a wrapper," and the policy engine primes the parser
 /// with that knowledge at evaluation time.
-fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
+pub fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
     let default_config = parse::default_command_config();
     kb.wrappers
         .iter()

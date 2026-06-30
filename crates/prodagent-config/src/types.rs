@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use agent_command_knowledge::merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};
-use prodagent_policy::config::{CommandPolicy, EffectDefaults, PolicyConfig};
+use prodagent_policy::config::{CommandPolicy, EffectDefaults, OverrideConfig, PolicyConfig};
 use prodagent_policy::path_rules::PathRule;
 use prodagent_policy::PolicyDecision;
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,17 @@ pub struct PolicyOverlay {
     /// override defaults while preserving lower-layer rules as fallbacks.
     #[serde(default)]
     pub path_rules: Option<Vec<PathRule>>,
+
+    /// User overrides that bypass project policy restrictions.
+    ///
+    /// Written by the consent gate's "Always Allow" option. These entries
+    /// take precedence over the `max(user, project)` merge — they represent
+    /// explicit, informed consent to relax a project restriction.
+    ///
+    /// Only valid in user config — project configs MUST NOT have overrides
+    /// (enforced by the monotonicity validator).
+    #[serde(default)]
+    pub overrides: Option<OverrideConfig>,
 }
 
 /// Optional overrides for effect-class defaults. `None` means "inherit."
@@ -131,6 +142,7 @@ impl PolicyOverlay {
             && self.remove_commands.is_empty()
             && self.opaque_env_ceiling.is_none()
             && self.path_rules.is_none()
+            && self.overrides.as_ref().is_none_or(|o| o.is_empty())
     }
 
     /// Apply this overlay onto a base [`PolicyConfig`], mutating it in place.
@@ -173,6 +185,20 @@ impl PolicyOverlay {
             let mut merged = overlay_rules;
             merged.append(&mut base.path_rules);
             base.path_rules = merged;
+        }
+
+        // 6. User overrides — merge into the base override config.
+        // Override commands from the overlay win on conflict; override path
+        // rules are prepended (higher priority).
+        if let Some(overlay_overrides) = self.overrides {
+            for (key, policy) in overlay_overrides.commands {
+                base.overrides.commands.insert(key, policy);
+            }
+            if !overlay_overrides.path_rules.is_empty() {
+                let mut merged = overlay_overrides.path_rules;
+                merged.append(&mut base.overrides.path_rules);
+                base.overrides.path_rules = merged;
+            }
         }
     }
 }
@@ -228,6 +254,7 @@ impl ProdagentConfig {
                 .opaque_env_ceiling
                 .unwrap_or(PolicyDecision::Ask),
             path_rules: defaults.policy.path_rules.unwrap_or_default(),
+            overrides: defaults.policy.overrides.unwrap_or_default(),
         };
 
         // Merge user layer

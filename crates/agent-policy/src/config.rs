@@ -51,10 +51,52 @@ pub struct PolicyConfig {
     /// components are resolved before matching to prevent traversal bypasses.
     #[serde(default)]
     pub path_rules: Vec<PathRule>,
+
+    /// User overrides that bypass project policy restrictions.
+    ///
+    /// When a user explicitly consents to relax a project-level restriction
+    /// via the consent gate ("Always Allow"), the override is recorded here.
+    /// Overrides take precedence over the `max(user, project)` merge — they
+    /// represent the user's explicit, informed consent to weaken a project
+    /// rule for a specific command or path.
+    ///
+    /// Overrides use the same types as regular policy config (`commands`,
+    /// `path_rules`). No new persistence layer — they are standard config
+    /// entries stored in a dedicated section of the user config file.
+    #[serde(default)]
+    pub overrides: OverrideConfig,
 }
 
 fn default_opaque_env_ceiling() -> PolicyDecision {
     PolicyDecision::Ask
+}
+
+/// User overrides that bypass project policy restrictions.
+///
+/// These represent explicit user consent to relax a project-level
+/// restriction. They are checked before the `max(user, project)` merge
+/// result and take precedence when matched.
+///
+/// Structurally identical to the regular policy config fields — same
+/// `commands` HashMap, same `path_rules` Vec. No new types, no new
+/// persistence layer. "Always Allow" writes here; next evaluation finds
+/// the override and skips the consent gate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OverrideConfig {
+    /// Per-command overrides that bypass project restrictions.
+    #[serde(default)]
+    pub commands: HashMap<String, CommandPolicy>,
+
+    /// Path-scoped overrides that bypass project restrictions.
+    #[serde(default)]
+    pub path_rules: Vec<PathRule>,
+}
+
+impl OverrideConfig {
+    /// Returns `true` if no overrides are configured.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty() && self.path_rules.is_empty()
+    }
 }
 
 impl Default for PolicyConfig {
@@ -64,6 +106,7 @@ impl Default for PolicyConfig {
             commands: HashMap::new(),
             opaque_env_ceiling: default_opaque_env_ceiling(),
             path_rules: Vec::new(),
+            overrides: OverrideConfig::default(),
         }
     }
 }
@@ -87,6 +130,39 @@ impl Default for EffectDefaults {
     }
 }
 
+/// Validate that no path rules have empty paths lists (would never fire).
+///
+/// Individual pattern validation (empty strings, bare globs) is handled
+/// by the `PathGlob` constructor --- invalid patterns can't be represented.
+fn validate_path_rules(rules: &[PathRule], prefix: &str) -> Result<(), String> {
+    for (i, rule) in rules.iter().enumerate() {
+        if rule.paths.is_empty() {
+            return Err(format!(
+                "{prefix}.path_rules[{i}]: empty paths list (rule would never fire)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reject `Detailed` command entries that are no-ops (no base override and
+/// no subcommands).
+fn validate_commands(
+    commands: &HashMap<String, CommandPolicy>,
+    prefix: &str,
+) -> Result<(), String> {
+    for (name, policy) in commands {
+        if let CommandPolicy::Detailed(detail) = policy {
+            if detail.base.is_none() && detail.subcommands.is_empty() {
+                return Err(format!(
+                    "no-op command policy for \"{name}\" in {prefix}: Detailed entry has no base override and no subcommands"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl PolicyConfig {
     /// Validate that effect defaults are monotonic: read_only <= mutating <= unknown.
     ///
@@ -106,27 +182,10 @@ impl PolicyConfig {
             ));
         }
 
-        // Reject path rules with empty paths (would never fire).
-        // Individual pattern validation (empty strings, bare globs) is handled
-        // by the PathGlob constructor — invalid patterns can't be represented.
-        for (i, rule) in self.path_rules.iter().enumerate() {
-            if rule.paths.is_empty() {
-                return Err(format!(
-                    "path_rules[{i}]: empty paths list (rule would never fire)"
-                ));
-            }
-        }
-
-        // Reject Detailed entries that are no-ops (no base override + no subcommands)
-        for (name, policy) in &self.commands {
-            if let CommandPolicy::Detailed(detail) = policy {
-                if detail.base.is_none() && detail.subcommands.is_empty() {
-                    return Err(format!(
-                        "no-op command policy for \"{name}\": Detailed entry has no base override and no subcommands"
-                    ));
-                }
-            }
-        }
+        validate_path_rules(&self.path_rules, "policy")?;
+        validate_commands(&self.commands, "policy")?;
+        validate_path_rules(&self.overrides.path_rules, "overrides")?;
+        validate_commands(&self.overrides.commands, "overrides")?;
 
         Ok(())
     }
@@ -173,6 +232,7 @@ pub struct PolicyConfigBuilder {
     commands: HashMap<String, CommandPolicy>,
     opaque_env_ceiling: PolicyDecision,
     path_rules: Vec<PathRule>,
+    overrides: OverrideConfig,
 }
 
 impl Default for PolicyConfigBuilder {
@@ -182,6 +242,7 @@ impl Default for PolicyConfigBuilder {
             commands: HashMap::new(),
             opaque_env_ceiling: default_opaque_env_ceiling(),
             path_rules: Vec::new(),
+            overrides: OverrideConfig::default(),
         }
     }
 }
@@ -325,6 +386,32 @@ impl PolicyConfigBuilder {
         self
     }
 
+    // ── Overrides ────────────────────────────────────────────────────────
+
+    /// Add a per-command override that bypasses project restrictions.
+    ///
+    /// When the user has explicitly consented (via the consent gate) to
+    /// relax a project restriction for this command, the override is
+    /// checked before the `max(user, project)` result.
+    pub fn override_command(mut self, command: &str, decision: PolicyDecision) -> Self {
+        self.overrides
+            .commands
+            .insert(command.to_string(), CommandPolicy::Flat(decision));
+        self
+    }
+
+    /// Add a path-scoped override that bypasses project restrictions.
+    pub fn override_path_rule(mut self, rule: PathRule) -> Self {
+        self.overrides.path_rules.push(rule);
+        self
+    }
+
+    /// Set the full override config.
+    pub fn overrides(mut self, overrides: OverrideConfig) -> Self {
+        self.overrides = overrides;
+        self
+    }
+
     // ── Build ──────────────────────────────────────────────────────────
 
     /// Consume the builder and return a validated [`PolicyConfig`].
@@ -337,6 +424,7 @@ impl PolicyConfigBuilder {
             commands: self.commands,
             opaque_env_ceiling: self.opaque_env_ceiling,
             path_rules: self.path_rules,
+            overrides: self.overrides,
         };
         config.validate()?;
         Ok(config)

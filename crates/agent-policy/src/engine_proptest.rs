@@ -1274,7 +1274,7 @@ proptest! {
                         .wrappers
                         .iter()
                         .find(|s| s.name == **name)
-                        .map_or(true, |s| s.skip_positionals == 0)
+                        .is_none_or(|s| s.skip_positionals == 0)
             })
             .map(|(name, _)| name.as_str())
             .collect();
