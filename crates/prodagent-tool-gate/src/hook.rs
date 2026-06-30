@@ -219,10 +219,108 @@ fn extract_base_command(command: &str, kb: &KnowledgeBase) -> String {
     // Fallback: naive split_whitespace parsing
     let words: Vec<&str> = command.split_whitespace().collect();
     for word in &words {
-        if word.contains('=') && !word.starts_with('-') {
-            continue; // Skip env assignments
+        if is_env_assignment(word) {
+            continue; // Skip env assignments like FOO=bar
         }
         return word.rsplit('/').next().unwrap_or(word).to_string();
     }
     command.split_whitespace().next().unwrap_or("").to_string()
+}
+
+/// Check if a token looks like a shell environment variable assignment (`KEY=VALUE`).
+///
+/// A valid env var name starts with a letter or underscore and contains only
+/// alphanumerics and underscores — no path separators, no leading digits.
+/// This correctly distinguishes `FOO=bar` (env assignment) from `/opt/foo=bar/bin/thing`
+/// (a path that happens to contain `=`).
+fn is_env_assignment(token: &str) -> bool {
+    let Some(eq_pos) = token.find('=') else {
+        return false;
+    };
+    let key = &token[..eq_pos];
+    if key.is_empty() {
+        return false;
+    }
+    let first = key.as_bytes()[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return false;
+    }
+    key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_env_assignment_valid_cases() {
+        assert!(is_env_assignment("FOO=bar"));
+        assert!(is_env_assignment("MY_VAR=hello"));
+        assert!(is_env_assignment("_PRIVATE=1"));
+        assert!(is_env_assignment("A="));
+        assert!(is_env_assignment("FOO=bar=baz"));
+    }
+
+    #[test]
+    fn is_env_assignment_invalid_cases() {
+        // Paths containing =
+        assert!(!is_env_assignment("/opt/foo=bar/bin/thing"));
+        assert!(!is_env_assignment("./foo=bar"));
+        // Starts with digit
+        assert!(!is_env_assignment("1FOO=bar"));
+        // No equals sign
+        assert!(!is_env_assignment("FOO"));
+        // Empty key
+        assert!(!is_env_assignment("=value"));
+        // Flag with =
+        assert!(!is_env_assignment("--config=value"));
+        // Hyphen in key
+        assert!(!is_env_assignment("FOO-BAR=baz"));
+    }
+
+    #[test]
+    fn fallback_extracts_command_after_env_var() {
+        // The fallback path is exercised when the shell parser fails.
+        // We test the logic directly via the helper + the same word-loop.
+        let extract_fallback = |command: &str| -> String {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            for word in &words {
+                if is_env_assignment(word) {
+                    continue;
+                }
+                return word.rsplit('/').next().unwrap_or(word).to_string();
+            }
+            command.split_whitespace().next().unwrap_or("").to_string()
+        };
+
+        // Normal env var prefix
+        assert_eq!(extract_fallback("FOO=bar command"), "command");
+
+        // Multiple env vars
+        assert_eq!(extract_fallback("FOO=1 BAR=2 command"), "command");
+
+        // Path with = is treated as the command, not skipped
+        assert_eq!(extract_fallback("/opt/foo=bar/bin/thing"), "thing");
+
+        // Absolute path command
+        assert_eq!(extract_fallback("/usr/bin/git status"), "git");
+
+        // Plain command
+        assert_eq!(extract_fallback("ls -la"), "ls");
+
+        // Env var with underscore key
+        assert_eq!(extract_fallback("MY_VAR=hello rm -rf /tmp"), "rm");
+
+        // Token starting with digit containing = is not an env var
+        assert_eq!(extract_fallback("1FOO=bar"), "1FOO=bar");
+
+        // Flag with = is not an env var
+        assert_eq!(extract_fallback("--config=value"), "--config=value");
+
+        // Only env vars (no command after) falls through to first word
+        assert_eq!(extract_fallback("FOO=bar"), "FOO=bar");
+
+        // Empty string
+        assert_eq!(extract_fallback(""), "");
+    }
 }

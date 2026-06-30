@@ -1314,9 +1314,9 @@ fn monotonicity_command_override_weakens_via_mixed_defaults() {
          the floor for commands without a per-command override is the \
          strongest effect default"
     );
-    assert_eq!(violations[0].path, "policy.commands.rm");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(unwrap_relaxation(&violations[0]).0, "policy.commands.rm");
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 #[test]
@@ -1416,9 +1416,12 @@ fn monotonicity_subcommand_override_weakens_via_mixed_defaults() {
         "project `git.push: Allow` must not bypass user `mutating: Ask` — \
          subcommand floor must also use strongest effect default"
     );
-    assert_eq!(violations[0].path, "policy.commands.git.subcommands.push");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(
+        unwrap_relaxation(&violations[0]).0,
+        "policy.commands.git.subcommands.push"
+    );
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 #[test]
@@ -1456,9 +1459,12 @@ fn monotonicity_detailed_base_weakens_via_mixed_defaults() {
         "project `docker.base: Allow` must not bypass user `unknown: Deny` — \
          strongest default is Deny"
     );
-    assert_eq!(violations[0].path, "policy.commands.docker.base");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Deny);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(
+        unwrap_relaxation(&violations[0]).0,
+        "policy.commands.docker.base"
+    );
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Deny);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 #[test]
@@ -1490,9 +1496,9 @@ fn monotonicity_command_override_weakens_with_uniform_defaults() {
         1,
         "uniform Ask defaults: project rm: Allow must still be caught"
     );
-    assert_eq!(violations[0].path, "policy.commands.rm");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(unwrap_relaxation(&violations[0]).0, "policy.commands.rm");
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 // ── Overrides: project config must not contain overrides ──────────────────
