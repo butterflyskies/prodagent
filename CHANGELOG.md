@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-30
+
+### Added
+
+- **New binary**: `prodagent-tool-gate` — PreToolUse hook replacing cc-toolgate, with three-tier config cascade via prodagent-config, structured decision logging to `<data_dir>/prodagent/decisions.log`, `--escalate-deny`/`--dump-config`/`--dump-ast` flags (#64)
+- `prodagent-policy`: Path-scoped policy decisions for Bash commands — optional `paths` field (glob list) on policy rules constrains where rules apply, with per-path evaluation through three-tier specificity (command+path > path-only/command-only > effect default), deny-wins aggregation across multi-path commands (#77)
+- `prodagent-policy`: `PathGlob` newtype for validated path glob patterns — rejects empty strings and bare `*`/`**`/`/*`/`/**` universal bypasses at construction time (#77)
+- `prodagent-policy`: Consent-gated user overrides for project policy decisions — `[policy.overrides]` section lets users explicitly bypass project-level restrictions with conflict detection, structured override config in hook output, and safety rails preserving env gates, escalation flags, and wrapper analysis (#83)
+- `prodagent-proofs`: Kani proof harnesses for path evaluation (deny absorption, aggregation monotonicity, tier specificity, evaluation totality), gate-path composition, merge monotonicity, command-scoped path rules, and override properties (no silent weakening, tightening freedom, idempotency, safety rail preservation) (#77, #83)
+
+### Changed
+
+- **BREAKING** Renamed `agent-policy` crate to `prodagent-policy` for crates.io namespace availability (#73)
+- `prodagent-types`: `WordKind` enum on `Word` type — words from tree-sitter now carry structural classification (Literal, CommandSubstitution, VariableExpansion, ArithmeticExpansion, Dynamic), eliminating byte-scanning heuristics in `as_classified_assignment()`, `classify_surface()`, and `collect_substitutions()` (#67)
+- `prodagent-config`: `load_split()` is now the primitive config loader; `load()` delegates to it, eliminating 70-line copy-paste (#83)
+- `prodagent-config`: `MonotonicityViolation` converted from struct to enum with `Relaxation` and `Structural` variants (#83)
+- Updated README for v0.8 architecture — dependency graph, configuration section, formal verification section, development instructions (#72)
+
+### Fixed
+
+- `prodagent-types`: Normalize trailing slashes in `AffectedPaths` via camino component re-collection, fixing proptest failures where `foo/` and `foo` were treated as distinct entries (#68)
+- `prodagent-policy`: Use `strongest_effect_default` as floor in command and subcommand decision validation — prevents project configs from relaxing mutating/unknown command decisions via mixed effect defaults (#82)
+- `prodagent-policy`: Use `strongest_effect_default` as fallback for command-scoped path rules without per-command overrides (#77)
+- Update `anyhow` to 1.0.103 to resolve RUSTSEC-2026-0190 unsoundness advisory (#84)
+- CI: Add missing crates to publish workflow and release archives (#74)
+
 ## [0.8.2] - 2026-06-07
 
 ### Added
