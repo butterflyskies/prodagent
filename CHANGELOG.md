@@ -18,11 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **BREAKING** Renamed `agent-policy` crate to `prodagent-policy` for crates.io namespace availability (#73)
 - `prodagent-types`: `WordKind` enum on `Word` type — words from tree-sitter now carry structural classification (Literal, CommandSubstitution, VariableExpansion, ArithmeticExpansion, Dynamic), eliminating byte-scanning heuristics in `as_classified_assignment()`, `classify_surface()`, and `collect_substitutions()` (#67)
 - `prodagent-config`: `load_split()` is now the primitive config loader; `load()` delegates to it, eliminating 70-line copy-paste (#83)
 - `prodagent-config`: `MonotonicityViolation` converted from struct to enum with `Relaxation` and `Structural` variants (#83)
-- Updated README for v0.8 architecture — dependency graph, configuration section, formal verification section, development instructions (#72)
 
 ### Fixed
 
@@ -36,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **New binary**: `prodagent-tool-gate` — PreToolUse hook replacing cc-toolgate, with three-tier config cascade via prodagent-config, structured decision logging to `<data_dir>/prodagent/decisions.log`, `--escalate-deny`/`--dump-config`/`--dump-ast` flags (#64)
 - Recursive policy evaluation for command substitutions in env assignments (`FOO=$(cmd)`)
 - Env snapshot propagation across `&&`/`;` compound command segments
 - `AssignmentValue` type-driven classification (Static/CommandSubstitution/VariableExpansion)
@@ -43,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - All declaration keywords (`export`/`declare`/`readonly`/`local`/`typeset`) propagate env mutations
 - Metamorphic proptest sampling from all transparent KB wrappers
 - ADRs and spec documentation for env gate semantics
+
+### Changed
+
+- **BREAKING** Renamed `agent-policy` crate to `prodagent-policy` for crates.io namespace availability (#73)
+- Updated README for v0.8 architecture — dependency graph, configuration section, formal verification section, development instructions (#72)
 
 ## [0.8.1] - 2026-06-07
 
