@@ -52,8 +52,8 @@ fn ecwd(cmd: &str, session: &str) -> Vec<String> {
 #[case::multiple_git_segments_same_cwd("git status && git log", "/session", vec!["/session"])]
 fn effective_cwd_resolution(#[case] cmd: &str, #[case] session: &str, #[case] expected: Vec<&str>) {
     let result = ecwd(cmd, session);
-    let expected: Vec<String> = expected.into_iter().map(String::from).collect();
-    assert_eq!(result, expected, "cmd={cmd}, session={session}");
+    let result_strs: Vec<&str> = result.iter().map(String::as_str).collect();
+    assert_eq!(result_strs, expected, "cmd={cmd}, session={session}");
 }
 
 // --- CWD-based gating (jj detection via evaluate()) ---
