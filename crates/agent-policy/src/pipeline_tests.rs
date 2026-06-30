@@ -1607,7 +1607,7 @@ fn allowed_substitution_with_prefix_fires_set_gate() {
     let engine = default_engine();
     let result = engine.evaluate_command("TESTPROP_SUBST=prefix-$(git status) mycmd", &kb);
     assert!(
-        result.segments.len() >= 1,
+        !result.segments.is_empty(),
         "expected at least 1 segment: {result:?}"
     );
     // The compound command includes the substitution $(git status) which is

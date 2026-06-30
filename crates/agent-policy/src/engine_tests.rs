@@ -1749,7 +1749,7 @@ fn path_rule_allows_in_matched_cwd() {
     let kb = agent_command_knowledge::default_knowledge_base();
 
     // CWD in /tmp → path rule fires → Allow
-    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/scratch"));
+    let result = engine.evaluate_command_with_cwd("ls", kb, Some("/tmp/scratch"));
     assert_eq!(
         result.decision,
         PolicyDecision::Allow,
@@ -1913,11 +1913,11 @@ fn path_rule_order_first_match_wins() {
     let kb = agent_command_knowledge::default_knowledge_base();
 
     // /tmp/sensitive → first rule wins (deny)
-    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/sensitive/data"));
+    let result = engine.evaluate_command_with_cwd("ls", kb, Some("/tmp/sensitive/data"));
     assert_eq!(result.decision, PolicyDecision::Deny);
 
     // /tmp/other → second rule wins (allow)
-    let result = engine.evaluate_command_with_cwd("ls", &kb, Some("/tmp/other"));
+    let result = engine.evaluate_command_with_cwd("ls", kb, Some("/tmp/other"));
     assert_eq!(result.decision, PolicyDecision::Allow);
 }
 
@@ -1942,7 +1942,7 @@ fn path_rule_allow_overridden_by_escalation_flags() {
 
     // git push --force in /tmp — path rule fires Allow, but --force is an
     // escalation flag that should escalate to at least Ask
-    let result = engine.evaluate_command_with_cwd("git push --force", &kb, Some("/tmp/repo"));
+    let result = engine.evaluate_command_with_cwd("git push --force", kb, Some("/tmp/repo"));
     assert!(
         result.decision >= PolicyDecision::Ask,
         "escalation flags should override path rule Allow: {result:?}"
