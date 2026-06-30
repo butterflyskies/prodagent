@@ -874,40 +874,18 @@ fn trim_at_heredoc_body(node: Node, end: &mut usize) {
 #[cfg(test)]
 mod walk_tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn strip_quotes_empty_string() {
-        assert_eq!(strip_quotes("", WordKind::Literal), "");
-    }
-
-    #[test]
-    fn strip_quotes_empty_single_quotes() {
-        let w = strip_quotes("''", WordKind::Literal);
-        assert_eq!(w, "");
-    }
-
-    #[test]
-    fn strip_quotes_empty_double_quotes() {
-        let w = strip_quotes("\"\"", WordKind::Literal);
-        assert_eq!(w, "");
-    }
-
-    #[test]
-    fn strip_quotes_ansi_c_quotes() {
-        let w = strip_quotes("$'hello'", WordKind::Literal);
-        assert_eq!(w, "hello");
-    }
-
-    #[test]
-    fn strip_quotes_unclosed_double_quote() {
-        let w = strip_quotes("\"unclosed", WordKind::Literal);
-        assert_eq!(w, "\"unclosed");
-    }
-
-    #[test]
-    fn strip_quotes_unmatched_single_quote() {
-        let w = strip_quotes("'unmatched", WordKind::Literal);
-        assert_eq!(w, "'unmatched");
+    #[rstest]
+    #[case::empty_string("", WordKind::Literal, "")]
+    #[case::empty_single_quotes("''", WordKind::Literal, "")]
+    #[case::empty_double_quotes("\"\"", WordKind::Literal, "")]
+    #[case::ansi_c_quotes("$'hello'", WordKind::Literal, "hello")]
+    #[case::unclosed_double_quote("\"unclosed", WordKind::Literal, "\"unclosed")]
+    #[case::unmatched_single_quote("'unmatched", WordKind::Literal, "'unmatched")]
+    fn strip_quotes_behavior(#[case] input: &str, #[case] kind: WordKind, #[case] expected: &str) {
+        let result = strip_quotes(input, kind);
+        assert_eq!(result, expected);
     }
 
     #[test]

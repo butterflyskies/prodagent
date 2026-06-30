@@ -1,6 +1,7 @@
 use super::super::tokenize::tokenize;
 use super::super::types::WrapperEnvPolicy;
 use super::*;
+use rstest::rstest;
 
 fn words(s: &str) -> Vec<Word> {
     tokenize(s)
@@ -19,46 +20,27 @@ fn spec(name: &str) -> WrapperSpec {
     }
 }
 
-#[test]
-fn strip_simple_wrapper() {
+#[rstest]
+#[case::simple_wrapper("wrap inner cmd", "inner cmd")]
+#[case::value_consuming_short_flag("wrap -v thing inner cmd", "inner cmd")]
+#[case::value_consuming_long_flag("wrap --val thing inner cmd", "inner cmd")]
+#[case::long_flag_equals_form("wrap --val=thing inner cmd", "inner cmd")]
+#[case::terminator_stops_flag_processing("wrap -x -- -v notflag cmd", "-v notflag cmd")]
+#[case::boolean_flag_skipped("wrap -x --verbose inner", "inner")]
+#[case::path_prefixed_wrapper("/usr/bin/wrap inner cmd", "inner cmd")]
+fn strip_with_spec_resolves_inner(#[case] input: &str, #[case] expected: &str) {
     let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap inner cmd"));
-    assert_eq!(result, words("inner cmd"));
+    let result = strip_with_spec(&s, &words(input));
+    assert_eq!(result, words(expected));
 }
 
-#[test]
-fn strip_value_consuming_short_flag() {
+#[rstest]
+#[case::truncated_value_flag("wrap -v")]
+#[case::no_inner_command("wrap -x --verbose")]
+fn strip_with_spec_returns_empty(#[case] input: &str) {
     let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap -v thing inner cmd"));
-    assert_eq!(result, words("inner cmd"));
-}
-
-#[test]
-fn strip_value_consuming_long_flag() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap --val thing inner cmd"));
-    assert_eq!(result, words("inner cmd"));
-}
-
-#[test]
-fn strip_long_flag_equals_form() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap --val=thing inner cmd"));
-    assert_eq!(result, words("inner cmd"));
-}
-
-#[test]
-fn strip_terminator_stops_flag_processing() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap -x -- -v notflag cmd"));
-    assert_eq!(result, words("-v notflag cmd"));
-}
-
-#[test]
-fn strip_boolean_flag_skipped() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap -x --verbose inner"));
-    assert_eq!(result, words("inner"));
+    let result = strip_with_spec(&s, &words(input));
+    assert!(result.is_empty(), "expected empty result for: {input}");
 }
 
 #[test]
@@ -74,27 +56,6 @@ fn strip_env_assignments_when_configured() {
         env_policy: WrapperEnvPolicy::default(),
     };
     let result = strip_with_spec(&s, &words("wrap FOO=bar BAZ=qux inner cmd"));
-    assert_eq!(result, words("inner cmd"));
-}
-
-#[test]
-fn strip_truncated_value_flag_returns_empty() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap -v"));
-    assert!(result.is_empty());
-}
-
-#[test]
-fn strip_no_inner_command_returns_empty() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("wrap -x --verbose"));
-    assert!(result.is_empty());
-}
-
-#[test]
-fn strip_path_prefixed_wrapper() {
-    let s = spec("wrap");
-    let result = strip_with_spec(&s, &words("/usr/bin/wrap inner cmd"));
     assert_eq!(result, words("inner cmd"));
 }
 
