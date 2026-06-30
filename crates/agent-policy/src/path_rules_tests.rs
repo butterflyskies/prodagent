@@ -155,6 +155,7 @@ use rstest::rstest;
 
 #[rstest]
 #[case::dotdot_in_absolute("/tmp/safe/../../etc/shadow", "/etc/shadow")]
+// .. at root clamps — cannot escape above /
 #[case::dotdot_at_root_clamps("/../../etc", "/etc")]
 #[case::dot_components("/tmp/./foo/./bar", "/tmp/foo/bar")]
 #[case::mixed_dot_and_dotdot("/a/./b/../c", "/a/c")]
