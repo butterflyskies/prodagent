@@ -309,6 +309,14 @@ fn monotonicity_same_decision_is_ok() {
 #[test]
 fn user_layer_overrides_defaults() {
     let defaults = default_layer();
+    // Precondition: default read_only must differ from user's override for
+    // this test to actually verify the override mechanism (both mutating and
+    // unknown default to Ask, same as PolicyDecision::default()).
+    assert_eq!(
+        defaults.policy.defaults.read_only,
+        Some(PolicyDecision::Allow),
+        "precondition: default read_only must be Allow for override test to be meaningful"
+    );
     let user = ConfigLayer {
         policy: PolicyOverlay {
             defaults: PolicyDefaultsOverlay {
