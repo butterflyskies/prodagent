@@ -1751,6 +1751,10 @@ fn declaration_with_redirection_escalates() {
         PolicyDecision::Ask,
         "declaration with output redirection should escalate to Ask: {result:?}"
     );
+    assert!(
+        result.reason.contains("escalated"),
+        "reason should mention redirection escalation: {result:?}"
+    );
 }
 
 // ── Export env propagation for allowed_with_config pattern ────────────────────
@@ -1880,6 +1884,19 @@ fn export_env_then_command_allows_with_config() {
 }
 
 #[test]
+fn gate_fires_without_env_set_gh() {
+    // Negative baseline for gh path: gh pr create with no env set → Ask.
+    // Tests the multi-word subcommand override through allowed_with_config_setup_for.
+    let (engine, kb) = allowed_with_config_setup_for("gh", "pr create", "TESTENV_GH_CONFIG");
+    let result = engine.evaluate_command("gh pr create", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "gh pr create without env should be Ask (Unset gate fires): {result:?}"
+    );
+}
+
+#[test]
 fn export_gh_config_then_gh_command_allows_with_config() {
     // export GH_CONFIG_DIR=~/.config/gh-butterflysky-ai && gh pr create
     let (engine, kb) = allowed_with_config_setup_for("gh", "pr create", "TESTENV_GH_CONFIG");
@@ -1946,6 +1963,12 @@ fn partial_export_still_fires_unsatisfied_gate() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTENV_PARTIAL_A=1 && mycmd", &kb);
+    // Pipeline should be Ask because mycmd's unsatisfied gate fires.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "pipeline should be Ask when unsatisfied gate remains: {result:?}"
+    );
     // Only A is set — B's Unset gate fires.
     let mycmd_segment = result
         .segments
