@@ -454,7 +454,10 @@ impl PolicyEngine {
                 .map(|w| w.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            return PolicyResult::simple(PolicyDecision::Allow, format!("declaration: {desc}"));
+            let mut result =
+                PolicyResult::simple(PolicyDecision::Allow, format!("declaration: {desc}"));
+            maybe_escalate_for_redirection(&mut result, segment);
+            return result;
         }
 
         if base_command.is_empty() {
