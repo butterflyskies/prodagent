@@ -1127,6 +1127,7 @@ fn gate_action_to_decision(action: EnvGateAction) -> PolicyDecision {
         EnvGateAction::Deny => PolicyDecision::Deny,
     }
 }
+
 /// Check if a word list represents a standalone declaration command
 /// (`export`, `declare`, `readonly`, `local`, `typeset`) that modifies
 /// variable attributes without executing a command.
@@ -1236,12 +1237,7 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
     // Two forms:
     //   1. `["FOO=bar"]` or `["FOO=bar", "BAR=baz"]` — all words are assignments
     //   2. `["export", "FOO=bar", ...]` — export keyword followed by assignments
-    let is_declaration = words.first().is_some_and(|w| {
-        matches!(
-            w.as_str(),
-            "export" | "declare" | "readonly" | "local" | "typeset"
-        )
-    });
+    let is_declaration = is_standalone_declaration(words);
     let start_idx = if is_declaration { 1 } else { 0 };
 
     // Check that all remaining words are assignments (no command after them).
