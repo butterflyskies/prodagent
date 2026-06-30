@@ -304,10 +304,10 @@ fn monotonicity_same_decision_is_ok() {
     );
 }
 
-// ── 2. Determinism: same inputs → same outputs ───────────────────────────
+// ── 2. Layer merge semantics: user overrides defaults, project overrides user ─
 
 #[test]
-fn determinism_same_layers_same_result() {
+fn user_layer_overrides_defaults() {
     let defaults = default_layer();
     let user = ConfigLayer {
         policy: PolicyOverlay {
@@ -320,25 +320,29 @@ fn determinism_same_layers_same_result() {
         ..Default::default()
     };
 
-    let result1 = ProdagentConfig::from_layers(defaults.clone(), Some(user.clone()), None);
-    let result2 = ProdagentConfig::from_layers(defaults.clone(), Some(user.clone()), None);
+    let result = ProdagentConfig::from_layers(defaults, Some(user), None);
 
+    // User layer overrides read_only from Allow → Ask
     assert_eq!(
-        result1.policy.defaults.read_only,
-        result2.policy.defaults.read_only
+        result.policy.defaults.read_only,
+        PolicyDecision::Ask,
+        "user layer should override default read_only"
+    );
+    // Unset fields in user layer inherit from defaults
+    assert_eq!(
+        result.policy.defaults.mutating,
+        PolicyDecision::Ask,
+        "mutating should retain default value"
     );
     assert_eq!(
-        result1.policy.defaults.mutating,
-        result2.policy.defaults.mutating
-    );
-    assert_eq!(
-        result1.policy.defaults.unknown,
-        result2.policy.defaults.unknown
+        result.policy.defaults.unknown,
+        PolicyDecision::Ask,
+        "unknown should retain default value"
     );
 }
 
 #[test]
-fn determinism_with_all_three_layers() {
+fn project_layer_overrides_user_layer() {
     let defaults = default_layer();
     let user = ConfigLayer {
         policy: PolicyOverlay {
@@ -371,18 +375,24 @@ fn determinism_with_all_three_layers() {
         ..Default::default()
     };
 
-    let result1 =
-        ProdagentConfig::from_layers(defaults.clone(), Some(user.clone()), Some(project.clone()));
-    let result2 =
-        ProdagentConfig::from_layers(defaults.clone(), Some(user.clone()), Some(project.clone()));
+    let result = ProdagentConfig::from_layers(defaults, Some(user), Some(project));
 
+    // Project layer overrides user's Ask → Deny
     assert_eq!(
-        result1.policy.defaults.read_only,
-        result2.policy.defaults.read_only
+        result.policy.defaults.read_only,
+        PolicyDecision::Deny,
+        "project layer should override user read_only"
+    );
+    // Project layer overrides git: Allow → Deny
+    let git_policy = result.policy.commands.get("git");
+    assert!(
+        git_policy.is_some(),
+        "git should be present in merged commands"
     );
     assert_eq!(
-        format!("{:?}", result1.policy.commands),
-        format!("{:?}", result2.policy.commands),
+        *git_policy.unwrap(),
+        CommandPolicy::Flat(PolicyDecision::Deny),
+        "project should override user's git policy"
     );
 }
 

@@ -175,48 +175,30 @@ effect = "read-only"
 
 // ── EnvGate TOML serde ─────────────────────────────────────────────────────
 
-#[test]
-fn env_gate_toml_equals_round_trip() {
-    let gate = EnvGate {
-        var: "GIT_AUTHOR_NAME".into(),
-        condition: EnvCondition::Equals("AI Agent".into()),
-        decision: EnvGateAction::Allow,
-    };
-    let serialized = toml::to_string(&gate).expect("serialize");
-    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
-    assert_eq!(gate, deserialized);
-}
+use rstest::rstest;
 
-#[test]
-fn env_gate_toml_not_equals_round_trip() {
+#[rstest]
+#[case::equals(
+    "GIT_AUTHOR_NAME",
+    EnvCondition::Equals("AI Agent".into()),
+    EnvGateAction::Allow
+)]
+#[case::not_equals(
+    "NODE_ENV",
+    EnvCondition::NotEquals("production".into()),
+    EnvGateAction::Deny
+)]
+#[case::set("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow)]
+#[case::unset("CI", EnvCondition::Unset, EnvGateAction::Ask)]
+fn env_gate_toml_round_trip(
+    #[case] var: &str,
+    #[case] condition: EnvCondition,
+    #[case] decision: EnvGateAction,
+) {
     let gate = EnvGate {
-        var: "NODE_ENV".into(),
-        condition: EnvCondition::NotEquals("production".into()),
-        decision: EnvGateAction::Deny,
-    };
-    let serialized = toml::to_string(&gate).expect("serialize");
-    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
-    assert_eq!(gate, deserialized);
-}
-
-#[test]
-fn env_gate_toml_set_round_trip() {
-    let gate = EnvGate {
-        var: "VIRTUAL_ENV".into(),
-        condition: EnvCondition::Set,
-        decision: EnvGateAction::Allow,
-    };
-    let serialized = toml::to_string(&gate).expect("serialize");
-    let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
-    assert_eq!(gate, deserialized);
-}
-
-#[test]
-fn env_gate_toml_unset_round_trip() {
-    let gate = EnvGate {
-        var: "CI".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Ask,
+        var: var.into(),
+        condition,
+        decision,
     };
     let serialized = toml::to_string(&gate).expect("serialize");
     let deserialized: EnvGate = toml::from_str(&serialized).expect("deserialize");
