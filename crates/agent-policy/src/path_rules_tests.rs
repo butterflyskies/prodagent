@@ -151,59 +151,21 @@ fn path_glob_deserialize_rejects_invalid() {
 // resolve_and_normalize
 // ══════════════════════════════════════════════════════════════════════════
 
-#[test]
-fn resolve_dotdot_in_absolute_path() {
-    assert_eq!(
-        resolve_and_normalize("/tmp/safe/../../etc/shadow"),
-        "/etc/shadow"
-    );
-}
+use rstest::rstest;
 
-#[test]
-fn resolve_dotdot_at_root_clamps() {
-    // Can't go above / — .. at root is a no-op
-    assert_eq!(resolve_and_normalize("/../../etc"), "/etc");
-}
-
-#[test]
-fn resolve_dot_components() {
-    assert_eq!(resolve_and_normalize("/tmp/./foo/./bar"), "/tmp/foo/bar");
-}
-
-#[test]
-fn resolve_mixed_dot_and_dotdot() {
-    assert_eq!(resolve_and_normalize("/a/./b/../c"), "/a/c");
-}
-
-#[test]
-fn resolve_relative_dotdot_preserved() {
-    // Relative paths that escape above root keep the ..
-    assert_eq!(resolve_and_normalize("../../foo"), "../../foo");
-}
-
-#[test]
-fn resolve_relative_dotdot_partial() {
-    assert_eq!(resolve_and_normalize("a/b/../../c"), "c");
-}
-
-#[test]
-fn resolve_empty_relative() {
-    assert_eq!(resolve_and_normalize("."), ".");
-}
-
-#[test]
-fn resolve_root() {
-    assert_eq!(resolve_and_normalize("/"), "/");
-}
-
-#[test]
-fn resolve_redundant_slashes() {
-    assert_eq!(resolve_and_normalize("/tmp//foo///bar"), "/tmp/foo/bar");
-}
-
-#[test]
-fn resolve_trailing_slash() {
-    assert_eq!(resolve_and_normalize("/tmp/foo/"), "/tmp/foo");
+#[rstest]
+#[case::dotdot_in_absolute("/tmp/safe/../../etc/shadow", "/etc/shadow")]
+#[case::dotdot_at_root_clamps("/../../etc", "/etc")]
+#[case::dot_components("/tmp/./foo/./bar", "/tmp/foo/bar")]
+#[case::mixed_dot_and_dotdot("/a/./b/../c", "/a/c")]
+#[case::relative_dotdot_preserved("../../foo", "../../foo")]
+#[case::relative_dotdot_partial("a/b/../../c", "c")]
+#[case::empty_relative(".", ".")]
+#[case::root("/", "/")]
+#[case::redundant_slashes("/tmp//foo///bar", "/tmp/foo/bar")]
+#[case::trailing_slash("/tmp/foo/", "/tmp/foo")]
+fn resolve_and_normalize_cases(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(resolve_and_normalize(input), expected);
 }
 
 // ── path_matches ──────────────────────────────────────────────────────────

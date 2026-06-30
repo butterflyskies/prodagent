@@ -425,136 +425,62 @@ use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
 
 // ── apply_env_gates: condition × decision matrix ─────────────────────────
 
-#[test]
-fn env_gate_equals_matching_allows() {
+use rstest::rstest;
+
+#[rstest]
+#[case::equals_matching_allows("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Allow, Some(("FOO", "bar")), Some(PolicyDecision::Allow))]
+#[case::equals_nonmatching_no_effect("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny, Some(("FOO", "baz")), None)]
+#[case::not_equals_matching("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny, Some(("FOO", "baz")), Some(PolicyDecision::Deny))]
+#[case::not_equals_same_value_no_effect("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny, Some(("FOO", "bar")), None)]
+#[case::not_equals_unset_matches("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Ask, None, Some(PolicyDecision::Ask))]
+#[case::set_matching("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow, Some(("VIRTUAL_ENV", "/venv")), Some(PolicyDecision::Allow))]
+#[case::set_not_set_no_effect("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow, None, None)]
+#[case::unset_matching(
+    "VIRTUAL_ENV",
+    EnvCondition::Unset,
+    EnvGateAction::Deny,
+    None,
+    Some(PolicyDecision::Deny)
+)]
+#[case::unset_when_set_no_effect("VIRTUAL_ENV", EnvCondition::Unset, EnvGateAction::Deny, Some(("VIRTUAL_ENV", "/venv")), None)]
+#[case::equals_matching_asks("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Ask, Some(("FOO", "bar")), Some(PolicyDecision::Ask))]
+#[case::equals_matching_denies("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny, Some(("FOO", "bar")), Some(PolicyDecision::Deny))]
+#[case::not_equals_allows("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Allow, Some(("FOO", "baz")), Some(PolicyDecision::Allow))]
+#[case::set_asks("FOO", EnvCondition::Set, EnvGateAction::Ask, Some(("FOO", "anything")), Some(PolicyDecision::Ask))]
+#[case::set_denies("FOO", EnvCondition::Set, EnvGateAction::Deny, Some(("FOO", "anything")), Some(PolicyDecision::Deny))]
+#[case::unset_allows(
+    "FOO",
+    EnvCondition::Unset,
+    EnvGateAction::Allow,
+    None,
+    Some(PolicyDecision::Allow)
+)]
+#[case::unset_asks(
+    "FOO",
+    EnvCondition::Unset,
+    EnvGateAction::Ask,
+    None,
+    Some(PolicyDecision::Ask)
+)]
+fn env_gate_condition_action_matrix(
+    #[case] var: &str,
+    #[case] condition: EnvCondition,
+    #[case] decision: EnvGateAction,
+    #[case] env_setup: Option<(&str, &str)>,
+    #[case] expected: Option<PolicyDecision>,
+) {
     let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Allow,
+        var: var.into(),
+        condition,
+        decision,
     }];
     let mut env = EnvSnapshot::clean();
-    env.set("FOO", "bar");
+    if let Some((key, value)) = env_setup {
+        env.set(key, value);
+    }
     assert_eq!(
         super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Allow)
-    );
-}
-
-#[test]
-fn env_gate_equals_nonmatching_has_no_effect() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "baz");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        None
-    );
-}
-
-#[test]
-fn env_gate_not_equals_matching() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::NotEquals("bar".into()),
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "baz"); // baz != bar → matches
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Deny)
-    );
-}
-
-#[test]
-fn env_gate_not_equals_same_value_no_effect() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::NotEquals("bar".into()),
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "bar"); // bar == bar → doesn't match
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        None
-    );
-}
-
-#[test]
-fn env_gate_not_equals_unset_var_matches() {
-    // NotEquals with unset var: var not set != any value → matches
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::NotEquals("bar".into()),
-        decision: EnvGateAction::Ask,
-    }];
-    let env = EnvSnapshot::clean();
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Ask)
-    );
-}
-
-#[test]
-fn env_gate_set_matching() {
-    let gates = vec![EnvGate {
-        var: "VIRTUAL_ENV".into(),
-        condition: EnvCondition::Set,
-        decision: EnvGateAction::Allow,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("VIRTUAL_ENV", "/venv");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Allow)
-    );
-}
-
-#[test]
-fn env_gate_set_not_set_no_effect() {
-    let gates = vec![EnvGate {
-        var: "VIRTUAL_ENV".into(),
-        condition: EnvCondition::Set,
-        decision: EnvGateAction::Allow,
-    }];
-    let env = EnvSnapshot::clean();
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        None
-    );
-}
-
-#[test]
-fn env_gate_unset_matching() {
-    let gates = vec![EnvGate {
-        var: "VIRTUAL_ENV".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Deny,
-    }];
-    let env = EnvSnapshot::clean();
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Deny)
-    );
-}
-
-#[test]
-fn env_gate_unset_when_set_no_effect() {
-    let gates = vec![EnvGate {
-        var: "VIRTUAL_ENV".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("VIRTUAL_ENV", "/venv");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        None
+        expected
     );
 }
 
@@ -825,190 +751,26 @@ fn opaque_env_ceiling_does_not_affect_concrete_values() {
     );
 }
 
-// ── Condition × action matrix (exhaustive) ──────────────────────────────
-
-#[test]
-fn env_gate_equals_matching_asks() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Ask,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "bar");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Ask)
-    );
-}
-
-#[test]
-fn env_gate_equals_matching_denies() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Equals("bar".into()),
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "bar");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Deny)
-    );
-}
-
-#[test]
-fn env_gate_not_equals_allows() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::NotEquals("bar".into()),
-        decision: EnvGateAction::Allow,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "baz"); // baz != bar → matches
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Allow)
-    );
-}
-
-#[test]
-fn env_gate_set_asks() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Set,
-        decision: EnvGateAction::Ask,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "anything");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Ask)
-    );
-}
-
-#[test]
-fn env_gate_set_denies() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Set,
-        decision: EnvGateAction::Deny,
-    }];
-    let mut env = EnvSnapshot::clean();
-    env.set("FOO", "anything");
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Deny)
-    );
-}
-
-#[test]
-fn env_gate_unset_allows() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Allow,
-    }];
-    let env = EnvSnapshot::clean();
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Allow)
-    );
-}
-
-#[test]
-fn env_gate_unset_asks() {
-    let gates = vec![EnvGate {
-        var: "FOO".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Ask,
-    }];
-    let env = EnvSnapshot::clean();
-    assert_eq!(
-        super::apply_env_gates(&gates, &env, PolicyDecision::Ask),
-        Some(PolicyDecision::Ask)
-    );
-}
-
 // ── evaluate_condition direct tests ──────────────────────────────────────
 
-#[test]
-fn evaluate_condition_equals_known_match() {
-    let val = Some(EnvValueOwned::Known("bar".to_string()));
-    assert!(super::evaluate_condition(
-        &EnvCondition::Equals("bar".to_string()),
-        val.as_ref()
-    ));
-}
-
-#[test]
-fn evaluate_condition_equals_known_mismatch() {
-    let val = Some(EnvValueOwned::Known("baz".to_string()));
-    assert!(!super::evaluate_condition(
-        &EnvCondition::Equals("bar".to_string()),
-        val.as_ref()
-    ));
-}
-
-#[test]
-fn evaluate_condition_equals_none() {
-    assert!(!super::evaluate_condition(
-        &EnvCondition::Equals("bar".to_string()),
-        None
-    ));
-}
-
-#[test]
-fn evaluate_condition_set_with_known() {
-    let val = Some(EnvValueOwned::Known("anything".to_string()));
-    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
-}
-
-#[test]
-fn evaluate_condition_set_with_unknown() {
-    // Unknown value: variable IS present (opaque) → Set fires
-    let val = Some(EnvValueOwned::Unknown);
-    assert!(super::evaluate_condition(&EnvCondition::Set, val.as_ref()));
-}
-
-#[test]
-fn evaluate_condition_set_with_none() {
-    assert!(!super::evaluate_condition(&EnvCondition::Set, None));
-}
-
-#[test]
-fn evaluate_condition_unset_with_none() {
-    assert!(super::evaluate_condition(&EnvCondition::Unset, None));
-}
-
-#[test]
-fn evaluate_condition_unset_with_known() {
-    let val = Some(EnvValueOwned::Known("anything".to_string()));
-    assert!(!super::evaluate_condition(
-        &EnvCondition::Unset,
-        val.as_ref()
-    ));
-}
-
-// ── Sentinel rework tests (round-2 review P1) ──────────────────────────
-
-#[test]
-fn set_condition_with_unknown_value_fires() {
-    // Set gate on an unknown var → gate fires (variable IS present, opaque)
-    let val = Some(EnvValueOwned::Unknown);
-    assert!(
-        super::evaluate_condition(&EnvCondition::Set, val.as_ref()),
-        "Set with Unknown value should fire (opaque variable is present)"
-    );
-}
-
-#[test]
-fn unset_condition_with_unknown_value_does_not_match() {
-    // Unset gate on an unknown var → gate should NOT fire (fail-closed)
-    let val = Some(EnvValueOwned::Unknown);
-    assert!(
-        !super::evaluate_condition(&EnvCondition::Unset, val.as_ref()),
-        "Unset with Unknown value should not match (conservative fail-closed)"
+#[rstest]
+#[case::equals_known_match(EnvCondition::Equals("bar".into()), Some(EnvValueOwned::Known("bar".to_string())), true)]
+#[case::equals_known_mismatch(EnvCondition::Equals("bar".into()), Some(EnvValueOwned::Known("baz".to_string())), false)]
+#[case::equals_none(EnvCondition::Equals("bar".into()), None, false)]
+#[case::set_with_known(EnvCondition::Set, Some(EnvValueOwned::Known("anything".to_string())), true)]
+#[case::set_with_unknown(EnvCondition::Set, Some(EnvValueOwned::Unknown), true)]
+#[case::set_with_none(EnvCondition::Set, None, false)]
+#[case::unset_with_none(EnvCondition::Unset, None, true)]
+#[case::unset_with_known(EnvCondition::Unset, Some(EnvValueOwned::Known("anything".to_string())), false)]
+#[case::unset_with_unknown(EnvCondition::Unset, Some(EnvValueOwned::Unknown), false)]
+fn evaluate_condition_matrix(
+    #[case] condition: EnvCondition,
+    #[case] value: Option<EnvValueOwned>,
+    #[case] expected: bool,
+) {
+    assert_eq!(
+        super::evaluate_condition(&condition, value.as_ref()),
+        expected
     );
 }
 
@@ -1180,116 +942,19 @@ fn sudo_selective_preserve_non_preserved_var_fires_gate() {
 
 use agent_shell_parser::parse::ResolvedEnvPolicy;
 
-#[test]
-fn parse_sudo_env_policy_bare_sudo_is_unknown() {
-    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("cmd")];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Unknown,
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_dash_e_is_full_preserve() {
-    let words: Vec<Word> = vec![Word::from("sudo"), Word::from("-E"), Word::from("cmd")];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::FullPreserve,
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_long_flag_is_full_preserve() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::FullPreserve,
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_selective_single_var() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env=FOO"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Selective(vec!["FOO".to_string()]),
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_selective_multi_var() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env=FOO,BAR"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_selective_trims_whitespace() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env=FOO, BAR"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_selective_empty_list_is_unknown() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env="),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Unknown,
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_multiple_flags_merged() {
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("--preserve-env=FOO"),
-        Word::from("--preserve-env=BAR"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::Selective(vec!["FOO".to_string(), "BAR".to_string()]),
-    );
-}
-
-#[test]
-fn parse_sudo_env_policy_full_preserve_takes_priority() {
-    // -E alongside --preserve-env=FOO → FullPreserve wins
-    let words: Vec<Word> = vec![
-        Word::from("sudo"),
-        Word::from("-E"),
-        Word::from("--preserve-env=FOO"),
-        Word::from("cmd"),
-    ];
-    assert_eq!(
-        super::parse_sudo_env_policy(&words),
-        ResolvedEnvPolicy::FullPreserve,
-    );
+#[rstest]
+#[case::bare_sudo(&["sudo", "cmd"], ResolvedEnvPolicy::Unknown)]
+#[case::dash_e(&["sudo", "-E", "cmd"], ResolvedEnvPolicy::FullPreserve)]
+#[case::long_flag(&["sudo", "--preserve-env", "cmd"], ResolvedEnvPolicy::FullPreserve)]
+#[case::selective_single(&["sudo", "--preserve-env=FOO", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into()]))]
+#[case::selective_multi(&["sudo", "--preserve-env=FOO,BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
+#[case::selective_trims(&["sudo", "--preserve-env=FOO, BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
+#[case::empty_list_is_unknown(&["sudo", "--preserve-env=", "cmd"], ResolvedEnvPolicy::Unknown)]
+#[case::multiple_flags_merged(&["sudo", "--preserve-env=FOO", "--preserve-env=BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
+#[case::full_preserve_takes_priority(&["sudo", "-E", "--preserve-env=FOO", "cmd"], ResolvedEnvPolicy::FullPreserve)]
+fn parse_sudo_env_policy_cases(#[case] word_strs: &[&str], #[case] expected: ResolvedEnvPolicy) {
+    let words: Vec<Word> = word_strs.iter().map(|s| Word::from(*s)).collect();
+    assert_eq!(super::parse_sudo_env_policy(&words), expected);
 }
 
 // ── resolve_sudo_wrapper unit tests ────────────────────────────────────
