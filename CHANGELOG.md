@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-30
+
+### Fixed
+
+- CI: Make publish workflow resilient to already-published crates — detect "already uploaded" instead of failing the job
+
 ## [0.9.0] - 2026-06-30
 
 ### Added
