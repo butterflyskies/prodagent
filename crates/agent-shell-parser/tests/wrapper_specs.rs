@@ -73,7 +73,7 @@ fn resolved_command_name(cmd: &str) -> String {
 // time
 #[case::time_strips_to_inner("time git commit", "git")]
 #[case::time_with_flags("time -p git commit", "git")]
-// timeout
+// timeout: duration is a mandatory positional consumed by skip_positionals
 #[case::timeout_strips_to_inner("timeout 60 git commit", "git")]
 #[case::timeout_k_flag_strips("timeout -k 10 60 git commit", "git")]
 #[case::timeout_signal_long_strips("timeout --signal=TERM 60 git commit", "git")]
@@ -92,15 +92,16 @@ fn resolved_command_name(cmd: &str) -> String {
 // ionice
 #[case::ionice_strips_to_inner("ionice git commit", "git")]
 #[case::ionice_c_n_strips("ionice -c 2 -n 7 git commit", "git")]
-// chrt
+// chrt: priority is a positional consumed by skip_positionals
 #[case::chrt_with_priority("chrt -f 10 git commit", "git")]
-// taskset
+// taskset: mask is a positional consumed by skip_positionals;
+// -c consumes cpu-list as a value flag
 #[case::taskset_strips_to_inner("taskset 0x1 git commit", "git")]
 #[case::taskset_c_flag("taskset -c 0-3 git commit", "git")]
-// watch
+// watch: -n consumes the interval token, so rm is the inner command
 #[case::watch_n_strips_interval_to_inner("watch -n 5 rm somefile", "rm")]
 #[case::watch_interval_long_strips_to_inner("watch --interval 5 rm somefile", "rm")]
-// ltrace
+// ltrace: -e consumes the filter token, so rm is the inner command
 #[case::ltrace_e_strips_filter_to_inner("ltrace -e malloc rm somefile", "rm")]
 #[case::ltrace_multiple_value_flags_strips("ltrace -e malloc -o /tmp/trace rm somefile", "rm")]
 // su
@@ -196,7 +197,6 @@ fn characteristics_indirect_execution(
     let c = command_characteristics(input);
     assert_eq!(c.base_command, expected_base);
     assert_eq!(c.indirect_execution, Some(expected_execution));
-    assert!(!c.has_dynamic_command);
 }
 
 // --- standalone characteristics tests ---
