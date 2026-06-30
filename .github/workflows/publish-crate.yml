@@ -40,7 +40,14 @@ jobs:
         id: auth
 
       - name: Publish prodagent-types
-        run: cargo publish -p prodagent-types --no-verify
+        run: |
+          cargo publish -p prodagent-types --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::prodagent-types already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -57,7 +64,14 @@ jobs:
           done
 
       - name: Publish agent-shell-parser
-        run: cargo publish -p agent-shell-parser --no-verify
+        run: |
+          cargo publish -p agent-shell-parser --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::agent-shell-parser already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -74,7 +88,14 @@ jobs:
           done
 
       - name: Publish agent-command-knowledge
-        run: cargo publish -p agent-command-knowledge --no-verify
+        run: |
+          cargo publish -p agent-command-knowledge --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::agent-command-knowledge already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -91,7 +112,14 @@ jobs:
           done
 
       - name: Publish prodagent-policy
-        run: cargo publish -p prodagent-policy --no-verify
+        run: |
+          cargo publish -p prodagent-policy --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::prodagent-policy already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -108,7 +136,14 @@ jobs:
           done
 
       - name: Publish prodagent-config
-        run: cargo publish -p prodagent-config --no-verify
+        run: |
+          cargo publish -p prodagent-config --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::prodagent-config already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -125,7 +160,14 @@ jobs:
           done
 
       - name: Publish agent-jj
-        run: cargo publish -p agent-jj --no-verify
+        run: |
+          cargo publish -p agent-jj --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::agent-jj already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -142,6 +184,30 @@ jobs:
           done
 
       - name: Publish prodagent-tool-gate
-        run: cargo publish -p prodagent-tool-gate --no-verify
+        run: |
+          cargo publish -p prodagent-tool-gate --no-verify 2>&1 | tee /tmp/publish.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ] && grep -q "already exists" /tmp/publish.log; then
+            echo "::notice::prodagent-tool-gate already published, skipping"
+          else
+            exit $rc
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Verify all crates published
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Verifying all crates are published at version ${version}..."
+          failed=0
+          for crate in prodagent-types agent-shell-parser agent-command-knowledge prodagent-policy prodagent-config agent-jj prodagent-tool-gate; do
+            if cargo search "$crate" 2>/dev/null | grep -q "\"${version}\""; then
+              echo "  ✓ ${crate}@${version}"
+            else
+              echo "  ✗ ${crate}@${version} NOT FOUND"
+              failed=1
+            fi
+          done
+          if [ $failed -ne 0 ]; then
+            echo "::warning::Some crates may not have been indexed yet — check crates.io manually"
+          fi
