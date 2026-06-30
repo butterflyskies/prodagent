@@ -166,7 +166,7 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
             paths,
         };
 
-        output = output.with_conflict(decision, override_entry);
+        output = output.with_conflict(merged_result.decision, override_entry);
     }
 
     // Emit JSON to stdout
@@ -279,48 +279,47 @@ mod tests {
     }
 
     #[test]
-    fn fallback_extracts_command_after_env_var() {
-        // The fallback path is exercised when the shell parser fails.
-        // We test the logic directly via the helper + the same word-loop.
-        let extract_fallback = |command: &str| -> String {
-            let words: Vec<&str> = command.split_whitespace().collect();
-            for word in &words {
-                if is_env_assignment(word) {
-                    continue;
-                }
-                return word.rsplit('/').next().unwrap_or(word).to_string();
-            }
-            command.split_whitespace().next().unwrap_or("").to_string()
-        };
+    fn extract_base_command_with_env_prefix() {
+        let kb = agent_command_knowledge::default_knowledge_base();
 
         // Normal env var prefix
-        assert_eq!(extract_fallback("FOO=bar command"), "command");
+        assert_eq!(extract_base_command("FOO=bar command", kb), "command");
 
         // Multiple env vars
-        assert_eq!(extract_fallback("FOO=1 BAR=2 command"), "command");
-
-        // Path with = is treated as the command, not skipped
-        assert_eq!(extract_fallback("/opt/foo=bar/bin/thing"), "thing");
+        assert_eq!(extract_base_command("FOO=1 BAR=2 command", kb), "command");
 
         // Absolute path command
-        assert_eq!(extract_fallback("/usr/bin/git status"), "git");
+        assert_eq!(extract_base_command("/usr/bin/git status", kb), "git");
 
         // Plain command
-        assert_eq!(extract_fallback("ls -la"), "ls");
+        assert_eq!(extract_base_command("ls -la", kb), "ls");
 
         // Env var with underscore key
-        assert_eq!(extract_fallback("MY_VAR=hello rm -rf /tmp"), "rm");
+        assert_eq!(extract_base_command("MY_VAR=hello rm -rf /tmp", kb), "rm");
+    }
 
-        // Token starting with digit containing = is not an env var
-        assert_eq!(extract_fallback("1FOO=bar"), "1FOO=bar");
+    #[test]
+    fn extract_base_command_wrapper_resolution() {
+        let kb = agent_command_knowledge::default_knowledge_base();
 
-        // Flag with = is not an env var
-        assert_eq!(extract_fallback("--config=value"), "--config=value");
+        // Wrapper resolves to inner command
+        assert_eq!(extract_base_command("sudo rm /tmp/foo", kb), "rm");
 
-        // Only env vars (no command after) falls through to first word
-        assert_eq!(extract_fallback("FOO=bar"), "FOO=bar");
+        // env wrapper resolves to inner command
+        assert_eq!(extract_base_command("env FOO=bar git status", kb), "git");
+
+        // Non-wrapper command returns itself
+        assert_eq!(extract_base_command("git push --force", kb), "git");
+    }
+
+    #[test]
+    fn extract_base_command_edge_cases() {
+        let kb = agent_command_knowledge::default_knowledge_base();
+
+        // Path with = is treated as a command, not an env assignment
+        assert_eq!(extract_base_command("/opt/foo=bar/bin/thing", kb), "thing");
 
         // Empty string
-        assert_eq!(extract_fallback(""), "");
+        assert_eq!(extract_base_command("", kb), "");
     }
 }
