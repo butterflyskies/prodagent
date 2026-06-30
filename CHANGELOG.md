@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **New binary**: `prodagent-tool-gate` — PreToolUse hook replacing cc-toolgate, with three-tier config cascade via prodagent-config, structured decision logging to `<data_dir>/prodagent/decisions.log`, `--escalate-deny`/`--dump-config`/`--dump-ast` flags (#64)
 - `prodagent-policy`: Path-scoped policy decisions for Bash commands — optional `paths` field (glob list) on policy rules constrains where rules apply, with per-path evaluation through three-tier specificity (command+path > path-only/command-only > effect default), deny-wins aggregation across multi-path commands (#77)
 - `prodagent-policy`: `PathGlob` newtype for validated path glob patterns — rejects empty strings and bare `*`/`**`/`/*`/`/**` universal bypasses at construction time (#77)
 - `prodagent-policy`: Consent-gated user overrides for project policy decisions — `[policy.overrides]` section lets users explicitly bypass project-level restrictions with conflict detection, structured override config in hook output, and safety rails preserving env gates, escalation flags, and wrapper analysis (#83)
