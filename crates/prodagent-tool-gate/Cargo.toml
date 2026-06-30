@@ -26,4 +26,4 @@ serde_json = { workspace = true }
 time = { workspace = true }
 
 [dev-dependencies]
-rstest = "0.25"
+rstest = { workspace = true }
