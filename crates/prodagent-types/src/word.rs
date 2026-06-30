@@ -567,6 +567,9 @@ mod tests {
     #[case::arithmetic("$((1+2))", AssignmentValue::VariableExpansion)]
     #[case::arithmetic_prefix("prefix-$((x+1))", AssignmentValue::VariableExpansion)]
     #[case::mixed_cmd_sub_and_arithmetic("$(cmd)-$((1+2))", AssignmentValue::CommandSubstitution)]
+    // Pins conservative (fail-closed) behavior — $((cmd) && evil) is currently
+    // VariableExpansion. Update if classify() is improved to parse this as
+    // CommandSubstitution.
     #[case::adversarial_double_paren("$((cmd) && evil)", AssignmentValue::VariableExpansion)]
     fn assignment_value_classify(#[case] input: &str, #[case] expected: AssignmentValue<'_>) {
         assert_eq!(AssignmentValue::classify(input), expected);
