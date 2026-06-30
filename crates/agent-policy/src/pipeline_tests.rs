@@ -1693,6 +1693,66 @@ fn export_without_assignment_evaluates_to_allow() {
     );
 }
 
+#[test]
+fn standalone_local_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("local FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone local should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn standalone_typeset_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("typeset FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone typeset should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn declare_with_flags_evaluates_to_allow() {
+    let engine = default_engine();
+    // declare -x exports the variable, -r makes it readonly
+    let result = engine.evaluate_command("declare -x FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "declare with flags should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn declaration_with_redirection_escalates() {
+    // `export -p > /tmp/env.txt` should escalate to Ask because of the
+    // non-benign output redirection, even though the declaration itself
+    // is safe.
+    let engine = default_engine();
+    let result = engine.evaluate_command("export -p > /tmp/env.txt", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "declaration with output redirection should escalate to Ask: {result:?}"
+    );
+}
+
 // ── Export env propagation for allowed_with_config pattern ────────────────────
 //
 // The "allowed with config" pattern: a command has a per-command override
@@ -1723,6 +1783,20 @@ fn allowed_with_config_setup(env_var: &str) -> (PolicyEngine, KnowledgeBase) {
     let engine = PolicyEngine::new(config).unwrap();
 
     (engine, kb)
+}
+
+#[test]
+fn gate_fires_without_env_set() {
+    // Negative baseline: git commit with no env set at all → gate fires → Ask.
+    // This proves the Unset gate is actually operative before we test that
+    // export/inline assignment satisfies it.
+    let (engine, kb) = allowed_with_config_setup("TESTENV_GIT_CONFIG");
+    let result = engine.evaluate_command("git commit -m \"msg\"", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "git commit without env should be Ask (Unset gate fires): {result:?}"
+    );
 }
 
 #[test]
@@ -1851,6 +1925,40 @@ fn multiple_exports_then_command_sees_both() {
         result.decision,
         PolicyDecision::Allow,
         "both exports should propagate, neither Unset gate fires: {result:?}"
+    );
+}
+
+#[test]
+fn partial_export_still_fires_unsatisfied_gate() {
+    // export A=1 && mycmd (where mycmd needs both A and B set)
+    // Only A is exported, so B's Unset gate should fire → Ask.
+    let gate_a = EnvGate {
+        var: "TESTENV_PARTIAL_A".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let gate_b = EnvGate {
+        var: "TESTENV_PARTIAL_B".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_a, gate_b];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTENV_PARTIAL_A=1 && mycmd", &kb);
+    // Only A is set — B's Unset gate fires.
+    let mycmd_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("mycmd"))
+        .expect("should have a mycmd segment");
+    assert_eq!(
+        mycmd_segment.decision,
+        PolicyDecision::Ask,
+        "partial export should leave unsatisfied gate firing: {result:?}"
     );
 }
 
