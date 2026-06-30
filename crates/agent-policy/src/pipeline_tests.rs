@@ -1763,26 +1763,47 @@ fn declaration_with_redirection_escalates() {
 // These tests verify that `export KEY=VALUE && command` is equivalent to
 // inline `KEY=VALUE command` for this pattern.
 
-/// Build a KB where `git` has an Unset gate: if the given var is NOT set,
-/// escalate to Ask. Combined with a per-subcommand Allow override, this
-/// creates the "allowed with config" pattern.
-fn allowed_with_config_setup(env_var: &str) -> (PolicyEngine, KnowledgeBase) {
-    // Env gate: if env_var is Unset → Ask (the command needs this var set)
+/// Build a KB where `cmd` has an Unset gate on `env_var` and a per-subcommand
+/// Allow override for `subcmd`. This creates the "allowed with config" pattern:
+/// the command is only auto-allowed when the env var is set.
+fn allowed_with_config_setup_for(
+    cmd: &str,
+    subcmd: &str,
+    env_var: &str,
+) -> (PolicyEngine, KnowledgeBase) {
     let gate = EnvGate {
         var: env_var.into(),
         condition: EnvCondition::Unset,
         decision: EnvGateAction::Ask,
     };
-    let kb = real_kb_with_git_gate(vec![gate]);
+    let mut kb = default_kb().clone();
+    let overlay = KnowledgeOverlay {
+        commands: [(
+            cmd.into(),
+            CommandOverlay {
+                env_gates: vec![gate],
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    kb.merge(overlay);
 
-    // Policy: git commit → Allow (overrides the default Ask for mutating)
     let config = PolicyConfig::builder()
-        .subcommand("git", "commit", PolicyDecision::Allow)
+        .subcommand(cmd, subcmd, PolicyDecision::Allow)
         .build()
         .unwrap();
     let engine = PolicyEngine::new(config).unwrap();
 
     (engine, kb)
+}
+
+/// Convenience wrapper for git commit — the most common "allowed with config"
+/// test case.
+fn allowed_with_config_setup(env_var: &str) -> (PolicyEngine, KnowledgeBase) {
+    allowed_with_config_setup_for("git", "commit", env_var)
 }
 
 #[test]
@@ -1861,31 +1882,7 @@ fn export_env_then_command_allows_with_config() {
 #[test]
 fn export_gh_config_then_gh_command_allows_with_config() {
     // export GH_CONFIG_DIR=~/.config/gh-butterflysky-ai && gh pr create
-    let gate = EnvGate {
-        var: "TESTENV_GH_CONFIG".into(),
-        condition: EnvCondition::Unset,
-        decision: EnvGateAction::Ask,
-    };
-    let mut kb = default_kb().clone();
-    let overlay = KnowledgeOverlay {
-        commands: [(
-            "gh".into(),
-            CommandOverlay {
-                env_gates: vec![gate],
-                ..Default::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    };
-    kb.merge(overlay);
-
-    let config = PolicyConfig::builder()
-        .subcommand("gh", "pr create", PolicyDecision::Allow)
-        .build()
-        .unwrap();
-    let engine = PolicyEngine::new(config).unwrap();
+    let (engine, kb) = allowed_with_config_setup_for("gh", "pr create", "TESTENV_GH_CONFIG");
 
     let result = engine.evaluate_command(
         "export TESTENV_GH_CONFIG=~/.config/gh-ai && gh pr create",
