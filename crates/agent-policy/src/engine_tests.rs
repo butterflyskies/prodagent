@@ -428,12 +428,30 @@ use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
 use rstest::rstest;
 
 #[rstest]
-#[case::equals_matching_allows("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Allow, Some(("FOO", "bar")), Some(PolicyDecision::Allow))]
-#[case::equals_nonmatching_no_effect("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny, Some(("FOO", "baz")), None)]
-#[case::not_equals_matching("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny, Some(("FOO", "baz")), Some(PolicyDecision::Deny))]
-#[case::not_equals_same_value_no_effect("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny, Some(("FOO", "bar")), None)]
-#[case::not_equals_unset_matches("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Ask, None, Some(PolicyDecision::Ask))]
-#[case::set_matching("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow, Some(("VIRTUAL_ENV", "/venv")), Some(PolicyDecision::Allow))]
+#[case::equals_matching_allows(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Allow,
+    Some(("FOO", "bar")), Some(PolicyDecision::Allow),
+)]
+#[case::equals_nonmatching_no_effect(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny,
+    Some(("FOO", "baz")), None,
+)]
+#[case::not_equals_matching(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
+    Some(("FOO", "baz")), Some(PolicyDecision::Deny),
+)]
+#[case::not_equals_same_value_no_effect(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Deny,
+    Some(("FOO", "bar")), None,
+)]
+#[case::not_equals_unset_matches(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Ask,
+    None, Some(PolicyDecision::Ask),
+)]
+#[case::set_matching(
+    "VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow,
+    Some(("VIRTUAL_ENV", "/venv")), Some(PolicyDecision::Allow),
+)]
 #[case::set_not_set_no_effect("VIRTUAL_ENV", EnvCondition::Set, EnvGateAction::Allow, None, None)]
 #[case::unset_matching(
     "VIRTUAL_ENV",
@@ -442,12 +460,30 @@ use rstest::rstest;
     None,
     Some(PolicyDecision::Deny)
 )]
-#[case::unset_when_set_no_effect("VIRTUAL_ENV", EnvCondition::Unset, EnvGateAction::Deny, Some(("VIRTUAL_ENV", "/venv")), None)]
-#[case::equals_matching_asks("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Ask, Some(("FOO", "bar")), Some(PolicyDecision::Ask))]
-#[case::equals_matching_denies("FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny, Some(("FOO", "bar")), Some(PolicyDecision::Deny))]
-#[case::not_equals_allows("FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Allow, Some(("FOO", "baz")), Some(PolicyDecision::Allow))]
-#[case::set_asks("FOO", EnvCondition::Set, EnvGateAction::Ask, Some(("FOO", "anything")), Some(PolicyDecision::Ask))]
-#[case::set_denies("FOO", EnvCondition::Set, EnvGateAction::Deny, Some(("FOO", "anything")), Some(PolicyDecision::Deny))]
+#[case::unset_when_set_no_effect(
+    "VIRTUAL_ENV", EnvCondition::Unset, EnvGateAction::Deny,
+    Some(("VIRTUAL_ENV", "/venv")), None,
+)]
+#[case::equals_matching_asks(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Ask,
+    Some(("FOO", "bar")), Some(PolicyDecision::Ask),
+)]
+#[case::equals_matching_denies(
+    "FOO", EnvCondition::Equals("bar".into()), EnvGateAction::Deny,
+    Some(("FOO", "bar")), Some(PolicyDecision::Deny),
+)]
+#[case::not_equals_allows(
+    "FOO", EnvCondition::NotEquals("bar".into()), EnvGateAction::Allow,
+    Some(("FOO", "baz")), Some(PolicyDecision::Allow),
+)]
+#[case::set_asks(
+    "FOO", EnvCondition::Set, EnvGateAction::Ask,
+    Some(("FOO", "anything")), Some(PolicyDecision::Ask),
+)]
+#[case::set_denies(
+    "FOO", EnvCondition::Set, EnvGateAction::Deny,
+    Some(("FOO", "anything")), Some(PolicyDecision::Deny),
+)]
 #[case::unset_allows(
     "FOO",
     EnvCondition::Unset,
@@ -754,14 +790,30 @@ fn opaque_env_ceiling_does_not_affect_concrete_values() {
 // ── evaluate_condition direct tests ──────────────────────────────────────
 
 #[rstest]
-#[case::equals_known_match(EnvCondition::Equals("bar".into()), Some(EnvValueOwned::Known("bar".to_string())), true)]
-#[case::equals_known_mismatch(EnvCondition::Equals("bar".into()), Some(EnvValueOwned::Known("baz".to_string())), false)]
+#[case::equals_known_match(
+    EnvCondition::Equals("bar".into()),
+    Some(EnvValueOwned::Known("bar".to_string())),
+    true,
+)]
+#[case::equals_known_mismatch(
+    EnvCondition::Equals("bar".into()),
+    Some(EnvValueOwned::Known("baz".to_string())),
+    false,
+)]
 #[case::equals_none(EnvCondition::Equals("bar".into()), None, false)]
-#[case::set_with_known(EnvCondition::Set, Some(EnvValueOwned::Known("anything".to_string())), true)]
+#[case::set_with_known(
+    EnvCondition::Set,
+    Some(EnvValueOwned::Known("anything".to_string())),
+    true,
+)]
 #[case::set_with_unknown(EnvCondition::Set, Some(EnvValueOwned::Unknown), true)]
 #[case::set_with_none(EnvCondition::Set, None, false)]
 #[case::unset_with_none(EnvCondition::Unset, None, true)]
-#[case::unset_with_known(EnvCondition::Unset, Some(EnvValueOwned::Known("anything".to_string())), false)]
+#[case::unset_with_known(
+    EnvCondition::Unset,
+    Some(EnvValueOwned::Known("anything".to_string())),
+    false,
+)]
 #[case::unset_with_unknown(EnvCondition::Unset, Some(EnvValueOwned::Unknown), false)]
 fn evaluate_condition_matrix(
     #[case] condition: EnvCondition,
@@ -946,12 +998,30 @@ use agent_shell_parser::parse::ResolvedEnvPolicy;
 #[case::bare_sudo(&["sudo", "cmd"], ResolvedEnvPolicy::Unknown)]
 #[case::dash_e(&["sudo", "-E", "cmd"], ResolvedEnvPolicy::FullPreserve)]
 #[case::long_flag(&["sudo", "--preserve-env", "cmd"], ResolvedEnvPolicy::FullPreserve)]
-#[case::selective_single(&["sudo", "--preserve-env=FOO", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into()]))]
-#[case::selective_multi(&["sudo", "--preserve-env=FOO,BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
-#[case::selective_trims(&["sudo", "--preserve-env=FOO, BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
-#[case::empty_list_is_unknown(&["sudo", "--preserve-env=", "cmd"], ResolvedEnvPolicy::Unknown)]
-#[case::multiple_flags_merged(&["sudo", "--preserve-env=FOO", "--preserve-env=BAR", "cmd"], ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]))]
-#[case::full_preserve_takes_priority(&["sudo", "-E", "--preserve-env=FOO", "cmd"], ResolvedEnvPolicy::FullPreserve)]
+#[case::selective_single(
+    &["sudo", "--preserve-env=FOO", "cmd"],
+    ResolvedEnvPolicy::Selective(vec!["FOO".into()]),
+)]
+#[case::selective_multi(
+    &["sudo", "--preserve-env=FOO,BAR", "cmd"],
+    ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]),
+)]
+#[case::selective_trims(
+    &["sudo", "--preserve-env=FOO, BAR", "cmd"],
+    ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]),
+)]
+#[case::empty_list_is_unknown(
+    &["sudo", "--preserve-env=", "cmd"],
+    ResolvedEnvPolicy::Unknown,
+)]
+#[case::multiple_flags_merged(
+    &["sudo", "--preserve-env=FOO", "--preserve-env=BAR", "cmd"],
+    ResolvedEnvPolicy::Selective(vec!["FOO".into(), "BAR".into()]),
+)]
+#[case::full_preserve_takes_priority(
+    &["sudo", "-E", "--preserve-env=FOO", "cmd"],
+    ResolvedEnvPolicy::FullPreserve,
+)]
 fn parse_sudo_env_policy_cases(#[case] word_strs: &[&str], #[case] expected: ResolvedEnvPolicy) {
     let words: Vec<Word> = word_strs.iter().map(|s| Word::from(*s)).collect();
     assert_eq!(super::parse_sudo_env_policy(&words), expected);
