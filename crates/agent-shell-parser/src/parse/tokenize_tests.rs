@@ -1,62 +1,19 @@
 use super::*;
+use rstest::rstest;
 
-#[test]
-fn base_command_simple() {
-    assert_eq!(base_command("ls -la"), "ls");
-}
-
-#[test]
-fn base_command_with_env() {
-    assert_eq!(
-        base_command("GIT_CONFIG_GLOBAL=~/.gitconfig.ai git push"),
-        "git"
-    );
-}
-
-#[test]
-fn base_command_absolute_path() {
-    assert_eq!(base_command("/usr/bin/ls -la"), "ls");
-}
-
-#[test]
-fn base_command_relative_path() {
-    assert_eq!(base_command("./script.sh --flag"), "script.sh");
-}
-
-#[test]
-fn base_command_deep_path() {
-    assert_eq!(
-        base_command("/home/user/dev/tool/target/release/tool --dump-config"),
-        "tool"
-    );
-}
-
-#[test]
-fn base_command_env_with_path() {
-    assert_eq!(base_command("FOO=bar /usr/local/bin/git status"), "git");
-}
-
-#[test]
-fn base_command_empty() {
-    assert_eq!(base_command(""), "");
-}
-
-#[test]
-fn base_command_quoted_env_value() {
-    assert_eq!(
-        base_command(r#"GIT_AUTHOR_NAME="Jane Doe" git commit"#),
-        "git"
-    );
-}
-
-#[test]
-fn base_command_single_quoted_env_value() {
-    assert_eq!(base_command("FOO='bar baz' git push"), "git");
-}
-
-#[test]
-fn base_command_multiple_quoted_env() {
-    assert_eq!(base_command(r#"A="x y" B='1 2' git status"#), "git");
+#[rstest]
+#[case::simple("ls -la", "ls")]
+#[case::with_env("GIT_CONFIG_GLOBAL=~/.gitconfig.ai git push", "git")]
+#[case::absolute_path("/usr/bin/ls -la", "ls")]
+#[case::relative_path("./script.sh --flag", "script.sh")]
+#[case::deep_path("/home/user/dev/tool/target/release/tool --dump-config", "tool")]
+#[case::env_with_path("FOO=bar /usr/local/bin/git status", "git")]
+#[case::empty("", "")]
+#[case::quoted_env_value(r#"GIT_AUTHOR_NAME="Jane Doe" git commit"#, "git")]
+#[case::single_quoted_env_value("FOO='bar baz' git push", "git")]
+#[case::multiple_quoted_env(r#"A="x y" B='1 2' git status"#, "git")]
+fn base_command_extraction(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(base_command(input), expected);
 }
 
 #[test]

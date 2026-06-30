@@ -16,3 +16,6 @@ path = "src/main.rs"
 agent-shell-parser = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }

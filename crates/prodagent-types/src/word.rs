@@ -447,6 +447,7 @@ pub fn is_valid_env_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn word_deref_to_str() {
@@ -455,11 +456,12 @@ mod tests {
         assert_eq!(s, "hello");
     }
 
-    #[test]
-    fn word_is_flag() {
-        assert!(Word::from("-v").is_flag());
-        assert!(Word::from("--verbose").is_flag());
-        assert!(!Word::from("hello").is_flag());
+    #[rstest]
+    #[case::short_flag("-v", true)]
+    #[case::long_flag("--verbose", true)]
+    #[case::not_flag("hello", false)]
+    fn word_is_flag(#[case] input: &str, #[case] expected: bool) {
+        assert_eq!(Word::from(input).is_flag(), expected);
     }
 
     #[test]
@@ -476,10 +478,11 @@ mod tests {
         assert_eq!(w.as_assignment(), None);
     }
 
-    #[test]
-    fn word_basename() {
-        assert_eq!(Word::from("/usr/bin/ls").basename(), "ls");
-        assert_eq!(Word::from("ls").basename(), "ls");
+    #[rstest]
+    #[case::absolute_path("/usr/bin/ls", "ls")]
+    #[case::bare_name("ls", "ls")]
+    fn word_basename(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(Word::from(input).basename(), expected);
     }
 
     #[test]
@@ -498,12 +501,13 @@ mod tests {
         assert_eq!(b, c);
     }
 
-    #[test]
-    fn env_assignment_checks() {
-        assert!(is_env_assignment("FOO=bar"));
-        assert!(is_env_assignment("_A=1"));
-        assert!(!is_env_assignment("123=bad"));
-        assert!(!is_env_assignment("no_equals"));
+    #[rstest]
+    #[case::valid_simple("FOO=bar", true)]
+    #[case::valid_underscore("_A=1", true)]
+    #[case::invalid_digit_start("123=bad", false)]
+    #[case::invalid_no_equals("no_equals", false)]
+    fn env_assignment_validation(#[case] input: &str, #[case] expected: bool) {
+        assert_eq!(is_env_assignment(input), expected);
     }
 
     // ── WordKind ─────────────────────────────────────────────────────────
@@ -524,160 +528,105 @@ mod tests {
         assert_eq!(w.kind(), WordKind::CommandSubstitution);
     }
 
-    #[test]
-    fn word_is_expansion_classified() {
-        assert!(!Word::literal("hello").is_expansion());
-        assert!(Word::with_kind("$(cmd)", WordKind::CommandSubstitution).is_expansion());
-        assert!(Word::with_kind("$VAR", WordKind::VariableExpansion).is_expansion());
-        assert!(Word::with_kind("$((1+2))", WordKind::ArithmeticExpansion).is_expansion());
-        assert!(Word::with_kind("$(cmd)-$VAR", WordKind::Dynamic).is_expansion());
+    // ── is_expansion: classified words use structural metadata ────────────
+
+    #[rstest]
+    #[case::literal_not_expansion("hello", WordKind::Literal, false)]
+    #[case::command_substitution("$(cmd)", WordKind::CommandSubstitution, true)]
+    #[case::variable_expansion("$VAR", WordKind::VariableExpansion, true)]
+    #[case::arithmetic_expansion("$((1+2))", WordKind::ArithmeticExpansion, true)]
+    #[case::dynamic("$(cmd)-$VAR", WordKind::Dynamic, true)]
+    fn is_expansion_classified(#[case] text: &str, #[case] kind: WordKind, #[case] expected: bool) {
+        assert_eq!(Word::with_kind(text, kind).is_expansion(), expected);
     }
 
-    #[test]
-    fn word_is_expansion_unclassified_fallback() {
-        assert!(Word::from("$VAR").is_expansion());
-        assert!(Word::from("$(cmd)").is_expansion());
-        assert!(Word::from("`cmd`").is_expansion());
-        assert!(!Word::from("hello").is_expansion());
+    // ── is_expansion: unclassified words fall back to byte scanning ──────
+
+    #[rstest]
+    #[case::dollar_var("$VAR", true)]
+    #[case::dollar_paren("$(cmd)", true)]
+    #[case::backtick("`cmd`", true)]
+    #[case::plain("hello", false)]
+    fn is_expansion_unclassified(#[case] text: &str, #[case] expected: bool) {
+        assert_eq!(Word::from(text).is_expansion(), expected);
     }
 
-    // ── AssignmentValue classification ────────────────────────────────────
+    // ── AssignmentValue::classify ─────────────────────────────────────────
 
-    #[test]
-    fn classify_static_value() {
-        assert_eq!(
-            AssignmentValue::classify("bar"),
-            AssignmentValue::Static("bar")
-        );
-        assert_eq!(AssignmentValue::classify(""), AssignmentValue::Static(""));
-        assert_eq!(
-            AssignmentValue::classify("a/b-c.d"),
-            AssignmentValue::Static("a/b-c.d")
-        );
+    #[rstest]
+    #[case::bare_literal("bar", AssignmentValue::Static("bar"))]
+    #[case::empty("", AssignmentValue::Static(""))]
+    #[case::path_like("a/b-c.d", AssignmentValue::Static("a/b-c.d"))]
+    #[case::dollar_paren("$(echo hi)", AssignmentValue::CommandSubstitution)]
+    #[case::backtick("`echo hi`", AssignmentValue::CommandSubstitution)]
+    #[case::dollar_paren_prefix("prefix-$(date)", AssignmentValue::CommandSubstitution)]
+    #[case::dollar_var("$VAR", AssignmentValue::VariableExpansion)]
+    #[case::dollar_brace("${VAR}", AssignmentValue::VariableExpansion)]
+    #[case::dollar_brace_default("${VAR:-default}", AssignmentValue::VariableExpansion)]
+    #[case::cmd_sub_priority_over_var("$VAR-$(cmd)", AssignmentValue::CommandSubstitution)]
+    #[case::arithmetic("$((1+2))", AssignmentValue::VariableExpansion)]
+    #[case::arithmetic_prefix("prefix-$((x+1))", AssignmentValue::VariableExpansion)]
+    #[case::mixed_cmd_sub_and_arithmetic("$(cmd)-$((1+2))", AssignmentValue::CommandSubstitution)]
+    // Pins conservative (fail-closed) behavior — $((cmd) && evil) is currently
+    // VariableExpansion. Update if classify() is improved to parse this as
+    // CommandSubstitution.
+    #[case::adversarial_double_paren("$((cmd) && evil)", AssignmentValue::VariableExpansion)]
+    fn assignment_value_classify(#[case] input: &str, #[case] expected: AssignmentValue<'_>) {
+        assert_eq!(AssignmentValue::classify(input), expected);
     }
 
-    #[test]
-    fn classify_command_substitution() {
-        assert_eq!(
-            AssignmentValue::classify("$(echo hi)"),
-            AssignmentValue::CommandSubstitution
-        );
-        assert_eq!(
-            AssignmentValue::classify("`echo hi`"),
-            AssignmentValue::CommandSubstitution
-        );
-        assert_eq!(
-            AssignmentValue::classify("prefix-$(date)"),
-            AssignmentValue::CommandSubstitution
-        );
+    // ── as_classified_assignment: unclassified (byte scanning fallback) ──
+
+    #[rstest]
+    #[case::static_value("FOO=bar", Some(("FOO", AssignmentValue::Static("bar"))))]
+    #[case::variable_expansion("FOO=$VAR", Some(("FOO", AssignmentValue::VariableExpansion)))]
+    #[case::command_sub("FOO=$(id -u)", Some(("FOO", AssignmentValue::CommandSubstitution)))]
+    #[case::backtick_sub("FOO=`id -u`", Some(("FOO", AssignmentValue::CommandSubstitution)))]
+    #[case::not_assignment("git", None)]
+    fn classified_assignment_unclassified(
+        #[case] input: &str,
+        #[case] expected: Option<(&str, AssignmentValue<'_>)>,
+    ) {
+        assert_eq!(Word::from(input).as_classified_assignment(), expected);
     }
 
-    #[test]
-    fn classify_variable_expansion() {
-        assert_eq!(
-            AssignmentValue::classify("$VAR"),
-            AssignmentValue::VariableExpansion
-        );
-        assert_eq!(
-            AssignmentValue::classify("${VAR}"),
-            AssignmentValue::VariableExpansion
-        );
-        assert_eq!(
-            AssignmentValue::classify("${VAR:-default}"),
-            AssignmentValue::VariableExpansion
-        );
-    }
+    // ── as_classified_assignment: tree-sitter-classified words ────────────
 
-    #[test]
-    fn command_substitution_takes_priority_over_variable_expansion() {
-        // A value with both `$(` and bare `$` should be CommandSubstitution
-        // because the inner command can be evaluated through policy.
+    #[rstest]
+    #[case::literal("FOO=bar", WordKind::Literal, "FOO", AssignmentValue::Static("bar"))]
+    #[case::command_sub(
+        "FOO=$(cmd)",
+        WordKind::CommandSubstitution,
+        "FOO",
+        AssignmentValue::CommandSubstitution
+    )]
+    #[case::variable_expansion(
+        "FOO=$VAR",
+        WordKind::VariableExpansion,
+        "FOO",
+        AssignmentValue::VariableExpansion
+    )]
+    #[case::arithmetic(
+        "FOO=$((1+2))",
+        WordKind::ArithmeticExpansion,
+        "FOO",
+        AssignmentValue::VariableExpansion
+    )]
+    #[case::dynamic(
+        "FOO=$(cmd)-$VAR",
+        WordKind::Dynamic,
+        "FOO",
+        AssignmentValue::CommandSubstitution
+    )]
+    fn classified_assignment_with_kind(
+        #[case] text: &str,
+        #[case] kind: WordKind,
+        #[case] expected_key: &str,
+        #[case] expected_value: AssignmentValue<'_>,
+    ) {
         assert_eq!(
-            AssignmentValue::classify("$VAR-$(cmd)"),
-            AssignmentValue::CommandSubstitution
-        );
-    }
-
-    #[test]
-    fn arithmetic_expansion_classified_as_variable_expansion() {
-        // $((1+2)) is arithmetic expansion, not command substitution.
-        // No inner command to evaluate — treat as VariableExpansion.
-        assert_eq!(
-            AssignmentValue::classify("$((1+2))"),
-            AssignmentValue::VariableExpansion
-        );
-        assert_eq!(
-            AssignmentValue::classify("prefix-$((x+1))"),
-            AssignmentValue::VariableExpansion
-        );
-    }
-
-    #[test]
-    fn mixed_command_sub_and_arithmetic() {
-        // $(cmd)-$((1+2)) has both — command substitution wins because
-        // the inner command can be evaluated through policy.
-        assert_eq!(
-            AssignmentValue::classify("$(cmd)-$((1+2))"),
-            AssignmentValue::CommandSubstitution
-        );
-    }
-
-    #[test]
-    fn adversarial_double_paren_cmd_and_evil() {
-        // This pins the current conservative behavior of classify() —
-        // VariableExpansion is fail-closed. If classify() is later improved
-        // to detect this as CommandSubstitution, update this test accordingly.
-        assert_eq!(
-            AssignmentValue::classify("$((cmd) && evil)"),
-            AssignmentValue::VariableExpansion,
-        );
-    }
-
-    #[test]
-    fn word_as_classified_assignment_unclassified() {
-        // Unclassified words (from string construction) fall back to byte scanning.
-        assert_eq!(
-            Word::from("FOO=bar").as_classified_assignment(),
-            Some(("FOO", AssignmentValue::Static("bar")))
-        );
-        assert_eq!(
-            Word::from("FOO=$VAR").as_classified_assignment(),
-            Some(("FOO", AssignmentValue::VariableExpansion))
-        );
-        assert_eq!(
-            Word::from("FOO=$(id -u)").as_classified_assignment(),
-            Some(("FOO", AssignmentValue::CommandSubstitution))
-        );
-        assert_eq!(
-            Word::from("FOO=`id -u`").as_classified_assignment(),
-            Some(("FOO", AssignmentValue::CommandSubstitution))
-        );
-        assert_eq!(Word::from("git").as_classified_assignment(), None);
-    }
-
-    #[test]
-    fn word_as_classified_assignment_with_kind() {
-        // Tree-sitter-classified words use structural metadata directly.
-        assert_eq!(
-            Word::with_kind("FOO=bar", WordKind::Literal).as_classified_assignment(),
-            Some(("FOO", AssignmentValue::Static("bar")))
-        );
-        assert_eq!(
-            Word::with_kind("FOO=$(cmd)", WordKind::CommandSubstitution).as_classified_assignment(),
-            Some(("FOO", AssignmentValue::CommandSubstitution))
-        );
-        assert_eq!(
-            Word::with_kind("FOO=$VAR", WordKind::VariableExpansion).as_classified_assignment(),
-            Some(("FOO", AssignmentValue::VariableExpansion))
-        );
-        assert_eq!(
-            Word::with_kind("FOO=$((1+2))", WordKind::ArithmeticExpansion)
-                .as_classified_assignment(),
-            Some(("FOO", AssignmentValue::VariableExpansion))
-        );
-        assert_eq!(
-            Word::with_kind("FOO=$(cmd)-$VAR", WordKind::Dynamic).as_classified_assignment(),
-            Some(("FOO", AssignmentValue::CommandSubstitution))
+            Word::with_kind(text, kind).as_classified_assignment(),
+            Some((expected_key, expected_value))
         );
     }
 

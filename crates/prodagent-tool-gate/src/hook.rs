@@ -251,75 +251,38 @@ fn is_env_assignment(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn is_env_assignment_valid_cases() {
-        assert!(is_env_assignment("FOO=bar"));
-        assert!(is_env_assignment("MY_VAR=hello"));
-        assert!(is_env_assignment("_PRIVATE=1"));
-        assert!(is_env_assignment("A="));
-        assert!(is_env_assignment("FOO=bar=baz"));
+    #[rstest]
+    #[case::simple("FOO=bar", true)]
+    #[case::with_value("MY_VAR=hello", true)]
+    #[case::underscore_prefix("_PRIVATE=1", true)]
+    #[case::empty_value("A=", true)]
+    #[case::equals_in_value("FOO=bar=baz", true)]
+    #[case::path_with_equals("/opt/foo=bar/bin/thing", false)]
+    #[case::relative_path_with_equals("./foo=bar", false)]
+    #[case::digit_start("1FOO=bar", false)]
+    #[case::no_equals("FOO", false)]
+    #[case::empty_key("=value", false)]
+    #[case::flag_with_equals("--config=value", false)]
+    #[case::hyphen_in_key("FOO-BAR=baz", false)]
+    fn env_assignment_validation(#[case] input: &str, #[case] expected: bool) {
+        assert_eq!(is_env_assignment(input), expected, "input: {input}");
     }
 
-    #[test]
-    fn is_env_assignment_invalid_cases() {
-        // Paths containing =
-        assert!(!is_env_assignment("/opt/foo=bar/bin/thing"));
-        assert!(!is_env_assignment("./foo=bar"));
-        // Starts with digit
-        assert!(!is_env_assignment("1FOO=bar"));
-        // No equals sign
-        assert!(!is_env_assignment("FOO"));
-        // Empty key
-        assert!(!is_env_assignment("=value"));
-        // Flag with =
-        assert!(!is_env_assignment("--config=value"));
-        // Hyphen in key
-        assert!(!is_env_assignment("FOO-BAR=baz"));
-    }
-
-    #[test]
-    fn extract_base_command_with_env_prefix() {
+    #[rstest]
+    #[case::env_prefix("FOO=bar command", "command")]
+    #[case::multiple_env_vars("FOO=1 BAR=2 command", "command")]
+    #[case::absolute_path("/usr/bin/git status", "git")]
+    #[case::plain_command("ls -la", "ls")]
+    #[case::underscore_env("MY_VAR=hello rm -rf /tmp", "rm")]
+    #[case::sudo_wrapper("sudo rm /tmp/foo", "rm")]
+    #[case::env_wrapper("env FOO=bar git status", "git")]
+    #[case::non_wrapper("git push --force", "git")]
+    #[case::path_with_equals("/opt/foo=bar/bin/thing", "thing")]
+    #[case::empty("", "")]
+    fn extract_base_command_resolution(#[case] input: &str, #[case] expected: &str) {
         let kb = agent_command_knowledge::default_knowledge_base();
-
-        // Normal env var prefix
-        assert_eq!(extract_base_command("FOO=bar command", kb), "command");
-
-        // Multiple env vars
-        assert_eq!(extract_base_command("FOO=1 BAR=2 command", kb), "command");
-
-        // Absolute path command
-        assert_eq!(extract_base_command("/usr/bin/git status", kb), "git");
-
-        // Plain command
-        assert_eq!(extract_base_command("ls -la", kb), "ls");
-
-        // Env var with underscore key
-        assert_eq!(extract_base_command("MY_VAR=hello rm -rf /tmp", kb), "rm");
-    }
-
-    #[test]
-    fn extract_base_command_wrapper_resolution() {
-        let kb = agent_command_knowledge::default_knowledge_base();
-
-        // Wrapper resolves to inner command
-        assert_eq!(extract_base_command("sudo rm /tmp/foo", kb), "rm");
-
-        // env wrapper resolves to inner command
-        assert_eq!(extract_base_command("env FOO=bar git status", kb), "git");
-
-        // Non-wrapper command returns itself
-        assert_eq!(extract_base_command("git push --force", kb), "git");
-    }
-
-    #[test]
-    fn extract_base_command_edge_cases() {
-        let kb = agent_command_knowledge::default_knowledge_base();
-
-        // Path with = is treated as a command, not an env assignment
-        assert_eq!(extract_base_command("/opt/foo=bar/bin/thing", kb), "thing");
-
-        // Empty string
-        assert_eq!(extract_base_command("", kb), "");
+        assert_eq!(extract_base_command(input, kb), expected);
     }
 }

@@ -28,6 +28,7 @@ agent-command-knowledge = { path = "crates/agent-command-knowledge", version = "
 prodagent-policy = { path = "crates/agent-policy", version = "^0.9" }
 prodagent-config = { path = "crates/prodagent-config", version = "^0.9" }
 time = { version = "0.3", features = ["formatting", "macros"] }
+rstest = "0.25"
 
 [profile.release]
 lto = true

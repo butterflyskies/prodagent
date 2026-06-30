@@ -19,3 +19,4 @@ tree-sitter-bash = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
+rstest = { workspace = true }

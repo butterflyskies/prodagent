@@ -14,3 +14,4 @@ serde = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 proptest = "1"
+rstest = { workspace = true }
