@@ -877,14 +877,14 @@ mod walk_tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case::empty_string("", WordKind::Literal, "")]
-    #[case::empty_single_quotes("''", WordKind::Literal, "")]
-    #[case::empty_double_quotes("\"\"", WordKind::Literal, "")]
-    #[case::ansi_c_quotes("$'hello'", WordKind::Literal, "hello")]
-    #[case::unclosed_double_quote("\"unclosed", WordKind::Literal, "\"unclosed")]
-    #[case::unmatched_single_quote("'unmatched", WordKind::Literal, "'unmatched")]
-    fn strip_quotes_behavior(#[case] input: &str, #[case] kind: WordKind, #[case] expected: &str) {
-        let result = strip_quotes(input, kind);
+    #[case::empty_string("", "")]
+    #[case::empty_single_quotes("''", "")]
+    #[case::empty_double_quotes("\"\"", "")]
+    #[case::ansi_c_quotes("$'hello'", "hello")]
+    #[case::unclosed_double_quote("\"unclosed", "\"unclosed")]
+    #[case::unmatched_single_quote("'unmatched", "'unmatched")]
+    fn strip_quotes_behavior(#[case] input: &str, #[case] expected: &str) {
+        let result = strip_quotes(input, WordKind::Literal);
         assert_eq!(result, expected);
     }
 
