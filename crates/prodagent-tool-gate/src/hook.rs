@@ -1,9 +1,9 @@
 //! Core hook evaluation: stdin → policy engine → stdout.
 
-use agent_command_knowledge::default_knowledge_base;
+use agent_command_knowledge::{default_knowledge_base, KnowledgeBase};
 use agent_shell_parser::hook::{parse_input, PreToolUseInput};
 use prodagent_config::{load_split_and_apply, ConfigLoader};
-use prodagent_policy::{PolicyDecision, PolicyEngine};
+use prodagent_policy::{derive_wrapper_specs, PolicyDecision, PolicyEngine};
 use serde::Serialize;
 
 use crate::decision_log;
@@ -37,8 +37,6 @@ struct HookSpecificOutput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConflictInfo {
-    /// Always true when present --- signals this is a project-vs-user conflict.
-    conflict: bool,
     /// The decision the project config wanted.
     project_decision: PolicyDecision,
     /// The config entry that "Always Allow" would write to user config.
@@ -82,7 +80,6 @@ impl HookOutput {
         override_config: OverrideEntry,
     ) -> Self {
         self.hook_specific_output.conflict = Some(ConflictInfo {
-            conflict: true,
             project_decision,
             override_config,
         });
@@ -109,6 +106,7 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     // Load config via three-tier cascade, getting both user-only and merged policies
     let loader = ConfigLoader::from_environment();
     let mut kb = default_knowledge_base().clone();
+    let user_kb = kb.clone(); // snapshot before project knowledge is merged
     let (user_policy, merged_policy) = load_split_and_apply(&loader, &mut kb)?;
 
     let user_engine = PolicyEngine::new(user_policy).map_err(|e| anyhow::anyhow!(e))?;
@@ -117,7 +115,7 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     // Evaluate command through both engines for conflict detection
     let cwd = input.cwd.as_deref();
     let merged_result = merged_engine.evaluate_command_with_cwd(command, &kb, cwd);
-    let user_result = user_engine.evaluate_command_with_cwd(command, &kb, cwd);
+    let user_result = user_engine.evaluate_command_with_cwd(command, &user_kb, cwd);
 
     // Apply --escalate-deny: convert Deny → Ask
     let mut decision = merged_result.decision;
@@ -134,17 +132,28 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     // what the user's own config would produce. This means the project config
     // tightened the decision.
     let mut output = HookOutput::new(decision, reason);
-    if merged_result.decision > user_result.decision {
+    if decision > user_result.decision {
         // Determine the override config based on what the command touches.
         // If the command has affected paths, scope the override to those paths.
         // Otherwise, create a flat command override.
-        let base_command = extract_base_command(command);
+        let base_command = extract_base_command(command, &kb);
         let paths = if !merged_result.affected_paths.is_empty() {
             Some(
                 merged_result
                     .affected_paths
                     .iter()
-                    .map(|p| p.to_string())
+                    .map(|p| {
+                        // Derive directory-scoped glob: /tmp/foo -> /tmp/*
+                        let path = camino::Utf8Path::new(p.as_str());
+                        match path.parent() {
+                            Some(parent) if !parent.as_str().is_empty() => {
+                                format!("{}/*", parent)
+                            }
+                            _ => p.to_string(),
+                        }
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
                     .collect(),
             )
         } else {
@@ -157,7 +166,7 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
             paths,
         };
 
-        output = output.with_conflict(merged_result.decision, override_entry);
+        output = output.with_conflict(decision, override_entry);
     }
 
     // Emit JSON to stdout
@@ -173,14 +182,36 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
 /// real command word (e.g. `/usr/bin/git` -> `git`, `FOO=bar rm -rf` -> `rm`).
 ///
 /// Falls back to naive whitespace splitting if the parser fails.
-fn extract_base_command(command: &str) -> String {
+fn extract_base_command(command: &str, kb: &KnowledgeBase) -> String {
     if let Ok(pipeline) = agent_shell_parser::parse::parse_with_substitutions(command) {
         if let Some(segment) = pipeline.segments.first() {
-            for word in &segment.words {
-                if word.is_assignment() {
-                    continue;
+            let base = segment
+                .words
+                .iter()
+                .find(|w| !w.is_assignment())
+                .map(|w| w.basename().to_string())
+                .unwrap_or_default();
+
+            // If this is a wrapper, resolve to the inner command
+            if !base.is_empty() && kb.wrappers.contains_key(&base) {
+                let kb_wrapper_specs = derive_wrapper_specs(kb);
+                let merged_config = agent_shell_parser::parse::merged_config(&kb_wrapper_specs);
+                let resolved =
+                    agent_shell_parser::parse::resolve_command_with(&segment.words, &merged_config);
+                if let agent_shell_parser::parse::ResolvedCommand::Resolved(parsed) = resolved {
+                    if !parsed.command.is_empty() && parsed.command.as_str() != base {
+                        return parsed
+                            .command
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&parsed.command)
+                            .to_string();
+                    }
                 }
-                return word.basename().to_string();
+            }
+
+            if !base.is_empty() {
+                return base;
             }
         }
     }

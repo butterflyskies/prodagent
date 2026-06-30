@@ -20,6 +20,18 @@ use crate::types::{
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Test helper: extract fields from a Relaxation variant, panicking on Structural.
+fn unwrap_relaxation(v: &MonotonicityViolation) -> (&str, PolicyDecision, PolicyDecision) {
+    match v {
+        MonotonicityViolation::Relaxation {
+            path,
+            user_decision,
+            project_decision,
+        } => (path.as_str(), *user_decision, *project_decision),
+        other => panic!("expected Relaxation, got {other:?}"),
+    }
+}
+
 fn default_layer() -> ConfigLayer {
     ConfigLayer {
         knowledge: KnowledgeConfig::default(),
@@ -88,9 +100,12 @@ fn monotonicity_project_weakens_default_is_violation() {
 
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1);
-    assert_eq!(violations[0].path, "policy.defaults.mutating");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Deny);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Ask);
+    assert_eq!(
+        unwrap_relaxation(&violations[0]).0,
+        "policy.defaults.mutating"
+    );
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Deny);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Ask);
 }
 
 #[test]
@@ -115,7 +130,7 @@ fn monotonicity_project_weakens_command_flat() {
 
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1);
-    assert_eq!(violations[0].path, "policy.commands.rm");
+    assert_eq!(unwrap_relaxation(&violations[0]).0, "policy.commands.rm");
 }
 
 #[test]
@@ -180,9 +195,12 @@ fn monotonicity_project_weakens_subcommand() {
 
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1);
-    assert_eq!(violations[0].path, "policy.commands.git.subcommands.push");
-    assert_eq!(violations[0].user_decision, PolicyDecision::Deny);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(
+        unwrap_relaxation(&violations[0]).0,
+        "policy.commands.git.subcommands.push"
+    );
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Deny);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 #[test]
@@ -204,7 +222,9 @@ fn monotonicity_project_removes_user_command_is_violation() {
 
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1);
-    assert!(violations[0].path.contains("remove_commands"));
+    assert!(
+        matches!(&violations[0], MonotonicityViolation::Relaxation { path, .. } if path.contains("remove_commands"))
+    );
 }
 
 #[test]
@@ -726,7 +746,10 @@ read_only = "allow"
     match result.unwrap_err() {
         ConfigError::Monotonicity(violations) => {
             assert_eq!(violations.len(), 1);
-            assert_eq!(violations[0].path, "policy.defaults.read_only");
+            assert_eq!(
+                unwrap_relaxation(&violations[0]).0,
+                "policy.defaults.read_only"
+            );
         }
         other => panic!("expected Monotonicity error, got: {other}"),
     }
@@ -822,7 +845,7 @@ fn policy_overlay_partial_defaults_preserves_unset() {
 
 #[test]
 fn violation_display_is_informative() {
-    let v = MonotonicityViolation {
+    let v = MonotonicityViolation::Relaxation {
         path: "policy.defaults.mutating".into(),
         user_decision: PolicyDecision::Deny,
         project_decision: PolicyDecision::Allow,
@@ -945,14 +968,16 @@ fn monotonicity_path_rule_weakens_is_violation() {
 
     let violations = validate_monotonicity(&user_policy, &project);
     assert_eq!(violations.len(), 1, "weakening path rule should be caught");
-    assert!(violations[0].path.contains("path_rules"));
+    assert!(
+        matches!(&violations[0], MonotonicityViolation::Relaxation { path, .. } if path.contains("path_rules"))
+    );
     assert_eq!(
-        violations[0].user_decision,
+        unwrap_relaxation(&violations[0]).1,
         PolicyDecision::Ask,
         "user floor should be Ask (strongest effect default)"
     );
     assert_eq!(
-        violations[0].project_decision,
+        unwrap_relaxation(&violations[0]).2,
         PolicyDecision::Allow,
         "project tried to weaken to Allow"
     );
@@ -987,14 +1012,16 @@ fn monotonicity_path_rule_weakens_command_is_violation() {
         1,
         "path rule weakening a user-denied command should be caught"
     );
-    assert!(violations[0].path.contains("command=rm"));
+    assert!(
+        matches!(&violations[0], MonotonicityViolation::Relaxation { path, .. } if path.contains("command=rm"))
+    );
     assert_eq!(
-        violations[0].user_decision,
+        unwrap_relaxation(&violations[0]).1,
         PolicyDecision::Deny,
         "user denied rm"
     );
     assert_eq!(
-        violations[0].project_decision,
+        unwrap_relaxation(&violations[0]).2,
         PolicyDecision::Allow,
         "project tried to allow rm via path rule"
     );
@@ -1156,7 +1183,9 @@ decision = "allow"
     match result.unwrap_err() {
         ConfigError::Monotonicity(violations) => {
             assert_eq!(violations.len(), 1);
-            assert!(violations[0].path.contains("path_rules"));
+            assert!(
+                matches!(&violations[0], MonotonicityViolation::Relaxation { path, .. } if path.contains("path_rules"))
+            );
         }
         other => panic!("expected Monotonicity error, got: {other}"),
     }
@@ -1196,8 +1225,8 @@ fn monotonicity_unscoped_path_rule_weakens_mutating_via_mixed_defaults() {
         "unscoped Allow path rule must not bypass mutating: Ask — \
          the floor for unscoped rules is the strongest effect default"
     );
-    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 #[test]
@@ -1242,8 +1271,8 @@ fn monotonicity_command_scoped_path_rule_weakens_via_mixed_defaults() {
          the floor for command-scoped rules without a per-command override \
          is the strongest effect default"
     );
-    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
-    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+    assert_eq!(unwrap_relaxation(&violations[0]).1, PolicyDecision::Ask);
+    assert_eq!(unwrap_relaxation(&violations[0]).2, PolicyDecision::Allow);
 }
 
 // ── 12. Per-command override floor (issue #80) ─────────────────────────────
@@ -1492,9 +1521,11 @@ fn monotonicity_project_overrides_are_rejected() {
         "project config with overrides should be a monotonicity violation"
     );
     assert!(
-        violations
-            .iter()
-            .any(|v| v.path == "policy.overrides (prohibited in project config)"),
+        violations.iter().any(|v| matches!(
+            v,
+            MonotonicityViolation::Structural { path, reason }
+                if path.contains("overrides") && reason.contains("must not contain")
+        )),
         "violation should reference overrides path"
     );
 }
@@ -1664,16 +1695,25 @@ fn override_resolves_conflict_on_subsequent_eval() {
         "override should resolve the project-vs-user conflict"
     );
 
-    // User-only evaluation (no project restriction)
-    let user_policy = PolicyConfig::default();
-    let user_engine = PolicyEngine::new(user_policy).unwrap();
-    let user_result = user_engine.evaluate_command("rm /tmp/foo", kb);
+    // Without the override, the merged result would be Deny (project restriction).
+    // With the override, it's Allow. Verify the override actually changed the outcome.
+    let mut merged_no_override = PolicyConfig::default();
+    merged_no_override
+        .commands
+        .insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+    let engine_no_override = PolicyEngine::new(merged_no_override).unwrap();
+    let result_no_override = engine_no_override.evaluate_command("rm /tmp/foo", kb);
 
-    // No conflict: overridden merged result is <= user result
+    assert_eq!(
+        result_no_override.decision,
+        PolicyDecision::Deny,
+        "without override, project Deny should apply"
+    );
     assert!(
-        result.decision <= user_result.decision,
-        "overridden result should not be stricter than user: override={:?}, user={:?}",
+        result.decision < result_no_override.decision,
+        "override should produce a less strict decision than the project restriction: \
+         with_override={:?}, without_override={:?}",
         result.decision,
-        user_result.decision,
+        result_no_override.decision,
     );
 }

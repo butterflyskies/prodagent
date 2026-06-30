@@ -550,6 +550,14 @@ impl PolicyEngine {
             return None;
         }
 
+        // Defensive guard: overrides must not fire on wrapper commands.
+        // The caller (evaluate_segment) returns early for wrappers before
+        // reaching this point, but an explicit guard ensures the invariant
+        // holds even if the call order changes.
+        if info.wrapper.is_some() {
+            return None;
+        }
+
         // Check override path rules first (most specific)
         let affected_path_strs: Vec<&str> =
             info.affected_paths.iter().map(|p| p.as_str()).collect();
@@ -565,7 +573,7 @@ impl PolicyEngine {
             base_command,
             cwd,
             &affected_path_strs,
-            override_cmd_decision.unwrap_or(PolicyDecision::Allow),
+            override_cmd_decision.unwrap_or_else(|| self.effect_default(info.effect)),
         ) {
             let mut result = PolicyResult::simple(
                 path_result.decision,
@@ -575,17 +583,13 @@ impl PolicyEngine {
                 ),
             )
             .with_paths(AffectedPaths::new(info.affected_paths.clone()));
-            // Apply env gates (KB safety rails still apply to overrides)
-            if let Some(gate_decision) =
-                apply_env_gates(&info.env_gates, env, self.config.opaque_env_ceiling)
-            {
-                result.decision = result.decision.max(gate_decision);
-            }
-            if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
-                result.decision = PolicyDecision::Ask;
-                result.reason = format!("{} (escalated: escalation flags)", result.reason);
-            }
-            maybe_escalate_for_redirection(&mut result, segment);
+            apply_override_safety_rails(
+                &mut result,
+                info,
+                env,
+                segment,
+                self.config.opaque_env_ceiling,
+            );
             return Some(result);
         }
 
@@ -596,17 +600,13 @@ impl PolicyEngine {
                 format!("{base_command}: effect={:?} (user override)", info.effect),
             )
             .with_paths(AffectedPaths::new(info.affected_paths.clone()));
-            // Apply env gates (KB safety rails still apply to overrides)
-            if let Some(gate_decision) =
-                apply_env_gates(&info.env_gates, env, self.config.opaque_env_ceiling)
-            {
-                result.decision = result.decision.max(gate_decision);
-            }
-            if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
-                result.decision = PolicyDecision::Ask;
-                result.reason = format!("{} (escalated: escalation flags)", result.reason);
-            }
-            maybe_escalate_for_redirection(&mut result, segment);
+            apply_override_safety_rails(
+                &mut result,
+                info,
+                env,
+                segment,
+                self.config.opaque_env_ceiling,
+            );
             return Some(result);
         }
 
@@ -649,6 +649,30 @@ impl PolicyEngine {
             Effect::Unknown => self.config.defaults.unknown,
         }
     }
+}
+
+/// Apply KB-level safety rails to an override result.
+///
+/// Even when a user override bypasses the `max(user, project)` merge,
+/// these safety rails still apply:
+/// - **Env gates** — escalation-only gates from the knowledge base
+/// - **Escalation flags** — bump to at least Ask
+/// - **Redirection escalation** — output redirections escalate
+fn apply_override_safety_rails(
+    result: &mut PolicyResult,
+    info: &CommandInfo,
+    env: &EnvSnapshot,
+    segment: &ShellSegment,
+    opaque_env_ceiling: PolicyDecision,
+) {
+    if let Some(gate_decision) = apply_env_gates(&info.env_gates, env, opaque_env_ceiling) {
+        result.decision = result.decision.max(gate_decision);
+    }
+    if info.has_escalation_flags && result.decision < PolicyDecision::Ask {
+        result.decision = PolicyDecision::Ask;
+        result.reason = format!("{} (escalated: escalation flags)", result.reason);
+    }
+    maybe_escalate_for_redirection(result, segment);
 }
 
 /// Look up a command policy from a command map.
@@ -773,7 +797,7 @@ fn is_benign_redirection(redir: &Redirection) -> bool {
 /// This is the bridge that closes the drift gap: the KB is the single source
 /// of truth for "what is a wrapper," and the policy engine primes the parser
 /// with that knowledge at evaluation time.
-fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
+pub fn derive_wrapper_specs(kb: &KnowledgeBase) -> Vec<WrapperSpec> {
     let default_config = parse::default_command_config();
     kb.wrappers
         .iter()

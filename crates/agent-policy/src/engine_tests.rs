@@ -2242,27 +2242,74 @@ fn override_command_bypasses_merged_ask_reason() {
     );
 }
 
+// ── Override + safety rail interactions ─────────────────────────────────
+
 #[test]
-fn override_is_idempotent_value() {
-    // Extends override_is_idempotent: pins the actual decision value,
-    // not just stability between evaluations.
+fn override_with_env_gate_escalates() {
+    // Override allows mycmd, but mycmd has an env gate (Set/Deny on DANGEROUS).
+    // When DANGEROUS is set via inline assignment, the gate fires and escalates
+    // the overridden Allow to Deny.
+    use agent_command_knowledge::{EnvCondition, EnvGate, EnvGateAction};
+
+    let gate = EnvGate {
+        var: "DANGEROUS".into(),
+        condition: EnvCondition::Set,
+        decision: EnvGateAction::Deny,
+    };
+    let mut kb = agent_command_knowledge::default_knowledge_base().clone();
+    kb.commands.insert(
+        "mycmd".to_string(),
+        agent_command_knowledge::CommandKnowledge {
+            name: "mycmd".to_string(),
+            effect: agent_command_knowledge::Effect::Mutating,
+            subcommands: Default::default(),
+            flags: Default::default(),
+            env_gates: vec![gate],
+            paths: Default::default(),
+            properties: Default::default(),
+        },
+    );
+
     let config = PolicyConfig::builder()
-        .deny("rm")
-        .override_command("rm", PolicyDecision::Allow)
+        .deny("mycmd")
+        .override_command("mycmd", PolicyDecision::Allow)
         .build()
         .unwrap();
     let engine = PolicyEngine::new(config).unwrap();
-    let kb = KnowledgeBase::default();
 
-    let first = engine.evaluate_command("rm /tmp/foo", &kb);
-    let second = engine.evaluate_command("rm /tmp/foo", &kb);
+    // Inline assignment sets DANGEROUS → gate fires
+    let result = engine.evaluate_command("DANGEROUS=yes mycmd", &kb);
     assert_eq!(
-        first.decision,
-        PolicyDecision::Allow,
-        "override should produce Allow"
+        result.decision,
+        PolicyDecision::Deny,
+        "env gate should escalate overridden Allow to Deny: {result:?}"
     );
-    assert_eq!(
-        first.decision, second.decision,
-        "override must be idempotent"
+    assert!(
+        result.reason.contains("user override"),
+        "reason should mention override: {result:?}"
+    );
+}
+
+#[test]
+fn override_with_escalation_flags_bumps_to_ask() {
+    // Override allows git, but `git push --force` has escalation flags.
+    // The escalation flags should bump the overridden Allow to at least Ask.
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    let config = PolicyConfig::builder()
+        .deny("git")
+        .override_command("git", PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command("git push --force", kb);
+    assert!(
+        result.decision >= PolicyDecision::Ask,
+        "escalation flags should bump overridden Allow to at least Ask: {result:?}"
+    );
+    assert!(
+        result.reason.contains("user override"),
+        "reason should mention override: {result:?}"
     );
 }

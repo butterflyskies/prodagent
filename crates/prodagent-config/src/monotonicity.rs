@@ -20,23 +20,33 @@ use crate::types::PolicyOverlay;
 /// A monotonicity violation: the project layer tried to weaken a user-level
 /// policy decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonotonicityViolation {
-    /// Human-readable location of the violation (e.g. "defaults.read_only"
-    /// or "commands.rm").
-    pub path: String,
-    /// The user-level decision that the project tried to weaken.
-    pub user_decision: PolicyDecision,
-    /// The project-level decision that was rejected.
-    pub project_decision: PolicyDecision,
+pub enum MonotonicityViolation {
+    /// The project layer tried to relax a user-level policy decision.
+    Relaxation {
+        path: String,
+        user_decision: PolicyDecision,
+        project_decision: PolicyDecision,
+    },
+    /// A structural violation: the project config uses a feature that is
+    /// prohibited at the project level (e.g., overrides).
+    Structural { path: String, reason: String },
 }
 
 impl fmt::Display for MonotonicityViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "project config at `{}` tried to relax {:?} → {:?} (user floor is {:?})",
-            self.path, self.user_decision, self.project_decision, self.user_decision,
-        )
+        match self {
+            Self::Relaxation {
+                path,
+                user_decision,
+                project_decision,
+            } => write!(
+                f,
+                "project config at `{path}` tried to relax {user_decision:?} → {project_decision:?} (user floor is {user_decision:?})",
+            ),
+            Self::Structural { path, reason } => {
+                write!(f, "structural violation at `{path}`: {reason}")
+            }
+        }
     }
 }
 
@@ -61,7 +71,7 @@ pub fn validate_monotonicity(
     // ── Effect defaults ───────────────────────────────────────────────────
     if let Some(proj_ro) = project_overlay.defaults.read_only {
         if proj_ro < user_policy.defaults.read_only {
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Relaxation {
                 path: "policy.defaults.read_only".into(),
                 user_decision: user_policy.defaults.read_only,
                 project_decision: proj_ro,
@@ -70,7 +80,7 @@ pub fn validate_monotonicity(
     }
     if let Some(proj_mut) = project_overlay.defaults.mutating {
         if proj_mut < user_policy.defaults.mutating {
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Relaxation {
                 path: "policy.defaults.mutating".into(),
                 user_decision: user_policy.defaults.mutating,
                 project_decision: proj_mut,
@@ -79,7 +89,7 @@ pub fn validate_monotonicity(
     }
     if let Some(proj_unk) = project_overlay.defaults.unknown {
         if proj_unk < user_policy.defaults.unknown {
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Relaxation {
                 path: "policy.defaults.unknown".into(),
                 user_decision: user_policy.defaults.unknown,
                 project_decision: proj_unk,
@@ -90,7 +100,7 @@ pub fn validate_monotonicity(
     // ── Opaque env ceiling ─────────────────────────────────────────────────
     if let Some(proj_ceiling) = project_overlay.opaque_env_ceiling {
         if proj_ceiling < user_policy.opaque_env_ceiling {
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Relaxation {
                 path: "policy.opaque_env_ceiling".into(),
                 user_decision: user_policy.opaque_env_ceiling,
                 project_decision: proj_ceiling,
@@ -119,7 +129,7 @@ pub fn validate_monotonicity(
             // Removing it would fall back to effect defaults, which might
             // be weaker. Flag it.
             let user_decision = resolve_command_decision(user_policy, cmd_name);
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Relaxation {
                 path: format!("policy.remove_commands[{cmd_name}]"),
                 user_decision,
                 project_decision: PolicyDecision::Allow, // worst case after removal
@@ -133,10 +143,9 @@ pub fn validate_monotonicity(
     // to bypass the monotonicity invariant entirely.
     if let Some(ref overrides) = project_overlay.overrides {
         if !overrides.is_empty() {
-            violations.push(MonotonicityViolation {
+            violations.push(MonotonicityViolation::Structural {
                 path: "policy.overrides (prohibited in project config)".into(),
-                user_decision: PolicyDecision::Deny,
-                project_decision: PolicyDecision::Allow,
+                reason: "project configs must not contain user overrides".into(),
             });
         }
     }
@@ -173,7 +182,7 @@ pub fn validate_monotonicity(
                     ),
                     None => format!("policy.path_rules[{i}] (paths={:?})", rule.paths),
                 };
-                violations.push(MonotonicityViolation {
+                violations.push(MonotonicityViolation::Relaxation {
                     path: label,
                     user_decision: effective_floor,
                     project_decision: rule.decision,
@@ -268,7 +277,7 @@ fn check_command_policy(
     match proj_policy {
         CommandPolicy::Flat(proj_decision) => {
             if *proj_decision < user_decision {
-                violations.push(MonotonicityViolation {
+                violations.push(MonotonicityViolation::Relaxation {
                     path: format!("policy.commands.{cmd_name}"),
                     user_decision,
                     project_decision: *proj_decision,
@@ -279,7 +288,7 @@ fn check_command_policy(
             // Check base decision if present
             if let Some(proj_base) = detail.base {
                 if proj_base < user_decision {
-                    violations.push(MonotonicityViolation {
+                    violations.push(MonotonicityViolation::Relaxation {
                         path: format!("policy.commands.{cmd_name}.base"),
                         user_decision,
                         project_decision: proj_base,
@@ -294,7 +303,7 @@ fn check_command_policy(
                 let user_sub_decision =
                     resolve_subcommand_decision(user_policy, cmd_name, sub_name);
                 if *proj_sub_decision < user_sub_decision {
-                    violations.push(MonotonicityViolation {
+                    violations.push(MonotonicityViolation::Relaxation {
                         path: format!("policy.commands.{cmd_name}.subcommands.{sub_name}"),
                         user_decision: user_sub_decision,
                         project_decision: *proj_sub_decision,
