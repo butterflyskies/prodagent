@@ -1655,6 +1655,10 @@ fn standalone_declare_evaluates_to_allow() {
         PolicyDecision::Allow,
         "standalone declare should be Allow: {result:?}"
     );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
 }
 
 #[test]
@@ -1665,6 +1669,10 @@ fn standalone_readonly_evaluates_to_allow() {
         result.decision,
         PolicyDecision::Allow,
         "standalone readonly should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
     );
 }
 
@@ -1678,6 +1686,10 @@ fn export_without_assignment_evaluates_to_allow() {
         result.decision,
         PolicyDecision::Allow,
         "export without = should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
     );
 }
 
@@ -1858,6 +1870,13 @@ fn export_without_assignment_does_not_set_value() {
 
     let engine = default_engine();
     let result = engine.evaluate_command("export TESTENV_BARE_EXPORT && mycmd", &kb);
+
+    // Pipeline should be Ask because mycmd's Unset gate fires.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "pipeline should be Ask when mycmd gate fires: {result:?}"
+    );
 
     // mycmd's Unset gate should fire because TESTENV_BARE_EXPORT has no value
     // (export without = doesn't set a value in the env snapshot).
