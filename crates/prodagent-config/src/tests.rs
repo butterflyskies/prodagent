@@ -1244,3 +1244,223 @@ fn monotonicity_command_scoped_path_rule_weakens_via_mixed_defaults() {
     assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
     assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
 }
+
+// ── 12. Per-command override floor (issue #80) ─────────────────────────────
+
+#[test]
+fn monotonicity_command_override_weakens_via_mixed_defaults() {
+    // Regression test for issue #80: resolve_command_decision used
+    // weakest_effect_default as the floor, letting a project add
+    // `rm: Allow` when the user has `mutating: Ask` but no per-command
+    // override for `rm`. The weakest default (read_only: Allow) passed
+    // validation, but at runtime `rm` is mutating (floor: Ask).
+    //
+    // Fix: use strongest_effect_default as the floor, matching the
+    // path_rule_floor logic from PR #77.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project adds a flat Allow for rm — should be caught
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "project `rm: Allow` must not bypass user `mutating: Ask` — \
+         the floor for commands without a per-command override is the \
+         strongest effect default"
+    );
+    assert_eq!(violations[0].path, "policy.commands.rm");
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn monotonicity_command_override_tightens_with_mixed_defaults_is_ok() {
+    // Counterpart to the regression test above: tightening a command
+    // beyond the strongest effect default is always allowed.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project adds rm: Deny — tighter than any default, always ok
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Deny));
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(
+        violations.is_empty(),
+        "tightening beyond strongest default should be allowed"
+    );
+}
+
+#[test]
+fn monotonicity_command_override_ask_with_mixed_defaults_is_ok() {
+    // Edge case: project sets rm: Ask, user strongest default is Ask.
+    // Same decision = no violation.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Ask));
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert!(
+        violations.is_empty(),
+        "matching the strongest default should not violate"
+    );
+}
+
+#[test]
+fn monotonicity_subcommand_override_weakens_via_mixed_defaults() {
+    // Same vulnerability pattern as #80 but for subcommand overrides.
+    // resolve_subcommand_decision had the same weakest_effect_default bug.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    // Project adds git.push: Allow via detailed policy (no user override for git)
+    let mut proj_subcmds = HashMap::new();
+    proj_subcmds.insert("push".into(), PolicyDecision::Allow);
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert(
+        "git".into(),
+        CommandPolicy::Detailed(DetailedCommandPolicy {
+            base: None,
+            subcommands: proj_subcmds,
+        }),
+    );
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "project `git.push: Allow` must not bypass user `mutating: Ask` — \
+         subcommand floor must also use strongest effect default"
+    );
+    assert_eq!(violations[0].path, "policy.commands.git.subcommands.push");
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn monotonicity_detailed_base_weakens_via_mixed_defaults() {
+    // Variant: project sets a detailed command policy with base: Allow
+    // and no subcommands, no user override for the command.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Allow,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Deny,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert(
+        "docker".into(),
+        CommandPolicy::Detailed(DetailedCommandPolicy {
+            base: Some(PolicyDecision::Allow),
+            subcommands: HashMap::new(),
+        }),
+    );
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "project `docker.base: Allow` must not bypass user `unknown: Deny` — \
+         strongest default is Deny"
+    );
+    assert_eq!(violations[0].path, "policy.commands.docker.base");
+    assert_eq!(violations[0].user_decision, PolicyDecision::Deny);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn monotonicity_command_override_weakens_with_uniform_defaults() {
+    // Edge case: all defaults are the same (weakest == strongest).
+    // The fix doesn't change behavior here, but this test guards
+    // against regressions in strongest_effect_default itself.
+    let user_policy = PolicyConfig {
+        defaults: EffectDefaults {
+            read_only: PolicyDecision::Ask,
+            mutating: PolicyDecision::Ask,
+            unknown: PolicyDecision::Ask,
+        },
+        commands: HashMap::new(),
+        ..PolicyConfig::default()
+    };
+
+    let mut proj_commands = HashMap::new();
+    proj_commands.insert("rm".into(), CommandPolicy::Flat(PolicyDecision::Allow));
+
+    let project = PolicyOverlay {
+        commands: proj_commands,
+        ..Default::default()
+    };
+
+    let violations = validate_monotonicity(&user_policy, &project);
+    assert_eq!(
+        violations.len(),
+        1,
+        "uniform Ask defaults: project rm: Allow must still be caught"
+    );
+    assert_eq!(violations[0].path, "policy.commands.rm");
+    assert_eq!(violations[0].user_decision, PolicyDecision::Ask);
+    assert_eq!(violations[0].project_decision, PolicyDecision::Allow);
+}
