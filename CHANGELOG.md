@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Update `anyhow` to 1.0.103 to resolve RUSTSEC-2026-0190 unsoundness advisory (#84)
 - CI: Add missing crates to publish workflow and release archives (#74)
 
-## [0.8.2] - 2026-06-07
+## [0.8.2] - 2026-06-28
 
 ### Added
 
