@@ -318,6 +318,89 @@ pub fn evaluate_path_rules(
     })
 }
 
+/// Evaluate user override path rules with per-path fallback decisions.
+///
+/// Unlike regular path rules, a matched override is authoritative for that
+/// path: it may intentionally relax the normal policy. Paths that do not
+/// match an override retain their independently computed normal decision, and
+/// the strictest per-path decision wins across the command.
+///
+/// Unscoped overrides never use CWD to lower the normal authorization
+/// boundary. When no affected paths were extracted, an unscoped CWD match may
+/// preserve or tighten `pathless_fallback`; only an explicitly command-scoped
+/// rule may relax it. This prevents an unknown command launched from an
+/// approved directory from being treated as confined to that directory while
+/// retaining safety-oriented Ask and Deny rules.
+///
+/// `path_decisions` structurally pairs each extracted path with its normal
+/// fallback decision, making length mismatch and truncating `zip` impossible.
+/// `pathless_fallback` is the independently evaluated normal decision for a
+/// command with no extracted paths.
+/// `unscoped_lowering_is_trusted` gates only decisions less restrictive than a
+/// path's fallback; tightening and equal decisions remain valid without it.
+pub(crate) fn evaluate_override_path_rules(
+    rules: &[PathRule],
+    base_command: &str,
+    cwd: Option<&str>,
+    path_decisions: &[(&str, PolicyDecision)],
+    pathless_fallback: PolicyDecision,
+    unscoped_lowering_is_trusted: bool,
+) -> Option<PolicyDecision> {
+    if rules.is_empty() {
+        return None;
+    }
+
+    let expanded: Vec<ExpandedRule<'_>> = rules
+        .iter()
+        .map(|rule| ExpandedRule {
+            rule,
+            patterns: rule.paths.iter().map(|p| normalize_pattern(p)).collect(),
+        })
+        .collect();
+
+    if path_decisions.is_empty() {
+        let cwd = cwd?;
+        let normalized = resolve_and_normalize(cwd);
+        return find_command_scoped_match(&expanded, base_command, &normalized)
+            .or_else(|| {
+                find_eligible_unscoped_match(&expanded, &normalized, |rule| {
+                    rule.decision >= pathless_fallback
+                })
+                .map(|(_, rule)| rule)
+            })
+            .map(|rule| rule.decision);
+    }
+
+    let mut any_matched = false;
+    let mut strictest = PolicyDecision::Allow;
+
+    for &(path, fallback) in path_decisions {
+        let normalized = resolve_and_normalize(path);
+        let matched =
+            find_command_scoped_match(&expanded, base_command, &normalized).or_else(|| {
+                find_eligible_unscoped_match(&expanded, &normalized, |rule| {
+                    rule.decision >= fallback
+                        || (unscoped_lowering_is_trusted
+                            && rule
+                                .paths
+                                .iter()
+                                .all(|pattern| pattern.as_str().starts_with('/')))
+                })
+                .map(|(_, rule)| rule)
+            });
+
+        let decision = if let Some(rule) = matched {
+            any_matched = true;
+            rule.decision
+        } else {
+            fallback
+        };
+        strictest = strictest.max(decision);
+    }
+
+    any_matched.then_some(strictest)
+}
+
 /// Result of a path-scoped rule evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathRuleResult {
@@ -362,13 +445,8 @@ fn evaluate_single_path<'a>(
     let normalized = resolve_and_normalize(path);
 
     // Tier 1: command+path rules (most specific).
-    for er in expanded {
-        if er.rule.command.as_deref() != Some(base_command) {
-            continue;
-        }
-        if er.patterns.iter().any(|pat| path_matches(&normalized, pat)) {
-            return (er.rule.decision, Some(er.rule));
-        }
+    if let Some(rule) = find_command_scoped_match(expanded, base_command, &normalized) {
+        return (rule.decision, Some(rule));
     }
 
     // Tier 2: path-only AND command-only, independently.
@@ -382,6 +460,22 @@ fn evaluate_single_path<'a>(
     (command_default, None)
 }
 
+/// Return the first command-scoped rule matching a normalized path.
+fn find_command_scoped_match<'a>(
+    expanded: &'a [ExpandedRule<'a>],
+    base_command: &str,
+    normalized_path: &str,
+) -> Option<&'a PathRule> {
+    expanded.iter().find_map(|er| {
+        (er.rule.command.as_deref() == Some(base_command)
+            && er
+                .patterns
+                .iter()
+                .any(|pat| path_matches(normalized_path, pat)))
+        .then_some(er.rule)
+    })
+}
+
 /// Find the first matching unscoped (no `command` field) path rule.
 ///
 /// Exact-match patterns have higher specificity than glob patterns.
@@ -390,9 +484,22 @@ fn find_unscoped_match<'a>(
     expanded: &'a [ExpandedRule<'a>],
     normalized_path: &str,
 ) -> Option<(PolicyDecision, &'a PathRule)> {
+    find_eligible_unscoped_match(expanded, normalized_path, |_| true)
+}
+
+/// Find the first eligible unscoped rule in the normal specificity order.
+///
+/// Ineligible rules are skipped rather than treated as terminal matches. This
+/// matters for overrides: an early relaxation that lacks sufficient proof
+/// must not shadow a later tightening rule for the same path.
+fn find_eligible_unscoped_match<'a>(
+    expanded: &'a [ExpandedRule<'a>],
+    normalized_path: &str,
+    mut eligible: impl FnMut(&PathRule) -> bool,
+) -> Option<(PolicyDecision, &'a PathRule)> {
     // Level 1: exact matches (no glob characters) — most specific.
     for er in expanded {
-        if er.rule.command.is_some() {
+        if er.rule.command.is_some() || !eligible(er.rule) {
             continue;
         }
         if er
@@ -406,7 +513,7 @@ fn find_unscoped_match<'a>(
 
     // Level 2: glob matches.
     for er in expanded {
-        if er.rule.command.is_some() {
+        if er.rule.command.is_some() || !eligible(er.rule) {
             continue;
         }
         if er
