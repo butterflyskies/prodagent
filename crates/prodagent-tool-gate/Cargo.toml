@@ -27,3 +27,4 @@ time = { workspace = true }
 
 [dev-dependencies]
 rstest = { workspace = true }
+tempfile = "3"

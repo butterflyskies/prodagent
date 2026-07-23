@@ -2,8 +2,8 @@
 
 use agent_command_knowledge::{default_knowledge_base, KnowledgeBase};
 use agent_shell_parser::hook::{parse_input, PreToolUseInput};
-use prodagent_config::{load_split_and_apply, ConfigLoader};
-use prodagent_policy::{derive_wrapper_specs, PolicyDecision, PolicyEngine};
+use prodagent_config::ConfigLoader;
+use prodagent_policy::{derive_wrapper_specs, GovernedWriteMatch, PolicyDecision, PolicyEngine};
 use serde::Serialize;
 
 use crate::decision_log;
@@ -107,10 +107,27 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     let loader = ConfigLoader::from_environment();
     let mut kb = default_knowledge_base().clone();
     let user_kb = kb.clone(); // snapshot before project knowledge is merged
-    let (user_policy, merged_policy) = load_split_and_apply(&loader, &mut kb)?;
+    let (user_policy, config) = loader.load_split()?;
+    kb.merge(config.knowledge);
+
+    // Governed shell writes are a mandatory refusal, evaluated before the
+    // ordinary policy/override path. Returning Deny from PreToolUse refuses
+    // the whole original command; the hook never executes or rewrites it.
+    if let Some(governed) = config
+        .governed_writes
+        .evaluate(command, input.cwd.as_deref())
+    {
+        let reason = governed_write_reason(&governed);
+        decision_log::log_decision(&input.tool_name, command, PolicyDecision::Deny, &reason);
+        serde_json::to_writer(
+            std::io::stdout(),
+            &HookOutput::new(PolicyDecision::Deny, reason),
+        )?;
+        return Ok(());
+    }
 
     let user_engine = PolicyEngine::new(user_policy).map_err(|e| anyhow::anyhow!(e))?;
-    let merged_engine = PolicyEngine::new(merged_policy).map_err(|e| anyhow::anyhow!(e))?;
+    let merged_engine = PolicyEngine::new(config.policy).map_err(|e| anyhow::anyhow!(e))?;
 
     // Evaluate command through both engines for conflict detection
     let cwd = input.cwd.as_deref();
@@ -173,6 +190,21 @@ pub fn run(escalate_deny: bool) -> anyhow::Result<()> {
     serde_json::to_writer(std::io::stdout(), &output)?;
 
     Ok(())
+}
+
+fn governed_write_reason(governed: &GovernedWriteMatch<'_>) -> String {
+    let rule = governed.rule();
+    let mut reason = format!(
+        "Refused the whole command before execution: shell write destination `{}` is under governed directory `{}`.\n\nContribution guidance:\n{}",
+        governed.destination(),
+        rule.directory().as_path(),
+        rule.guide().trim()
+    );
+    if let Some(template) = rule.template() {
+        reason.push_str(&format!("\n\nTemplate: {}", template.trim()));
+    }
+    reason.push_str("\n\nApply this guidance, then retry with a corrected command.");
+    reason
 }
 
 /// Extract the base command name from a raw command string.
@@ -251,7 +283,28 @@ fn is_env_assignment(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prodagent_policy::{ManagedGuidance, ManagedGuidanceRule};
     use rstest::rstest;
+
+    #[test]
+    fn governed_reason_injects_managed_guide_template_and_retry() {
+        let guidance = ManagedGuidance::try_new(vec![ManagedGuidanceRule::new(
+            "/work/incidents",
+            "Include an owner.",
+            Some("https://example.test/template".into()),
+        )
+        .unwrap()])
+        .unwrap();
+        let governed = guidance
+            .evaluate("echo update >> incidents/report.md", Some("/work"))
+            .unwrap();
+
+        let reason = governed_write_reason(&governed);
+        assert!(reason.contains("Refused the whole command before execution"));
+        assert!(reason.contains("Include an owner."));
+        assert!(reason.contains("Template: https://example.test/template"));
+        assert!(reason.contains("retry with a corrected command"));
+    }
 
     #[rstest]
     #[case::simple("FOO=bar", true)]

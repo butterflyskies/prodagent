@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use agent_command_knowledge::merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};
 use prodagent_policy::config::{CommandPolicy, EffectDefaults, OverrideConfig, PolicyConfig};
 use prodagent_policy::path_rules::PathRule;
+use prodagent_policy::ManagedGuidance;
 use prodagent_policy::PolicyDecision;
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +28,13 @@ pub struct ConfigLayer {
     /// Policy layer overrides (effect defaults, per-command decisions).
     #[serde(default)]
     pub policy: PolicyOverlay,
+
+    /// Trusted directory-to-contribution-guidance mappings.
+    ///
+    /// This field is accepted only from embedded/default and user-managed
+    /// configuration. The loader rejects project-local declarations.
+    #[serde(default)]
+    pub governed_writes: ManagedGuidance,
 }
 
 /// Knowledge layer configuration — wraps [`KnowledgeOverlay`] for the
@@ -216,6 +224,8 @@ pub struct ProdagentConfig {
     pub knowledge: KnowledgeOverlay,
     /// Merged and validated policy configuration.
     pub policy: PolicyConfig,
+    /// Verified managed guidance for governed shell-write destinations.
+    pub governed_writes: ManagedGuidance,
 }
 
 impl ProdagentConfig {
@@ -230,6 +240,7 @@ impl ProdagentConfig {
     ) -> Self {
         // Start with defaults
         let mut knowledge = defaults.knowledge;
+        let mut governed_writes = defaults.governed_writes;
         let mut policy = PolicyConfig {
             defaults: EffectDefaults {
                 read_only: defaults
@@ -260,6 +271,9 @@ impl ProdagentConfig {
         // Merge user layer
         if let Some(user_layer) = user {
             knowledge = merge_knowledge(knowledge, user_layer.knowledge);
+            if !user_layer.governed_writes.is_empty() {
+                governed_writes = user_layer.governed_writes;
+            }
             user_layer.policy.apply_to(&mut policy);
         }
 
@@ -275,6 +289,7 @@ impl ProdagentConfig {
         ProdagentConfig {
             knowledge: knowledge_overlay,
             policy,
+            governed_writes,
         }
     }
 }
