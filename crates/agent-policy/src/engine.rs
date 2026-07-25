@@ -442,6 +442,24 @@ impl PolicyEngine {
             );
         }
 
+        // Standalone declaration command (export, declare, readonly, local, typeset).
+        // These modify variable attributes — they do not execute commands.
+        // Without this check, "export" is classified as Effect::Unknown (Ask),
+        // which poisons compound commands like `export FOO=bar && git commit`.
+        // Any command substitutions in the declaration's values are evaluated
+        // separately as substitutions by the pipeline evaluator.
+        if is_standalone_declaration(words) {
+            let desc: String = words
+                .iter()
+                .map(|w| w.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut result =
+                PolicyResult::simple(PolicyDecision::Allow, format!("declaration: {desc}"));
+            maybe_escalate_for_redirection(&mut result, segment);
+            return result;
+        }
+
         if base_command.is_empty() {
             return PolicyResult::simple(PolicyDecision::Allow, "empty");
         }
@@ -1112,6 +1130,30 @@ fn gate_action_to_decision(action: EnvGateAction) -> PolicyDecision {
         EnvGateAction::Deny => PolicyDecision::Deny,
     }
 }
+
+/// Check if a word list represents a standalone declaration command
+/// (`export`, `declare`, `readonly`, `local`, `typeset`) that modifies
+/// variable attributes without executing a command.
+///
+/// Returns `true` when the first word is a declaration keyword. The
+/// remaining words are either variable assignments (`KEY=VALUE`), bare
+/// variable names, or declaration flags (`-x`, `-n`, etc.) — none of
+/// which execute commands.
+///
+/// This is intentionally broad: ALL declaration builtin invocations are
+/// safe regardless of their arguments. `declare -f func` prints a
+/// function definition (read-only), `export -n FOO` removes the export
+/// attribute (mutation of variable metadata, not command execution), etc.
+fn is_standalone_declaration(words: &[Word]) -> bool {
+    let Some(first) = words.first() else {
+        return false;
+    };
+    matches!(
+        first.as_str(),
+        "export" | "declare" | "readonly" | "local" | "typeset"
+    )
+}
+
 /// Extract the base command name from pre-tokenized words.
 ///
 /// Skips leading `KEY=VALUE` env var assignments, then returns the basename
@@ -1198,12 +1240,7 @@ fn extract_env_mutations(segment: &ShellSegment, env: &mut EnvSnapshot) {
     // Two forms:
     //   1. `["FOO=bar"]` or `["FOO=bar", "BAR=baz"]` — all words are assignments
     //   2. `["export", "FOO=bar", ...]` — export keyword followed by assignments
-    let is_declaration = words.first().is_some_and(|w| {
-        matches!(
-            w.as_str(),
-            "export" | "declare" | "readonly" | "local" | "typeset"
-        )
-    });
+    let is_declaration = is_standalone_declaration(words);
     let start_idx = if is_declaration { 1 } else { 0 };
 
     // Check that all remaining words are assignments (no command after them).
