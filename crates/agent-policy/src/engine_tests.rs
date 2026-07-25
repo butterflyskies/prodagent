@@ -1899,6 +1899,685 @@ fn override_composition_with_path_rules() {
     assert_eq!(result.decision, PolicyDecision::Deny);
 }
 
+#[test]
+fn unscoped_override_relaxes_extracted_matching_path() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "rm /tmp/approved/file",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Allow, "{result:?}");
+}
+
+#[test]
+fn unmatched_extracted_path_retains_normal_decision() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .path_rule(PathRule {
+            paths: vec![PathGlob::new("/etc/**".to_string()).unwrap()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        })
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "rm /tmp/approved/file /etc/shadow",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Deny, "{result:?}");
+}
+
+#[test]
+fn unscoped_override_cannot_relax_incomplete_target_directory_extraction() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    for command in [
+        "cp -t /etc /tmp/approved/file",
+        "cp --target-directory=/etc /tmp/approved/file",
+        "mv --target-directory /etc /tmp/approved/file",
+        "ln -t /etc /tmp/approved/file",
+    ] {
+        let result = engine.evaluate_command(command, kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Ask,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result.reason.contains("user override"),
+            "{command}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn unscoped_override_cannot_relax_dynamic_path_operands() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    for command in [
+        "rm /tmp/approved/$TARGET",
+        "rm /tmp/approved/$(printf target)",
+        "rm /tmp/approved/$((1 + 1))",
+    ] {
+        let result = engine.evaluate_command(command, kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Ask,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result.reason.contains("user override"),
+            "{command}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn unscoped_override_cannot_relax_dynamic_path_flag_operand() {
+    use crate::path_rules::{PathGlob, PathRule};
+    use agent_command_knowledge::{
+        CommandKnowledge, CommandProperties, FlagSchema, PathPositionals, PathSpec, SubcommandMap,
+    };
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let mut kb = KnowledgeBase::default();
+    let tool = CommandKnowledge {
+        name: "tool".into(),
+        effect: Effect::Mutating,
+        subcommands: SubcommandMap::default(),
+        flags: FlagSchema {
+            skip_arg: vec!["--root".into()],
+            path: vec!["--root".into()],
+            ..FlagSchema::default()
+        },
+        env_gates: vec![],
+        paths: PathSpec {
+            positionals: PathPositionals::All,
+            flags: vec![],
+        },
+        properties: CommandProperties::default(),
+    };
+    kb.commands.insert("tool".into(), tool);
+
+    let result =
+        engine.evaluate_command("tool --root /tmp/approved/$TARGET /tmp/approved/file", &kb);
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn dynamic_path_in_compound_keeps_strictest_decision() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "TARGET=../../etc/shadow; rm /tmp/approved/$TARGET",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert_eq!(result.segments.len(), 2, "{result:?}");
+    assert_eq!(result.segments[0].decision, PolicyDecision::Allow);
+    assert_eq!(result.segments[1].decision, PolicyDecision::Ask);
+}
+
+#[test]
+fn unscoped_override_requires_boring_literal_argv() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    for command in [
+        "rm /tmp/approved/{file,other}",
+        "rm /tmp/approved/*",
+        "rm $'/tmp/approved/file'",
+        "rm '/tmp/approved/'file",
+        r"rm /tmp/appro\ved/file",
+    ] {
+        let result = engine.evaluate_command(command, kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Ask,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result.reason.contains("user override"),
+            "{command}: {result:?}"
+        );
+    }
+
+    let safe = engine.evaluate_command("rm /tmp/approved/safe-file_1.2", kb);
+    assert_eq!(safe.decision, PolicyDecision::Allow, "{safe:?}");
+}
+
+#[test]
+fn unscoped_override_rejects_tilde_transform() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("~/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "rm ~/approved/file",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_rejects_dynamic_non_path_flag_values() {
+    use crate::path_rules::{PathGlob, PathRule};
+    use agent_command_knowledge::{
+        CommandKnowledge, CommandProperties, FlagSchema, PathPositionals, PathSpec, SubcommandMap,
+    };
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let mut kb = KnowledgeBase::default();
+    kb.commands.insert(
+        "tool".into(),
+        CommandKnowledge {
+            name: "tool".into(),
+            effect: Effect::Mutating,
+            subcommands: SubcommandMap::default(),
+            flags: FlagSchema {
+                skip_arg: vec!["--label".into()],
+                ..FlagSchema::default()
+            },
+            env_gates: vec![],
+            paths: PathSpec {
+                positionals: PathPositionals::All,
+                flags: vec![],
+            },
+            properties: CommandProperties::default(),
+        },
+    );
+
+    for command in [
+        "tool --label $LABEL /tmp/approved/file",
+        "tool --label=$LABEL /tmp/approved/file",
+    ] {
+        let result = engine.evaluate_command(command, &kb);
+        assert_eq!(
+            result.decision,
+            PolicyDecision::Ask,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result.reason.contains("user override"),
+            "{command}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn unscoped_override_rejects_prefix_assignments() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "MODE=safe rm /tmp/approved/file",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_rejects_relative_operands_across_cwds() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let kb = agent_command_knowledge::default_knowledge_base();
+
+    for cwd in [None, Some("/tmp/one"), Some("/var/two")] {
+        let result = engine.evaluate_command_with_cwd("rm approved/file", kb, cwd);
+        assert_eq!(result.decision, PolicyDecision::Ask, "{cwd:?}: {result:?}");
+        assert!(!result.reason.contains("user override"), "{result:?}");
+    }
+}
+
+#[test]
+fn unscoped_override_rejects_rule_containing_relative_pattern() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![
+                PathGlob::new("/tmp/approved/**".to_string()).unwrap(),
+                PathGlob::new("approved/**".to_string()).unwrap(),
+            ],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "rm /tmp/approved/file",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_rejects_undeclared_end_of_options_semantics() {
+    use crate::path_rules::{PathGlob, PathRule};
+    use agent_command_knowledge::{
+        CommandKnowledge, CommandProperties, FlagSchema, PathPositionals, PathSpec, SubcommandMap,
+    };
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let mut kb = KnowledgeBase::default();
+    kb.commands.insert(
+        "tool".into(),
+        CommandKnowledge {
+            name: "tool".into(),
+            effect: Effect::Mutating,
+            subcommands: SubcommandMap::default(),
+            flags: FlagSchema::default(),
+            env_gates: vec![],
+            paths: PathSpec {
+                positionals: PathPositionals::All,
+                flags: vec![],
+            },
+            properties: CommandProperties::default(),
+        },
+    );
+
+    let result = engine.evaluate_command("tool -- /tmp/approved/file", &kb);
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn incomplete_extraction_still_applies_unscoped_deny() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "cp source /tmp/approved/file",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Deny, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn incomplete_extraction_still_allows_unscoped_ask_to_tighten() {
+    use crate::path_rules::{PathGlob, PathRule};
+    use agent_command_knowledge::{
+        CommandKnowledge, CommandProperties, FlagSchema, PathPositionals, PathSpec, SubcommandMap,
+    };
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Ask,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let mut kb = KnowledgeBase::default();
+    kb.commands.insert(
+        "inspect".into(),
+        CommandKnowledge {
+            name: "inspect".into(),
+            effect: Effect::ReadOnly,
+            subcommands: SubcommandMap::default(),
+            flags: FlagSchema::default(),
+            env_gates: vec![],
+            paths: PathSpec {
+                positionals: PathPositionals::Last,
+                flags: vec![],
+            },
+            properties: CommandProperties::default(),
+        },
+    );
+
+    let result = engine.evaluate_command("inspect source /tmp/approved/file", &kb);
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn untrusted_mixed_paths_apply_tightening_but_not_relaxation() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/etc/**".to_string()).unwrap()],
+            decision: PolicyDecision::Deny,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command(
+        "rm /tmp/approved/$TARGET /etc/shadow",
+        agent_command_knowledge::default_knowledge_base(),
+    );
+    assert_eq!(result.decision, PolicyDecision::Deny, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_does_not_authorize_unknown_from_matching_cwd() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command_with_cwd(
+        "unknown-review-script",
+        &KnowledgeBase::default(),
+        Some("/tmp/approved/work"),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_does_not_authorize_known_pathless_command_from_cwd() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command_with_cwd(
+        "git fetch",
+        agent_command_knowledge::default_knowledge_base(),
+        Some("/tmp/approved/repo"),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(!result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_override_tightens_pathless_allow_from_matching_cwd() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Ask,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command_with_cwd(
+        "pwd",
+        agent_command_knowledge::default_knowledge_base(),
+        Some("/tmp/approved/repo"),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn unscoped_equal_override_is_receipted_for_pathless_cwd() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Ask,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command_with_cwd(
+        "git fetch",
+        agent_command_knowledge::default_knowledge_base(),
+        Some("/tmp/approved/repo"),
+    );
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn command_scoped_override_still_authorizes_matching_cwd() {
+    use crate::path_rules::{PathGlob, PathRule};
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: Some("git".to_string()),
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    let result = engine.evaluate_command_with_cwd(
+        "git fetch",
+        agent_command_knowledge::default_knowledge_base(),
+        Some("/tmp/approved/repo"),
+    );
+    assert_eq!(result.decision, PolicyDecision::Allow, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+}
+
+#[test]
+fn real_unscoped_override_preserves_escalation_rail() {
+    use crate::path_rules::{PathGlob, PathRule};
+    use agent_command_knowledge::{
+        CommandKnowledge, CommandProperties, FlagSchema, PathPositionals, PathSpec, SubcommandMap,
+    };
+
+    let config = PolicyConfig::builder()
+        .override_path_rule(PathRule {
+            paths: vec![PathGlob::new("/tmp/approved/**".to_string()).unwrap()],
+            decision: PolicyDecision::Allow,
+            command: None,
+        })
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+    let mut kb = KnowledgeBase::default();
+    kb.commands.insert(
+        "tool".into(),
+        CommandKnowledge {
+            name: "tool".into(),
+            effect: Effect::Mutating,
+            subcommands: SubcommandMap::default(),
+            flags: FlagSchema {
+                skip_solo: vec!["--force".into()],
+                escalation: vec!["--force".into()],
+                ..FlagSchema::default()
+            },
+            env_gates: vec![],
+            paths: PathSpec {
+                positionals: PathPositionals::All,
+                flags: vec![],
+            },
+            properties: CommandProperties::default(),
+        },
+    );
+
+    let escalated = engine.evaluate_command("tool --force /tmp/approved/file", &kb);
+    assert_eq!(escalated.decision, PolicyDecision::Ask, "{escalated:?}");
+    assert!(escalated.reason.contains("user override"), "{escalated:?}");
+    assert!(
+        escalated.reason.contains("escalation flags"),
+        "{escalated:?}"
+    );
+}
+
+#[test]
+fn redirection_rail_escalates_a_lowered_override_result() {
+    let pipeline = parse::parse_with_substitutions("tool /tmp/file > /tmp/output").unwrap();
+    let segment = &pipeline.segments[0];
+    let info = CommandInfo {
+        effect: Effect::Mutating,
+        ..CommandInfo::unknown()
+    };
+    let mut result = PolicyResult::simple(
+        PolicyDecision::Allow,
+        "tool: effect=Mutating (user override, path rule)",
+    );
+
+    apply_override_safety_rails(
+        &mut result,
+        &info,
+        &EnvSnapshot::clean(),
+        segment,
+        PolicyDecision::Ask,
+    );
+
+    assert_eq!(result.decision, PolicyDecision::Ask, "{result:?}");
+    assert!(result.reason.contains("user override"), "{result:?}");
+    assert!(
+        result
+            .reason
+            .contains("escalated: wrapping output redirection"),
+        "{result:?}"
+    );
+}
+
 // ── Empty overrides are no-op ───────────────────────────────────────────
 
 #[test]

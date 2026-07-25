@@ -1,5 +1,6 @@
 use agent_command_knowledge::{
-    classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, KnowledgeBase,
+    classify, CommandInfo, Effect, EnvCondition, EnvGate, EnvGateAction, FlagSchema, KnowledgeBase,
+    PathPositionals,
 };
 use agent_shell_parser::parse::{
     self, AssignmentValue, CommandConfig, Operator, ParsedPipeline, Redirection, ResolvedCommand,
@@ -489,7 +490,8 @@ impl PolicyEngine {
         // ── User overrides (explicit consent, non-wrapper commands only) ──
         // Check if the user has an override that bypasses project restrictions
         // for this command+path combination.
-        if let Some(override_result) = self.check_override(&base_command, &info, cwd, &env, segment)
+        if let Some(override_result) =
+            self.check_override(&base_command, &info, kb, cwd, &env, segment)
         {
             return override_result;
         }
@@ -560,6 +562,7 @@ impl PolicyEngine {
         &self,
         base_command: &str,
         info: &CommandInfo,
+        kb: &KnowledgeBase,
         cwd: Option<&str>,
         env: &EnvSnapshot,
         segment: &ShellSegment,
@@ -580,21 +583,63 @@ impl PolicyEngine {
         let affected_path_strs: Vec<&str> =
             info.affected_paths.iter().map(|p| p.as_str()).collect();
 
-        // For override path rules, the command_default is the override command
-        // decision (if any), otherwise the normal evaluation result. But since
-        // overrides take highest priority, we use Allow as the default — an
-        // override path rule's decision IS the final answer.
         let override_cmd_decision = self.override_command_decision(base_command, info);
 
-        if let Some(path_result) = path_rules::evaluate_path_rules(
+        // A path override is authoritative only for paths it actually
+        // matches. Every unmatched affected path keeps its normal decision
+        // (or an explicit command override), then strictest-wins aggregation
+        // prevents a safe path from hiding an unsafe one.
+        let command_decision = self.evaluate(base_command, info);
+        let pathless_fallback = override_cmd_decision.unwrap_or_else(|| {
+            path_rules::evaluate_path_rules(
+                &self.config.path_rules,
+                base_command,
+                cwd,
+                &[],
+                command_decision,
+            )
+            .map_or(command_decision, |result| result.decision)
+        });
+        let fallback_decisions: Vec<PolicyDecision> = affected_path_strs
+            .iter()
+            .map(|path| {
+                override_cmd_decision.unwrap_or_else(|| {
+                    path_rules::evaluate_path_rules(
+                        &self.config.path_rules,
+                        base_command,
+                        cwd,
+                        &[*path],
+                        command_decision,
+                    )
+                    .map_or(command_decision, |result| result.decision)
+                })
+            })
+            .collect();
+
+        let path_decisions: Vec<(&str, PolicyDecision)> = affected_path_strs
+            .iter()
+            .copied()
+            .zip(fallback_decisions.iter().copied())
+            .collect();
+
+        // An unscoped path override may lower a per-path fallback only when
+        // the knowledge layer guarantees complete, absolute path extraction;
+        // the evaluator additionally requires every pattern in the matched
+        // rule to be absolute. Tightening/equal unscoped rules need no such
+        // proof. Command-scoped rules remain explicit escape valves.
+        let path_extraction_complete =
+            affected_paths_are_complete(base_command, info, &segment.words, &segment.command, kb);
+
+        if let Some(decision) = path_rules::evaluate_override_path_rules(
             &self.config.overrides.path_rules,
             base_command,
             cwd,
-            &affected_path_strs,
-            override_cmd_decision.unwrap_or_else(|| self.effect_default(info.effect)),
+            &path_decisions,
+            pathless_fallback,
+            path_extraction_complete,
         ) {
             let mut result = PolicyResult::simple(
-                path_result.decision,
+                decision,
                 format!(
                     "{base_command}: effect={:?} (user override, path rule)",
                     info.effect
@@ -667,6 +712,120 @@ impl PolicyEngine {
             Effect::Unknown => self.config.defaults.unknown,
         }
     }
+}
+
+/// Return whether this invocation's affected-path extraction is safe to use as
+/// an authorization boundary.
+///
+/// `PathPositionals::All` is the explicit completeness contract: every
+/// non-flag operand is a path. The invocation must also use only flags covered
+/// by the command's exhaustive flag schema, every extracted operand must be
+/// absolute, and undeclared end-of-options semantics are rejected. Subcommand
+/// grammars conservatively fail closed here; command-scoped overrides remain
+/// their explicit escape valve.
+fn affected_paths_are_complete(
+    base_command: &str,
+    info: &CommandInfo,
+    words: &[Word],
+    raw_command: &str,
+    kb: &KnowledgeBase,
+) -> bool {
+    if info.subcommand.is_some() {
+        return false;
+    }
+    let Some(knowledge) = kb.commands.get(base_command) else {
+        return false;
+    };
+    if !matches!(knowledge.paths.positionals, PathPositionals::All) {
+        return false;
+    }
+    if info.affected_paths.iter().any(|path| !path.is_absolute()) {
+        return false;
+    }
+
+    let command_index = words
+        .iter()
+        .position(|word| word.basename() == base_command)
+        .map_or(0, |index| index + 1);
+    if command_index != 1 || !raw_argv_is_boring_literal(raw_command, words) {
+        return false;
+    }
+    path_operands_are_literal_and_flags_classified(&words[command_index..], &knowledge.flags)
+}
+
+/// Prove that parsing did not transform, combine, split, or expand argv.
+///
+/// This deliberately accepts a tiny shell sub-language: ASCII alphanumerics
+/// plus `_`, `-`, `.`, `/`, `:`, `@`, `%`, `+`, `=`, and `,`, separated only
+/// by ASCII whitespace. Raw tokens must exactly equal the parser's decoded
+/// words. Quotes, escapes, expansions, glob/brace syntax, tilde, concatenation,
+/// operators, and locale/ANSI-C forms therefore fail closed as a class.
+fn raw_argv_is_boring_literal(raw_command: &str, words: &[Word]) -> bool {
+    let raw_words: Vec<&str> = raw_command.split_ascii_whitespace().collect();
+    raw_words.len() == words.len()
+        && raw_words.iter().zip(words).all(|(raw, parsed)| {
+            *raw == parsed.as_str()
+                && !raw.is_empty()
+                && raw.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(
+                            byte,
+                            b'_' | b'-' | b'.' | b'/' | b':' | b'@' | b'%' | b'+' | b'=' | b','
+                        )
+                })
+        })
+}
+
+/// Verify that no flag could hide a path value from extraction and every
+/// affected operand has a statically known value.
+fn path_operands_are_literal_and_flags_classified(words: &[Word], schema: &FlagSchema) -> bool {
+    let mut index = 0;
+    while index < words.len() {
+        let word = &words[index];
+        if word.as_str() == "--" {
+            return false;
+        }
+        if !word.starts_with('-') || word.as_str() == "-" {
+            if word.is_expansion() {
+                return false;
+            }
+            index += 1;
+            continue;
+        }
+
+        if schema.skip_arg.iter().any(|flag| flag == word.as_str()) {
+            if index + 1 >= words.len() {
+                return false;
+            }
+            if schema.path.iter().any(|flag| flag == word.as_str())
+                && words[index + 1].is_expansion()
+            {
+                return false;
+            }
+            index += 2;
+            continue;
+        }
+        if schema.skip_solo.iter().any(|flag| flag == word.as_str())
+            || schema.escalation.iter().any(|flag| flag == word.as_str())
+        {
+            index += 1;
+            continue;
+        }
+
+        let Some((flag, _value)) = word.split_once('=') else {
+            return false;
+        };
+        if !schema.skip_arg.iter().any(|known| known == flag)
+            && !schema.escalation.iter().any(|known| known == flag)
+        {
+            return false;
+        }
+        if schema.path.iter().any(|known| known == flag) && word.is_expansion() {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// Apply KB-level safety rails to an override result.

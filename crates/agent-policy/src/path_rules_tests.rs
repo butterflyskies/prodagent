@@ -957,6 +957,154 @@ decision = "allow"
 // Property-based tests for PathGlob invariants
 // ══════════════════════════════════════════════════════════════════════════
 
+#[test]
+fn rejected_relaxation_does_not_shadow_later_equal_or_tightening_rule() {
+    for later in [PolicyDecision::Ask, PolicyDecision::Deny] {
+        let rules = vec![
+            PathRule {
+                paths: vec![pg("/tmp/approved/file")],
+                decision: PolicyDecision::Allow,
+                command: None,
+            },
+            PathRule {
+                paths: vec![pg("/tmp/approved/file")],
+                decision: later,
+                command: None,
+            },
+        ];
+
+        assert_eq!(
+            evaluate_override_path_rules(
+                &rules,
+                "tool",
+                None,
+                &[("/tmp/approved/file", PolicyDecision::Ask)],
+                PolicyDecision::Ask,
+                false,
+            ),
+            Some(later),
+        );
+    }
+}
+
+#[test]
+fn contaminated_relaxation_does_not_shadow_later_tightening_rule() {
+    let rules = vec![
+        PathRule {
+            paths: vec![pg("/tmp/approved/file"), pg("relative/**")],
+            decision: PolicyDecision::Allow,
+            command: None,
+        },
+        PathRule {
+            paths: vec![pg("/tmp/approved/file")],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+    ];
+
+    assert_eq!(
+        evaluate_override_path_rules(
+            &rules,
+            "tool",
+            None,
+            &[("/tmp/approved/file", PolicyDecision::Ask)],
+            PolicyDecision::Ask,
+            true,
+        ),
+        Some(PolicyDecision::Deny),
+    );
+}
+
+#[test]
+fn first_eligible_override_still_wins_within_specificity_tier() {
+    let rules = vec![
+        PathRule {
+            paths: vec![pg("/tmp/approved/file")],
+            decision: PolicyDecision::Ask,
+            command: None,
+        },
+        PathRule {
+            paths: vec![pg("/tmp/approved/file")],
+            decision: PolicyDecision::Deny,
+            command: None,
+        },
+    ];
+
+    assert_eq!(
+        evaluate_override_path_rules(
+            &rules,
+            "tool",
+            None,
+            &[("/tmp/approved/file", PolicyDecision::Allow)],
+            PolicyDecision::Allow,
+            false,
+        ),
+        Some(PolicyDecision::Ask),
+    );
+}
+
+#[test]
+fn pathless_unscoped_override_can_only_preserve_or_tighten_cwd_fallback() {
+    for (fallback, override_decision, expected) in [
+        (
+            PolicyDecision::Allow,
+            PolicyDecision::Ask,
+            Some(PolicyDecision::Ask),
+        ),
+        (
+            PolicyDecision::Allow,
+            PolicyDecision::Deny,
+            Some(PolicyDecision::Deny),
+        ),
+        (
+            PolicyDecision::Ask,
+            PolicyDecision::Ask,
+            Some(PolicyDecision::Ask),
+        ),
+        (PolicyDecision::Ask, PolicyDecision::Allow, None),
+    ] {
+        let rules = vec![PathRule {
+            paths: vec![pg("/tmp/approved/**")],
+            decision: override_decision,
+            command: None,
+        }];
+
+        assert_eq!(
+            evaluate_override_path_rules(
+                &rules,
+                "tool",
+                Some("/tmp/approved/work"),
+                &[],
+                fallback,
+                false,
+            ),
+            expected,
+            "fallback={fallback:?}, override={override_decision:?}",
+        );
+    }
+}
+
+#[test]
+fn pathless_command_scoped_override_remains_authoritative() {
+    let rules = vec![PathRule {
+        paths: vec![pg("/tmp/approved/**")],
+        decision: PolicyDecision::Allow,
+        command: Some("tool".to_string()),
+    }];
+
+    assert_eq!(
+        evaluate_override_path_rules(
+            &rules,
+            "tool",
+            Some("/tmp/approved/work"),
+            &[],
+            PolicyDecision::Deny,
+            false,
+        ),
+        Some(PolicyDecision::Allow),
+    );
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;
@@ -1006,6 +1154,52 @@ mod proptests {
                 prop_assert_eq!(deref, as_str);
                 prop_assert_eq!(deref, as_ref);
             }
+        }
+
+        /// Adding an affected path that does not match an override can only
+        /// preserve or strengthen the result; it can never weaken it.
+        #[test]
+        fn unmatched_override_path_cannot_weaken(
+            rule_decision in prop::sample::select(vec![
+                PolicyDecision::Allow,
+                PolicyDecision::Ask,
+                PolicyDecision::Deny,
+            ]),
+            unmatched_fallback in prop::sample::select(vec![
+                PolicyDecision::Allow,
+                PolicyDecision::Ask,
+                PolicyDecision::Deny,
+            ]),
+        ) {
+            let rules = vec![PathRule {
+                paths: vec![pg("/tmp/approved/**")],
+                decision: rule_decision,
+                command: None,
+            }];
+
+            let baseline = evaluate_override_path_rules(
+                &rules,
+                "tool",
+                None,
+                &[("/tmp/approved/x", PolicyDecision::Ask)],
+                PolicyDecision::Ask,
+                true,
+            )
+            .unwrap();
+            let with_unmatched = evaluate_override_path_rules(
+                &rules,
+                "tool",
+                None,
+                &[
+                    ("/tmp/approved/x", PolicyDecision::Ask),
+                    ("/etc/unmatched", unmatched_fallback),
+                ],
+                PolicyDecision::Ask,
+                true,
+            )
+            .unwrap();
+
+            prop_assert!(with_unmatched >= baseline);
         }
     }
 }
