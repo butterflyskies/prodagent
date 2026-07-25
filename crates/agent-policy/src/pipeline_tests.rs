@@ -1624,3 +1624,436 @@ fn allowed_substitution_with_prefix_fires_set_gate() {
         "mycmd segment should be Deny (Set gate fired via allowed substitution): {result:?}"
     );
 }
+
+// ── Declaration segment classification (export/declare/etc. → Allow) ─────────
+//
+// Standalone declaration commands modify variable attributes without executing
+// commands. They must evaluate to Allow so they don't poison compound commands
+// like `export FOO=bar && git commit`.
+
+#[test]
+fn standalone_export_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("export FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone export should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn standalone_declare_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("declare FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone declare should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn standalone_readonly_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("readonly FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone readonly should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn export_without_assignment_evaluates_to_allow() {
+    // `export FOO` (no =) just marks an existing variable for export.
+    // This should still be Allow (it's a declaration, not a command).
+    let engine = default_engine();
+    let result = engine.evaluate_command("export FOO", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "export without = should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn standalone_local_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("local FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone local should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn standalone_typeset_evaluates_to_allow() {
+    let engine = default_engine();
+    let result = engine.evaluate_command("typeset FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "standalone typeset should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn declare_with_flags_evaluates_to_allow() {
+    let engine = default_engine();
+    // declare -x exports the variable, -r makes it readonly
+    let result = engine.evaluate_command("declare -x FOO=bar", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "declare with flags should be Allow: {result:?}"
+    );
+    assert!(
+        result.reason.contains("declaration"),
+        "reason should mention declaration: {result:?}"
+    );
+}
+
+#[test]
+fn declaration_with_redirection_escalates() {
+    // `export -p > /tmp/env.txt` should escalate to Ask because of the
+    // non-benign output redirection, even though the declaration itself
+    // is safe.
+    let engine = default_engine();
+    let result = engine.evaluate_command("export -p > /tmp/env.txt", default_kb());
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "declaration with output redirection should escalate to Ask: {result:?}"
+    );
+    assert!(
+        result.reason.contains("escalated"),
+        "reason should mention redirection escalation: {result:?}"
+    );
+}
+
+// ── Export env propagation for allowed_with_config pattern ────────────────────
+//
+// The "allowed with config" pattern: a command has a per-command override
+// (Allow) and an env gate that escalates to Ask when a required env var is
+// NOT set. This ensures the command is only auto-allowed when the env is
+// properly configured.
+//
+// These tests verify that `export KEY=VALUE && command` is equivalent to
+// inline `KEY=VALUE command` for this pattern.
+
+/// Build a KB where `cmd` has an Unset gate on `env_var` and a per-subcommand
+/// Allow override for `subcmd`. This creates the "allowed with config" pattern:
+/// the command is only auto-allowed when the env var is set.
+fn allowed_with_config_setup_for(
+    cmd: &str,
+    subcmd: &str,
+    env_var: &str,
+) -> (PolicyEngine, KnowledgeBase) {
+    let gate = EnvGate {
+        var: env_var.into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let overlay = KnowledgeOverlay {
+        commands: [(
+            cmd.into(),
+            CommandOverlay {
+                env_gates: vec![gate],
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    kb.merge(overlay);
+
+    let config = PolicyConfig::builder()
+        .subcommand(cmd, subcmd, PolicyDecision::Allow)
+        .build()
+        .unwrap();
+    let engine = PolicyEngine::new(config).unwrap();
+
+    (engine, kb)
+}
+
+/// Convenience wrapper for git commit — the most common "allowed with config"
+/// test case.
+fn allowed_with_config_setup(env_var: &str) -> (PolicyEngine, KnowledgeBase) {
+    allowed_with_config_setup_for("git", "commit", env_var)
+}
+
+#[test]
+fn gate_fires_without_env_set() {
+    // Negative baseline: git commit with no env set at all → gate fires → Ask.
+    // This proves the Unset gate is actually operative before we test that
+    // export/inline assignment satisfies it.
+    let (engine, kb) = allowed_with_config_setup("TESTENV_GIT_CONFIG");
+    let result = engine.evaluate_command("git commit -m \"msg\"", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "git commit without env should be Ask (Unset gate fires): {result:?}"
+    );
+}
+
+#[test]
+fn inline_env_prefix_allows_with_config() {
+    // Baseline: GIT_CONFIG_GLOBAL=~/.gitconfig.ai git commit -m "msg"
+    // Single segment, inline assignment sets the var, Unset gate does not fire.
+    let (engine, kb) = allowed_with_config_setup("TESTENV_GIT_CONFIG");
+
+    let result = engine.evaluate_command(
+        "TESTENV_GIT_CONFIG=~/.gitconfig.ai git commit -m \"msg\"",
+        &kb,
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "inline env prefix should satisfy the env gate: {result:?}"
+    );
+}
+
+#[test]
+fn export_env_then_command_allows_with_config() {
+    // The bug: export GIT_CONFIG_GLOBAL=~/.gitconfig.ai && git commit -m "msg"
+    // The export segment must be Allow (not Ask), and the env must propagate
+    // so the Unset gate on git commit does not fire.
+    let (engine, kb) = allowed_with_config_setup("TESTENV_GIT_CONFIG");
+
+    let result = engine.evaluate_command(
+        "export TESTENV_GIT_CONFIG=~/.gitconfig.ai && git commit -m \"msg\"",
+        &kb,
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "export + && should be equivalent to inline prefix for env gates: {result:?}"
+    );
+
+    // Verify the git commit segment specifically is Allow
+    let git_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("git commit"))
+        .expect("should have a git commit segment");
+    assert_eq!(
+        git_segment.decision,
+        PolicyDecision::Allow,
+        "git commit segment should be Allow (Unset gate did not fire): {result:?}"
+    );
+
+    // Verify the export segment is also Allow
+    let export_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("export"))
+        .expect("should have an export segment");
+    assert_eq!(
+        export_segment.decision,
+        PolicyDecision::Allow,
+        "export segment should be Allow (declaration): {result:?}"
+    );
+}
+
+#[test]
+fn gate_fires_without_env_set_gh() {
+    // Negative baseline for gh path: gh pr create with no env set → Ask.
+    // Tests the multi-word subcommand override through allowed_with_config_setup_for.
+    let (engine, kb) = allowed_with_config_setup_for("gh", "pr create", "TESTENV_GH_CONFIG");
+    let result = engine.evaluate_command("gh pr create", &kb);
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "gh pr create without env should be Ask (Unset gate fires): {result:?}"
+    );
+}
+
+#[test]
+fn export_gh_config_then_gh_command_allows_with_config() {
+    // export GH_CONFIG_DIR=~/.config/gh-butterflysky-ai && gh pr create
+    let (engine, kb) = allowed_with_config_setup_for("gh", "pr create", "TESTENV_GH_CONFIG");
+
+    let result = engine.evaluate_command(
+        "export TESTENV_GH_CONFIG=~/.config/gh-ai && gh pr create",
+        &kb,
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "export GH_CONFIG_DIR + gh pr create should be Allow: {result:?}"
+    );
+}
+
+#[test]
+fn multiple_exports_then_command_sees_both() {
+    // export A=1 && export B=2 && command → both A and B visible
+    let gate_a = EnvGate {
+        var: "TESTENV_MULTI_A".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let gate_b = EnvGate {
+        var: "TESTENV_MULTI_B".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_a, gate_b];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command(
+        "export TESTENV_MULTI_A=1 && export TESTENV_MULTI_B=2 && mycmd",
+        &kb,
+    );
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Allow,
+        "both exports should propagate, neither Unset gate fires: {result:?}"
+    );
+}
+
+#[test]
+fn partial_export_still_fires_unsatisfied_gate() {
+    // export A=1 && mycmd (where mycmd needs both A and B set)
+    // Only A is exported, so B's Unset gate should fire → Ask.
+    let gate_a = EnvGate {
+        var: "TESTENV_PARTIAL_A".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let gate_b = EnvGate {
+        var: "TESTENV_PARTIAL_B".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_a, gate_b];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTENV_PARTIAL_A=1 && mycmd", &kb);
+    // Pipeline should be Ask because mycmd's unsatisfied gate fires.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "pipeline should be Ask when unsatisfied gate remains: {result:?}"
+    );
+    // Only A is set — B's Unset gate fires.
+    let mycmd_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("mycmd"))
+        .expect("should have a mycmd segment");
+    assert_eq!(
+        mycmd_segment.decision,
+        PolicyDecision::Ask,
+        "partial export should leave unsatisfied gate firing: {result:?}"
+    );
+}
+
+#[test]
+fn export_without_assignment_does_not_set_value() {
+    // `export FOO` without = should NOT count as an assignment.
+    // An Unset gate on FOO should still fire because FOO has no value set.
+    let gate = EnvGate {
+        var: "TESTENV_BARE_EXPORT".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command("export TESTENV_BARE_EXPORT && mycmd", &kb);
+
+    // Pipeline should be Ask because mycmd's Unset gate fires.
+    assert_eq!(
+        result.decision,
+        PolicyDecision::Ask,
+        "pipeline should be Ask when mycmd gate fires: {result:?}"
+    );
+
+    // mycmd's Unset gate should fire because TESTENV_BARE_EXPORT has no value
+    // (export without = doesn't set a value in the env snapshot).
+    let mycmd_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("mycmd"))
+        .expect("should have a mycmd segment");
+    assert_eq!(
+        mycmd_segment.decision,
+        PolicyDecision::Ask,
+        "export without = should NOT satisfy an Unset gate: {result:?}"
+    );
+}
+
+#[test]
+fn mixed_export_and_inline_env() {
+    // export FOO=bar && BAZ=qux command → both FOO and BAZ visible
+    let gate_foo = EnvGate {
+        var: "TESTENV_MIX_FOO".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let gate_baz = EnvGate {
+        var: "TESTENV_MIX_BAZ".into(),
+        condition: EnvCondition::Unset,
+        decision: EnvGateAction::Ask,
+    };
+    let mut kb = default_kb().clone();
+    let mut command = simple_command("mycmd", agent_command_knowledge::Effect::ReadOnly);
+    command.env_gates = vec![gate_foo, gate_baz];
+    kb.commands.insert("mycmd".to_string(), command);
+
+    let engine = default_engine();
+    let result = engine.evaluate_command(
+        "export TESTENV_MIX_FOO=bar && TESTENV_MIX_BAZ=qux mycmd",
+        &kb,
+    );
+
+    // Both FOO (via export propagation) and BAZ (via inline assignment)
+    // should be visible. Neither Unset gate fires.
+    let mycmd_segment = result
+        .segments
+        .iter()
+        .find(|s| s.label.contains("mycmd"))
+        .expect("should have a mycmd segment");
+    assert_eq!(
+        mycmd_segment.decision,
+        PolicyDecision::Allow,
+        "mixed export + inline should both be visible: {result:?}"
+    );
+}
