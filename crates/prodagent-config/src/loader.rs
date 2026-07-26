@@ -191,7 +191,14 @@ impl ConfigLoader {
 
         // Validate monotonicity before merging project layer
         if let Some(ref project) = project_layer {
-            let violations = validate_monotonicity(&user_policy, &project.policy);
+            let mut violations = validate_monotonicity(&user_policy, &project.policy);
+            if !project.governed_writes.is_empty() {
+                violations.push(MonotonicityViolation::Structural {
+                    path: "governed_writes (prohibited in project config)".into(),
+                    reason: "project files cannot authenticate their own contribution guidance"
+                        .into(),
+                });
+            }
             if !violations.is_empty() {
                 return Err(ConfigError::Monotonicity(violations));
             }

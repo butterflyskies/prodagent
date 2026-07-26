@@ -112,6 +112,22 @@ unknown = "ask"        # default
 
 Per-repo overrides go in `.prodagent/config.toml` (can only tighten, not relax).
 
+To require managed contribution guidance before shell writes into a directory,
+add a user-level rule with an absolute path:
+
+```toml
+[[governed_writes]]
+directory = "/absolute/path/to/incident-reports"
+guide = "Use the incident report template and link primary sources."
+template = "https://example.test/incident-report-template"
+```
+
+When a supported shell redirection targets that directory, tool-gate refuses
+the entire original command before execution, returns the guide and optional
+template, and asks the agent to retry with a corrected command. These rules are
+accepted only from managed defaults or `~/.config/prodagent/config.toml`;
+project-local configuration cannot authenticate its own contribution guidance.
+
 Use `tool-gate --dump-config` to inspect the merged three-tier configuration. Use `tool-gate --dump-ast <command>` to see how a command is parsed.
 
 ### agent-jj

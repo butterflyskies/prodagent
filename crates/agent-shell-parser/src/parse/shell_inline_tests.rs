@@ -306,6 +306,14 @@ fn redir_read_write() {
     assert!(r.is_some());
 }
 
+#[test]
+fn all_redirections_are_returned_in_source_order() {
+    let redirects = output_redirections("echo hi > out.txt 2> err.txt").unwrap();
+    assert_eq!(redirects.len(), 2);
+    assert_eq!(redirects[0].target, "out.txt");
+    assert_eq!(redirects[1].target, "err.txt");
+}
+
 // --- Redirection propagation ---
 
 #[test]

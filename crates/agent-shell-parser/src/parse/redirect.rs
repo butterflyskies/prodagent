@@ -123,19 +123,34 @@ fn check_file_redirect(node: Node, source: &[u8]) -> Option<Redirection> {
     None
 }
 
-/// Recursively search for `file_redirect` descendants, skipping `heredoc_body`.
-pub(super) fn detect_redirections(node: Node, source: &[u8]) -> Option<Redirection> {
+/// Recursively collect `file_redirect` descendants, skipping `heredoc_body`.
+fn collect_redirections_inner(node: Node, source: &[u8], found: &mut Vec<Redirection>) {
     if node.kind() == "file_redirect" {
-        return check_file_redirect(node, source);
+        if let Some(redirection) = check_file_redirect(node, source) {
+            found.push(redirection);
+        }
+        return;
     }
     if node.kind() == "heredoc_body" {
-        return None;
+        return;
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(r) = detect_redirections(child, source) {
-            return Some(r);
-        }
+        collect_redirections_inner(child, source, found);
     }
-    None
+}
+
+pub(super) fn collect_redirections(node: Node, source: &[u8]) -> Vec<Redirection> {
+    let mut found = Vec::new();
+    collect_redirections_inner(node, source, &mut found);
+    found
+}
+
+/// Recursively find the first `file_redirect` descendant.
+///
+/// Kept for compatibility with callers that need only the aggregate
+/// redirection signal. Consumers enforcing per-destination policy should use
+/// [`collect_redirections`] instead.
+pub(super) fn detect_redirections(node: Node, source: &[u8]) -> Option<Redirection> {
+    collect_redirections(node, source).into_iter().next()
 }

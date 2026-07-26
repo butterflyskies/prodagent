@@ -10,6 +10,8 @@
 //!
 //! - **Knowledge layer** — command specs, path specs, wrappers (what tools exist).
 //! - **Policy layer** — allow/ask/deny rules (what's permitted and at what friction).
+//! - **Managed guidance** — trusted directory contribution rules used by the
+//!   shell hook. Project-local files cannot define these rules.
 //!
 //! # Security invariant: monotonicity
 //!

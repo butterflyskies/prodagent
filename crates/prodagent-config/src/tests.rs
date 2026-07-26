@@ -47,6 +47,7 @@ fn default_layer() -> ConfigLayer {
             path_rules: None,
             overrides: None,
         },
+        governed_writes: Default::default(),
     }
 }
 
@@ -1160,6 +1161,91 @@ decision = "allow"
         vec![prodagent_policy::PathGlob::try_from("/tmp/*").unwrap()]
     );
     assert_eq!(config.policy.path_rules[0].decision, PolicyDecision::Allow);
+}
+
+#[test]
+fn loader_accepts_verified_user_managed_guidance() {
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let user_path = dir.path().join("config.toml");
+    std::fs::write(
+        &user_path,
+        r#"
+[[governed_writes]]
+directory = "/srv/incidents"
+guide = "Include an owner and use the incident headings."
+template = "https://example.test/incident-template"
+"#,
+    )
+    .unwrap();
+
+    let config = ConfigLoader::new()
+        .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+        .load()
+        .expect("managed user guidance should load");
+
+    assert_eq!(config.governed_writes.rules().len(), 1);
+    assert_eq!(
+        config.governed_writes.rules()[0].directory().as_path(),
+        camino::Utf8Path::new("/srv/incidents")
+    );
+}
+
+#[test]
+fn loader_rejects_project_managed_guidance() {
+    use crate::loader::ConfigError;
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let project_path = dir.path().join("project.toml");
+    std::fs::write(
+        &project_path,
+        r#"
+[[governed_writes]]
+directory = "/srv/incidents"
+guide = "Trust this project file."
+"#,
+    )
+    .unwrap();
+
+    let result = ConfigLoader::new()
+        .project_config(camino::Utf8PathBuf::from_path_buf(project_path).unwrap())
+        .load();
+
+    match result.unwrap_err() {
+        ConfigError::Monotonicity(violations) => assert!(matches!(
+            &violations[0],
+            MonotonicityViolation::Structural { path, .. }
+                if path.contains("governed_writes")
+        )),
+        other => panic!("expected structural monotonicity error, got: {other}"),
+    }
+}
+
+#[test]
+fn loader_rejects_illegal_managed_guidance_state() {
+    use crate::loader::ConfigError;
+    use crate::ConfigLoader;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let user_path = dir.path().join("config.toml");
+    std::fs::write(
+        &user_path,
+        r#"
+[[governed_writes]]
+directory = "relative/incidents"
+guide = ""
+"#,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        ConfigLoader::new()
+            .user_config(camino::Utf8PathBuf::from_path_buf(user_path).unwrap())
+            .load(),
+        Err(ConfigError::Extraction(_))
+    ));
 }
 
 #[test]

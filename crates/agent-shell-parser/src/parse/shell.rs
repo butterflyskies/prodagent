@@ -24,7 +24,7 @@
 //! (e.g. `for ... done > file`), it propagates to inner segments via
 //! [`ShellSegment::redirection`].
 
-use super::redirect::detect_redirections;
+use super::redirect::{collect_redirections, detect_redirections};
 use super::subst::{assign_substitutions, build_segments, collect_substitutions};
 use super::types::{ParseError, ParsedPipeline, ShellSegment, Word};
 use super::walk::walk_ast;
@@ -169,6 +169,13 @@ pub fn has_output_redirection(
     let budget = Cell::new(0);
     let tree = parse_tree(command, &budget)?;
     Ok(detect_redirections(tree.root_node(), command.as_bytes()))
+}
+
+/// Return every filesystem-relevant output redirection in source order.
+pub fn output_redirections(command: &str) -> Result<Vec<super::types::Redirection>, ParseError> {
+    let budget = Cell::new(0);
+    let tree = parse_tree(command, &budget)?;
+    Ok(collect_redirections(tree.root_node(), command.as_bytes()))
 }
 
 /// Diagnostic: dump the tree-sitter AST and parsed pipeline.
