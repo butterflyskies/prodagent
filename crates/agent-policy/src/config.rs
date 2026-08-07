@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::decision::PolicyDecision;
+use crate::file_ops::FileOpsPolicy;
 use crate::path_rules::PathRule;
 
 /// Policy configuration — effect-class defaults and per-command overrides.
@@ -65,6 +66,15 @@ pub struct PolicyConfig {
     /// entries stored in a dedicated section of the user config file.
     #[serde(default)]
     pub overrides: OverrideConfig,
+
+    /// Policy rules for file tool operations (Write, Edit, Read).
+    ///
+    /// File tools bypass the shell parser and command knowledge base — they
+    /// have a known effect and a known target path. This section provides
+    /// path-scoped rules for file operations, evaluated before the effect-class
+    /// defaults.
+    #[serde(default)]
+    pub file_ops: FileOpsPolicy,
 }
 
 fn default_opaque_env_ceiling() -> PolicyDecision {
@@ -107,6 +117,7 @@ impl Default for PolicyConfig {
             opaque_env_ceiling: default_opaque_env_ceiling(),
             path_rules: Vec::new(),
             overrides: OverrideConfig::default(),
+            file_ops: FileOpsPolicy::default(),
         }
     }
 }
@@ -233,6 +244,7 @@ pub struct PolicyConfigBuilder {
     opaque_env_ceiling: PolicyDecision,
     path_rules: Vec<PathRule>,
     overrides: OverrideConfig,
+    file_ops: FileOpsPolicy,
 }
 
 impl Default for PolicyConfigBuilder {
@@ -243,6 +255,7 @@ impl Default for PolicyConfigBuilder {
             opaque_env_ceiling: default_opaque_env_ceiling(),
             path_rules: Vec::new(),
             overrides: OverrideConfig::default(),
+            file_ops: FileOpsPolicy::default(),
         }
     }
 }
@@ -414,6 +427,12 @@ impl PolicyConfigBuilder {
 
     // ── Build ──────────────────────────────────────────────────────────
 
+    /// Add a file-ops policy configuration.
+    pub fn file_ops(mut self, file_ops: FileOpsPolicy) -> Self {
+        self.file_ops = file_ops;
+        self
+    }
+
     /// Consume the builder and return a validated [`PolicyConfig`].
     ///
     /// Returns an error if the configuration is invalid (e.g. non-monotonic
@@ -425,6 +444,7 @@ impl PolicyConfigBuilder {
             opaque_env_ceiling: self.opaque_env_ceiling,
             path_rules: self.path_rules,
             overrides: self.overrides,
+            file_ops: self.file_ops,
         };
         config.validate()?;
         Ok(config)

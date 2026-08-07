@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use agent_command_knowledge::merge::{CommandOverlay, KnowledgeOverlay, WrapperOverlay};
 use prodagent_policy::config::{CommandPolicy, EffectDefaults, OverrideConfig, PolicyConfig};
+use prodagent_policy::file_ops::FileOpsPolicy;
 use prodagent_policy::path_rules::PathRule;
 use prodagent_policy::PolicyDecision;
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,14 @@ pub struct PolicyOverlay {
     /// (enforced by the monotonicity validator).
     #[serde(default)]
     pub overrides: Option<OverrideConfig>,
+
+    /// File-tool policy rules (Write, Edit, Read).
+    ///
+    /// When present, these rules are appended to the base file-ops policy.
+    /// Path rules from higher layers are prepended (evaluated first) so that
+    /// user/project config can override defaults.
+    #[serde(default)]
+    pub file_ops: Option<FileOpsPolicy>,
 }
 
 /// Optional overrides for effect-class defaults. `None` means "inherit."
@@ -143,6 +152,7 @@ impl PolicyOverlay {
             && self.opaque_env_ceiling.is_none()
             && self.path_rules.is_none()
             && self.overrides.as_ref().is_none_or(|o| o.is_empty())
+            && self.file_ops.is_none()
     }
 
     /// Apply this overlay onto a base [`PolicyConfig`], mutating it in place.
@@ -153,6 +163,8 @@ impl PolicyOverlay {
     /// 3. Override opaque env ceiling (when specified).
     /// 4. Merge per-command overrides (overlay wins on conflict).
     /// 5. Merge path-scoped rules (overlay rules prepended — evaluated first).
+    /// 6. Merge file-ops path rules (overlay rules prepended — evaluated first).
+    /// 7. Merge user overrides.
     pub fn apply_to(self, base: &mut PolicyConfig) {
         // 1. Removals first.
         for key in &self.remove_commands {
@@ -187,7 +199,14 @@ impl PolicyOverlay {
             base.path_rules = merged;
         }
 
-        // 6. User overrides — merge into the base override config.
+        // 6. File-ops path rules — overlay rules prepended (higher-priority).
+        if let Some(file_ops_overlay) = self.file_ops {
+            let mut merged_rules = file_ops_overlay.path_rules;
+            merged_rules.append(&mut base.file_ops.path_rules);
+            base.file_ops.path_rules = merged_rules;
+        }
+
+        // 7. User overrides — merge into the base override config.
         // Override commands from the overlay win on conflict; override path
         // rules are prepended (higher priority).
         if let Some(overlay_overrides) = self.overrides {
@@ -255,6 +274,7 @@ impl ProdagentConfig {
                 .unwrap_or(PolicyDecision::Ask),
             path_rules: defaults.policy.path_rules.unwrap_or_default(),
             overrides: defaults.policy.overrides.unwrap_or_default(),
+            file_ops: defaults.policy.file_ops.unwrap_or_default(),
         };
 
         // Merge user layer

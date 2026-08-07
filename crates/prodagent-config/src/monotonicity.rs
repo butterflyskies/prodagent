@@ -191,6 +191,56 @@ pub fn validate_monotonicity(
         }
     }
 
+    // ── File-ops path rules ────────────────────────────────────────────────
+    // A project config cannot introduce file-ops rules that are weaker than
+    // the user's effect-class defaults. For read tools, compare against the
+    // user's read_only default. For write/edit tools, compare against the
+    // user's mutating default. Tool-unscoped rules are compared against the
+    // weakest of (read_only, mutating).
+    if let Some(ref file_ops) = project_overlay.file_ops {
+        for (i, rule) in file_ops.path_rules.iter().enumerate() {
+            // For monotonicity, compare against the strictest applicable floor.
+            // An unscoped rule can match mutating tools, so the project can't
+            // weaken the mutating default via an unscoped Allow. Read-only scoped
+            // rules only need to respect the read_only floor.
+            let user_floor = match &rule.tools {
+                Some(tools) if tools.iter().all(|t| !t.is_mutating()) => {
+                    // Read-only scoped rule: compare against read_only default
+                    user_policy.defaults.read_only
+                }
+                Some(tools) if tools.iter().all(|t| t.is_mutating()) => {
+                    // Mutating-only scoped rule: compare against mutating default
+                    user_policy.defaults.mutating
+                }
+                _ => {
+                    // Unscoped or mixed: compare against mutating default
+                    // (strictest applicable class — can't weaken writes)
+                    user_policy.defaults.mutating
+                }
+            };
+
+            // Also check against user-level file_ops rules. If the user has
+            // an existing rule for the same path, the project cannot weaken it.
+            let user_file_floor = user_policy
+                .file_ops
+                .path_rules
+                .iter()
+                .find(|r| r.path == rule.path)
+                .map(|r| r.decision)
+                .unwrap_or(user_floor);
+
+            let effective_floor = user_floor.max(user_file_floor);
+
+            if rule.decision < effective_floor {
+                violations.push(MonotonicityViolation::Relaxation {
+                    path: format!("policy.file_ops.path_rules[{i}] ({})", rule.path),
+                    user_decision: effective_floor,
+                    project_decision: rule.decision,
+                });
+            }
+        }
+    }
+
     violations
 }
 
